@@ -1,4 +1,9 @@
-#include "../include/hal/stm32g4/stm32_pwm.hpp"
+/**
+ * @file stm32_pwm.cpp
+ * @brief STM32G4 TIM1-based PWM implementation for 3-phase motor control
+ */
+
+#include "stm32_pwm.hpp"
 
 #ifdef STM32G4
 #include "../../Core/Inc/main.h"
@@ -16,31 +21,33 @@ static TIM_HandleTypeDef_Impl mock_timer;
 
 namespace libecu {
 
-STM32PWM::STM32PWM() : timer_handle_(nullptr), pwm_frequency_(20000), max_duty_cycle_(4250) {
-#ifdef STM32G4
-    timer_handle_ = static_cast<void*>(&htim1);
-#else
-    timer_handle_ = static_cast<void*>(&mock_timer);
-#endif
+Stm32Pwm::Stm32Pwm(void* htim) 
+    : htim_(htim), frequency_(20000), period_(0), enabled_(false) {
 }
 
-STM32PWM::~STM32PWM() {
-    emergencyStop();
-}
-
-bool STM32PWM::initialize(uint32_t frequency) {
-    pwm_frequency_ = frequency;
-    calculateTimerSettings();
+bool Stm32Pwm::initialize(uint32_t frequency) {
+    frequency_ = frequency;
     
 #ifdef STM32G4
-    TIM_HandleTypeDef* tim_handle = static_cast<TIM_HandleTypeDef*>(timer_handle_);
-    tim_handle->Init.Period = timer_period_;
-    tim_handle->Init.Prescaler = timer_prescaler_;
+    // Calculate timer settings
+    uint32_t timer_clock = HAL_RCC_GetPCLK2Freq() * 2;
+    uint32_t prescaler = 0;
+    period_ = (timer_clock / frequency) - 1;
+    
+    while (period_ > 65535) {
+        prescaler++;
+        period_ = (timer_clock / ((prescaler + 1) * frequency)) - 1;
+    }
+    
+    TIM_HandleTypeDef* tim_handle = static_cast<TIM_HandleTypeDef*>(htim_);
+    tim_handle->Init.Period = period_;
+    tim_handle->Init.Prescaler = prescaler;
     
     if (HAL_TIM_PWM_Init(tim_handle) != HAL_OK) {
         return false;
     }
     
+    // Configure PWM channels
     TIM_OC_InitTypeDef sConfigOC = {0};
     sConfigOC.OCMode = TIM_OCMODE_PWM1;
     sConfigOC.Pulse = 0;
@@ -55,30 +62,31 @@ bool STM32PWM::initialize(uint32_t frequency) {
         HAL_TIM_PWM_ConfigChannel(tim_handle, &sConfigOC, TIM_CHANNEL_3) != HAL_OK) {
         return false;
     }
+#else
+    period_ = 4249;  // Mock value for testing
 #endif
     
     return true;
 }
 
-void STM32PWM::setDutyCycle(PwmChannel channel, float duty_cycle) {
+void Stm32Pwm::setDutyCycle(PwmChannel channel, float duty_cycle) {
     if (duty_cycle < 0.0f || duty_cycle > 1.0f) {
         return;
     }
     
-#ifdef STM32G4
-    TIM_HandleTypeDef* tim_handle = static_cast<TIM_HandleTypeDef*>(timer_handle_);
-    uint32_t pulse_value = static_cast<uint32_t>(duty_cycle * timer_period_);
-    pulse_value = (pulse_value > max_duty_cycle_) ? max_duty_cycle_ : pulse_value;
+    uint32_t compare_value = calculateCompareValue(duty_cycle);
+    uint32_t tim_channel = getTimChannel(channel);
     
-    uint32_t tim_channel = getTimerChannel(channel);
-    __HAL_TIM_SET_COMPARE(tim_handle, tim_channel, pulse_value);
+#ifdef STM32G4
+    TIM_HandleTypeDef* tim_handle = static_cast<TIM_HandleTypeDef*>(htim_);
+    __HAL_TIM_SET_COMPARE(tim_handle, tim_channel, compare_value);
 #endif
 }
 
-void STM32PWM::setState(PwmChannel channel, PwmState state) {
+void Stm32Pwm::setState(PwmChannel channel, PwmState state) {
 #ifdef STM32G4
-    TIM_HandleTypeDef* tim_handle = static_cast<TIM_HandleTypeDef*>(timer_handle_);
-    uint32_t tim_channel = getTimerChannel(channel);
+    TIM_HandleTypeDef* tim_handle = static_cast<TIM_HandleTypeDef*>(htim_);
+    uint32_t tim_channel = getTimChannel(channel);
     
     switch (state) {
         case PwmState::OFF:
@@ -104,9 +112,11 @@ void STM32PWM::setState(PwmChannel channel, PwmState state) {
 #endif
 }
 
-void STM32PWM::enable(bool enable) {
+void Stm32Pwm::enable(bool enable) {
+    enabled_ = enable;
+    
 #ifdef STM32G4
-    TIM_HandleTypeDef* tim_handle = static_cast<TIM_HandleTypeDef*>(timer_handle_);
+    TIM_HandleTypeDef* tim_handle = static_cast<TIM_HandleTypeDef*>(htim_);
     if (enable) {
         HAL_TIM_PWM_Start(tim_handle, TIM_CHANNEL_1);
         HAL_TIM_PWM_Start(tim_handle, TIM_CHANNEL_2);
@@ -121,9 +131,11 @@ void STM32PWM::enable(bool enable) {
 #endif
 }
 
-void STM32PWM::emergencyStop() {
+void Stm32Pwm::emergencyStop() {
+    enabled_ = false;
+    
 #ifdef STM32G4
-    TIM_HandleTypeDef* tim_handle = static_cast<TIM_HandleTypeDef*>(timer_handle_);
+    TIM_HandleTypeDef* tim_handle = static_cast<TIM_HandleTypeDef*>(htim_);
     HAL_TIM_PWM_Stop(tim_handle, TIM_CHANNEL_1);
     HAL_TIM_PWM_Stop(tim_handle, TIM_CHANNEL_2);
     HAL_TIM_PWM_Stop(tim_handle, TIM_CHANNEL_3);
@@ -138,31 +150,11 @@ void STM32PWM::emergencyStop() {
 #endif
 }
 
-uint32_t STM32PWM::getFrequency() const {
-    return pwm_frequency_;
+uint32_t Stm32Pwm::getFrequency() const {
+    return frequency_;
 }
 
-void STM32PWM::calculateTimerSettings() {
-#ifdef STM32G4
-    uint32_t timer_clock = HAL_RCC_GetPCLK2Freq() * 2;
-    
-    timer_prescaler_ = 0;
-    timer_period_ = (timer_clock / pwm_frequency_) - 1;
-    
-    while (timer_period_ > 65535) {
-        timer_prescaler_++;
-        timer_period_ = (timer_clock / ((timer_prescaler_ + 1) * pwm_frequency_)) - 1;
-    }
-    
-    max_duty_cycle_ = static_cast<uint32_t>(timer_period_ * 0.95f);
-#else
-    timer_prescaler_ = 0;
-    timer_period_ = 4249;  // Example for 20kHz at 170MHz
-    max_duty_cycle_ = 4000;
-#endif
-}
-
-uint32_t STM32PWM::getTimerChannel(PwmChannel channel) const {
+uint32_t Stm32Pwm::getTimChannel(PwmChannel channel) {
 #ifdef STM32G4
     switch (channel) {
         case PwmChannel::PHASE_U: return TIM_CHANNEL_1;
@@ -175,4 +167,11 @@ uint32_t STM32PWM::getTimerChannel(PwmChannel channel) const {
 #endif
 }
 
+uint32_t Stm32Pwm::calculateCompareValue(float duty_cycle) {
+    uint32_t compare_value = static_cast<uint32_t>(duty_cycle * period_);
+    // Limit to 95% to ensure proper PWM operation
+    uint32_t max_value = static_cast<uint32_t>(period_ * 0.95f);
+    return (compare_value > max_value) ? max_value : compare_value;
 }
+
+} // namespace libecu

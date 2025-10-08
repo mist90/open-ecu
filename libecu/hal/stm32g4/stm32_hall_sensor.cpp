@@ -1,4 +1,9 @@
-#include "../include/hal/stm32g4/stm32_hall_sensor.hpp"
+/**
+ * @file stm32_hall_sensor.cpp
+ * @brief STM32G4 GPIO-based Hall sensor implementation
+ */
+
+#include "stm32_hall_sensor.hpp"
 
 #ifdef STM32G4
 #include "../../Core/Inc/main.h"
@@ -15,59 +20,53 @@ extern GPIO_TypeDef GPIOB_Mock;
 
 namespace libecu {
 
-STM32HallSensor::STM32HallSensor() 
-    : a_pin_(GPIO_PIN_6), b_pin_(GPIO_PIN_7), z_pin_(GPIO_PIN_8),
-      a_port_(GPIOB), b_port_(GPIOB), z_port_(GPIOB),
-      last_valid_state_{false, false, false}, invalid_count_(0) {
+// Hall state to motor position lookup table
+const MotorPosition Stm32HallSensor::POSITION_TABLE[8] = {
+    MotorPosition::INVALID,    // 000
+    MotorPosition::POSITION_1, // 001
+    MotorPosition::POSITION_2, // 010
+    MotorPosition::POSITION_3, // 011
+    MotorPosition::POSITION_4, // 100
+    MotorPosition::POSITION_5, // 101
+    MotorPosition::POSITION_6, // 110
+    MotorPosition::INVALID     // 111
+};
+
+Stm32HallSensor::Stm32HallSensor(const HallGpioConfig& config)
+    : config_(config), last_state_{false, false, false}, state_change_count_(0) {
 }
 
-STM32HallSensor::~STM32HallSensor() {
-}
-
-bool STM32HallSensor::initialize() {
+bool Stm32HallSensor::initialize() {
     return true;
 }
 
-HallState STM32HallSensor::readState() {
+HallState Stm32HallSensor::readState() {
     HallState state;
     
-    state.hall_a = readPin(a_port_, a_pin_);
-    state.hall_b = readPin(b_port_, b_pin_);
-    state.hall_c = readPin(z_port_, z_pin_);
+    state.hall_a = readGpioPin(config_.gpio_port, config_.hall_a_pin);
+    state.hall_b = readGpioPin(config_.gpio_port, config_.hall_b_pin);
+    state.hall_c = readGpioPin(config_.gpio_port, config_.hall_c_pin);
     
-    if (isValidState(state)) {
-        last_valid_state_ = state;
-        invalid_count_ = 0;
-    } else {
-        invalid_count_++;
-        if (invalid_count_ < 5) {
-            state = last_valid_state_;
-        }
+    // Track state changes
+    if (state.getValue() != last_state_.getValue()) {
+        state_change_count_++;
+        last_state_ = state;
     }
     
     return state;
 }
 
-MotorPosition STM32HallSensor::getPosition(const HallState& state) {
+MotorPosition Stm32HallSensor::getPosition(const HallState& state) {
     uint8_t hall_value = state.getValue();
-    
-    switch (hall_value) {
-        case 1: return MotorPosition::POSITION_1;  // 001
-        case 2: return MotorPosition::POSITION_2;  // 010
-        case 3: return MotorPosition::POSITION_3;  // 011
-        case 4: return MotorPosition::POSITION_4;  // 100
-        case 5: return MotorPosition::POSITION_5;  // 101
-        case 6: return MotorPosition::POSITION_6;  // 110
-        default: return MotorPosition::INVALID;
-    }
+    return POSITION_TABLE[hall_value & 0x07];
 }
 
-bool STM32HallSensor::isValidState(const HallState& state) {
+bool Stm32HallSensor::isValidState(const HallState& state) {
     uint8_t hall_value = state.getValue();
     return (hall_value >= 1 && hall_value <= 6);
 }
 
-bool STM32HallSensor::readPin(void* port, uint32_t pin) const {
+bool Stm32HallSensor::readGpioPin(void* port, uint16_t pin) {
 #ifdef STM32G4
     return HAL_GPIO_ReadPin(static_cast<GPIO_TypeDef*>(port), pin) == GPIO_PIN_SET;
 #else
@@ -76,4 +75,4 @@ bool STM32HallSensor::readPin(void* port, uint32_t pin) const {
 #endif
 }
 
-}
+} // namespace libecu

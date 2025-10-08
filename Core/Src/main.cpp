@@ -17,15 +17,15 @@
   */
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
-#include "main.h"
+#include "../Inc/main.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #ifdef STM32G4
 #include "../../libecu/include/libecu.hpp"
 #include "../../libecu/include/bldc_controller.hpp"
-#include "../../libecu/include/hal/stm32g4/stm32_pwm.hpp"
-#include "../../libecu/include/hal/stm32g4/stm32_hall_sensor.hpp"
+#include "../../libecu/hal/stm32g4/stm32_pwm.hpp"
+#include "../../libecu/hal/stm32g4/stm32_hall_sensor.hpp"
 #include "../../libecu/include/algorithms/commutation_controller.hpp"
 #include "../../libecu/include/algorithms/pid_controller.hpp"
 #include "../../libecu/include/safety/safety_monitor.hpp"
@@ -55,8 +55,9 @@ UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
 #ifdef STM32G4
-static libecu::STM32PWM pwm_driver;
-static libecu::STM32HallSensor hall_sensor;
+static libecu::Stm32Pwm pwm_driver(&htim1);
+static libecu::HallGpioConfig hall_config{A__GPIO_Port, A__Pin, B__Pin, Z__Pin};
+static libecu::Stm32HallSensor hall_sensor(hall_config);
 static libecu::CommutationController* commutation_controller = nullptr;
 static libecu::PidController* pid_controller = nullptr;
 static libecu::SafetyMonitor* safety_monitor = nullptr;

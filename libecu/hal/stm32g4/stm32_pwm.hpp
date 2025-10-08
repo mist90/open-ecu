@@ -8,9 +8,6 @@
 
 #include "../../include/interfaces/pwm_interface.hpp"
 
-// Forward declaration to avoid including STM32 HAL headers
-struct TIM_HandleTypeDef;
-
 namespace libecu {
 
 /**
@@ -20,9 +17,9 @@ class Stm32Pwm : public PwmInterface {
 public:
     /**
      * @brief Constructor
-     * @param htim Timer handle (TIM1)
+     * @param htim Timer handle (TIM1) - pass as void* to avoid header dependencies
      */
-    explicit Stm32Pwm(TIM_HandleTypeDef* htim);
+    explicit Stm32Pwm(void* htim);
 
     // PwmInterface implementation
     bool initialize(uint32_t frequency) override;
@@ -33,7 +30,7 @@ public:
     uint32_t getFrequency() const override;
 
 private:
-    TIM_HandleTypeDef* htim_;
+    void* htim_;
     uint32_t frequency_;
     uint32_t period_;
     bool enabled_;
