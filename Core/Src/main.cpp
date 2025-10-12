@@ -119,7 +119,6 @@ int main(void)
   MX_OPAMP2_Init();
   MX_OPAMP3_Init();
     /* USER CODE BEGIN 2 */
-    
 #ifdef STM32G4
     // Initialize motor control components
     if (!pwm_driver.initialize(20000)) {  // 20kHz PWM
@@ -163,6 +162,9 @@ int main(void)
     if (!motor_controller->initialize()) {
         Error_Handler();
     }
+    motor_controller->setControlMode(libecu::ControlMode::OPEN_LOOP);
+    motor_controller->setDutyCycle(0.1);
+    motor_controller->start();
     
     // Setup 100Hz control loop with SysTick
     HAL_SYSTICK_Config(SystemCoreClock / 100);
@@ -197,7 +199,7 @@ int main(void)
               safety_data.hall_fault = false;      // Would check hall sensors
               
               // Update motor controller with safety data
-              motor_controller->setTargetSpeed(1000.0f);  // 1000 RPM
+              motor_controller->setTargetSpeed(10.0f);  // 10 RPM
               motor_controller->update(safety_data);
               
               // Basic safety check every 10 control cycles

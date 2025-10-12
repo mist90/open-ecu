@@ -46,7 +46,7 @@
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN PFP */
-
+void HAL_SYSTICK_Callback(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -187,7 +187,7 @@ void SysTick_Handler(void)
   /* USER CODE END SysTick_IRQn 0 */
   HAL_IncTick();
   /* USER CODE BEGIN SysTick_IRQn 1 */
-
+  HAL_SYSTICK_Callback();
   /* USER CODE END SysTick_IRQn 1 */
 }
 
