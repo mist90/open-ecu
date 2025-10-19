@@ -89,6 +89,8 @@ public:
     /**
      * @brief Set duty cycle for open-loop control
      * @param duty_cycle Duty cycle (0.0 to 1.0)
+     *                   0.0 = 0V output (no torque)
+     *                   1.0 = maximum voltage output (full torque)
      */
     void setDutyCycle(float duty_cycle);
 

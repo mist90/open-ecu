@@ -22,7 +22,8 @@ public:
     explicit Stm32Pwm(void* htim);
 
     // PwmInterface implementation
-    bool initialize(uint32_t frequency) override;
+    bool initialize(uint32_t frequency, uint16_t dead_time_ns) override;
+    void setChannelState(PwmChannel channel, PwmState state, float delta = 0.0f) override;
     void setDutyCycle(PwmChannel channel, float duty_cycle) override;
     void setState(PwmChannel channel, PwmState state) override;
     void enable(bool enable) override;
@@ -33,6 +34,7 @@ private:
     void* htim_;
     uint32_t frequency_;
     uint32_t period_;
+    uint16_t dead_time_ns_;
     bool enabled_;
     
     /**

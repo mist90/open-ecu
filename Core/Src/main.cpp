@@ -29,6 +29,10 @@
 #include "../../libecu/include/algorithms/commutation_controller.hpp"
 #include "../../libecu/include/algorithms/pid_controller.hpp"
 #include "../../libecu/include/safety/safety_monitor.hpp"
+#include <stdint.h>
+#include <stddef.h>
+#include <string.h>
+#include <stdio.h>
 #endif
 /* USER CODE END Includes */
 
@@ -81,7 +85,23 @@ static void MX_OPAMP3_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+extern "C" {
+int __io_putchar(int ch)
+{
+	HAL_UART_Transmit(&huart2, (uint8_t*)&ch, 1, 180);
+	return (int)ch;
+}
 
+int __io_getchar(void)
+{
+	uint8_t byte;
+
+	if (HAL_UART_Receive(&huart2, &byte, 1, 0) == HAL_OK)
+		return (int)byte;
+	else
+		return (int)EOF;
+}
+}
 /* USER CODE END 0 */
 
 /**
@@ -121,7 +141,7 @@ int main(void)
     /* USER CODE BEGIN 2 */
 #ifdef STM32G4
     // Initialize motor control components
-    if (!pwm_driver.initialize(20000)) {  // 20kHz PWM
+    if (!pwm_driver.initialize(20000, 100)) {  // 20kHz PWM, 100ns dead-time
         Error_Handler();
     }
     

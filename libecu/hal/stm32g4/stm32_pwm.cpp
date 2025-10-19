@@ -22,11 +22,12 @@ static TIM_HandleTypeDef_Impl mock_timer;
 namespace libecu {
 
 Stm32Pwm::Stm32Pwm(void* htim) 
-    : htim_(htim), frequency_(20000), period_(0), enabled_(false) {
+    : htim_(htim), frequency_(20000), period_(0), dead_time_ns_(100), enabled_(false) {
 }
 
-bool Stm32Pwm::initialize(uint32_t frequency) {
+bool Stm32Pwm::initialize(uint32_t frequency, uint16_t dead_time_ns) {
     frequency_ = frequency;
+    dead_time_ns_ = dead_time_ns;
     
 #ifdef STM32G4
     // Calculate timer settings
@@ -62,6 +63,36 @@ bool Stm32Pwm::initialize(uint32_t frequency) {
         HAL_TIM_PWM_ConfigChannel(tim_handle, &sConfigOC, TIM_CHANNEL_3) != HAL_OK) {
         return false;
     }
+    
+    // Configure dead-time for complementary PWM outputs
+    TIM_BreakDeadTimeConfigTypeDef sBreakDeadTimeConfig = {0};
+    sBreakDeadTimeConfig.OffStateRunMode = TIM_OSSR_DISABLE;
+    sBreakDeadTimeConfig.OffStateIDLEMode = TIM_OSSI_DISABLE;
+    sBreakDeadTimeConfig.LockLevel = TIM_LOCKLEVEL_OFF;
+    
+    // Calculate dead-time register value
+    // TIM1 clock is typically 170MHz, dead-time units depend on TDTS
+    uint32_t tim_clock = HAL_RCC_GetPCLK2Freq() * 2;  // 170MHz typically
+    uint32_t dead_time_ticks = (dead_time_ns_ * tim_clock) / 1000000000UL;
+    
+    // STM32 dead-time has different ranges based on DTG[7:0] value
+    if (dead_time_ticks <= 127) {
+        sBreakDeadTimeConfig.DeadTime = dead_time_ticks;
+    } else if (dead_time_ticks <= 254) {
+        sBreakDeadTimeConfig.DeadTime = 0x80 | ((dead_time_ticks - 128) / 2);
+    } else if (dead_time_ticks <= 504) {
+        sBreakDeadTimeConfig.DeadTime = 0xC0 | ((dead_time_ticks - 256) / 8);
+    } else {
+        sBreakDeadTimeConfig.DeadTime = 0xE0 | ((dead_time_ticks - 512) / 16);
+    }
+    
+    sBreakDeadTimeConfig.BreakState = TIM_BREAK_DISABLE;
+    sBreakDeadTimeConfig.BreakPolarity = TIM_BREAKPOLARITY_HIGH;
+    sBreakDeadTimeConfig.AutomaticOutput = TIM_AUTOMATICOUTPUT_DISABLE;
+    
+    if (HAL_TIMEx_ConfigBreakDeadTime(tim_handle, &sBreakDeadTimeConfig) != HAL_OK) {
+        return false;
+    }
 #else
     period_ = 4249;  // Mock value for testing
 #endif
@@ -83,33 +114,51 @@ void Stm32Pwm::setDutyCycle(PwmChannel channel, float duty_cycle) {
 #endif
 }
 
-void Stm32Pwm::setState(PwmChannel channel, PwmState state) {
+void Stm32Pwm::setChannelState(PwmChannel channel, PwmState state, float delta) {
+    // Clamp delta to valid range
+    if (delta < 0.0f) delta = 0.0f;
+    if (delta > 0.5f) delta = 0.5f;
+    
 #ifdef STM32G4
     TIM_HandleTypeDef* tim_handle = static_cast<TIM_HandleTypeDef*>(htim_);
     uint32_t tim_channel = getTimChannel(channel);
     
     switch (state) {
         case PwmState::OFF:
+            // Disable both high-side and low-side (complementary) outputs
             HAL_TIM_PWM_Stop(tim_handle, tim_channel);
             HAL_TIMEx_PWMN_Stop(tim_handle, tim_channel);
+            __HAL_TIM_SET_COMPARE(tim_handle, tim_channel, 0);
             break;
             
-        case PwmState::HIGH_SIDE:
-            HAL_TIM_PWM_Start(tim_handle, tim_channel);
-            HAL_TIMEx_PWMN_Stop(tim_handle, tim_channel);
+        case PwmState::UP:
+            // Complementary PWM at 50% + delta (positive direction)
+            {
+                float duty_cycle = 0.5f + delta;
+                uint32_t compare_value = calculateCompareValue(duty_cycle);
+                __HAL_TIM_SET_COMPARE(tim_handle, tim_channel, compare_value);
+                HAL_TIM_PWM_Start(tim_handle, tim_channel);
+                HAL_TIMEx_PWMN_Start(tim_handle, tim_channel);
+            }
             break;
             
-        case PwmState::LOW_SIDE:
-            HAL_TIM_PWM_Stop(tim_handle, tim_channel);
-            HAL_TIMEx_PWMN_Start(tim_handle, tim_channel);
-            break;
-            
-        case PwmState::FLOATING:
-            HAL_TIM_PWM_Stop(tim_handle, tim_channel);
-            HAL_TIMEx_PWMN_Stop(tim_handle, tim_channel);
+        case PwmState::DOWN:
+            // Complementary PWM at 50% - delta (negative direction)
+            {
+                float duty_cycle = 0.5f - delta;
+                uint32_t compare_value = calculateCompareValue(duty_cycle);
+                __HAL_TIM_SET_COMPARE(tim_handle, tim_channel, compare_value);
+                HAL_TIM_PWM_Start(tim_handle, tim_channel);
+                HAL_TIMEx_PWMN_Start(tim_handle, tim_channel);
+            }
             break;
     }
 #endif
+}
+
+void Stm32Pwm::setState(PwmChannel channel, PwmState state) {
+    // Legacy method - use setChannelState with default delta
+    setChannelState(channel, state, 0.0f);
 }
 
 void Stm32Pwm::enable(bool enable) {

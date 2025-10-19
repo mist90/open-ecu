@@ -51,6 +51,8 @@ public:
     /**
      * @brief Update commutation based on Hall sensor state
      * @param duty_cycle Motor duty cycle (0.0 to 1.0)
+     *                   0.0 = 0V output (neutral, no torque)
+     *                   1.0 = maximum voltage output (full torque)
      * @param direction Rotation direction
      * @return true if commutation updated successfully
      */
@@ -101,7 +103,8 @@ private:
     /**
      * @brief Apply commutation step
      * @param step Commutation step
-     * @param duty_cycle Duty cycle
+     * @param duty_cycle Duty cycle (0.0 to 1.0)
+     *                   0.0 = 0V output, 1.0 = maximum voltage
      */
     void applyCommutationStep(const CommutationStep& step, float duty_cycle);
 };
