@@ -104,9 +104,16 @@ void BldcController::update(const SafetyData& safety_data)
         }
     }
     
-    // Update commutation
+    // Update commutation based on control mode
     status_.duty_cycle = target_duty_cycle;
-    commutation_controller_.update(target_duty_cycle, direction_);
+    
+    if (status_.mode == ControlMode::OPEN_LOOP) {
+        // Use target speed for open-loop control
+        commutation_controller_.updateOpenLoop(target_duty_cycle, status_.target_speed_rpm, direction_);
+    } else {
+        // Use Hall sensor feedback for closed-loop control
+        commutation_controller_.update(target_duty_cycle, direction_);
+    }
 }
 
 void BldcController::setTargetSpeed(float speed_rpm)

@@ -119,7 +119,8 @@ int main() {
     MockHallSensor hall_interface;
     
     // Create controllers
-    CommutationController commutation_controller(pwm_interface, hall_interface);
+    // Using 2 pole pairs (4-pole motor) as default
+    CommutationController commutation_controller(pwm_interface, hall_interface, 2);
     
     // Configure PID controller
     PidParameters pid_params;

@@ -150,7 +150,8 @@ int main(void)
     }
     
     // Create component instances
-    commutation_controller = new libecu::CommutationController(pwm_driver, hall_sensor);
+    // Using 2 pole pairs (4-pole motor) as default
+    commutation_controller = new libecu::CommutationController(pwm_driver, hall_sensor, 8);
     
     libecu::PidParameters pid_params;
     pid_params.kp = 0.5f;
@@ -186,8 +187,8 @@ int main(void)
     motor_controller->setDutyCycle(0.1);
     motor_controller->start();
     
-    // Setup 100Hz control loop with SysTick
-    HAL_SYSTICK_Config(SystemCoreClock / 100);
+    // Setup 1000Hz control loop with SysTick
+    HAL_SYSTICK_Config(SystemCoreClock / 1000);
 #endif
 
     /* USER CODE END 2 */
@@ -201,7 +202,7 @@ int main(void)
       /* USER CODE END WHILE */
 
       /* USER CODE BEGIN 3 */
-      
+      motor_controller->setTargetSpeed(0.1f);
 #ifdef STM32G4
       // 100Hz motor control loop
       if (control_tick) {
@@ -219,7 +220,6 @@ int main(void)
               safety_data.hall_fault = false;      // Would check hall sensors
               
               // Update motor controller with safety data
-              motor_controller->setTargetSpeed(10.0f);  // 10 RPM
               motor_controller->update(safety_data);
               
               // Basic safety check every 10 control cycles
@@ -529,14 +529,7 @@ static void MX_GPIO_Init(void)
  * @brief SysTick interrupt handler for 100Hz control loop
  */
 void HAL_SYSTICK_Callback(void) {
-    static uint32_t tick_divider = 0;
-    
-    // Generate 100Hz control tick from 1kHz SysTick
-    tick_divider++;
-    if (tick_divider >= 10) {
-        tick_divider = 0;
-        control_tick = true;
-    }
+    control_tick = true;
 }
 #endif
 
