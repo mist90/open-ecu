@@ -4,7 +4,6 @@
  */
 
 #include "../include/algorithms/commutation_controller.hpp"
-#include <stdio.h>
 
 extern "C" {
 uint32_t HAL_GetTick(void);
@@ -126,17 +125,6 @@ bool CommutationController::updateOpenLoop(float duty_cycle, float target_speed_
         is_running_ = true;
     }
 
-    // Read current Hall sensor state
-    HallState hall_state = hall_interface_.readState();
-    // Get motor position from Hall state
-    libecu::MotorPosition pos = hall_interface_.getPosition(hall_state);
-    if (pos == MotorPosition::INVALID) {
-        return false;
-    }
-    // Get commutation step from position
-    uint8_t real_step = getStepFromPosition(pos, direction);
-    printf("t=%lu,vs=%hu,rs=%hu\n", current_time_us / 1000, current_step_, real_step);
-    
     // Select appropriate commutation table
     const CommutationStep* table = (direction == RotationDirection::CLOCKWISE) ? 
                                    COMMUTATION_TABLE_CW : COMMUTATION_TABLE_CCW;

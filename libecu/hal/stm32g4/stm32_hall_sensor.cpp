@@ -23,12 +23,12 @@ namespace libecu {
 // Hall state to motor position lookup table
 const MotorPosition Stm32HallSensor::POSITION_TABLE[8] = {
     MotorPosition::INVALID,    // 000
-    MotorPosition::POSITION_1, // 001
-    MotorPosition::POSITION_2, // 010
-    MotorPosition::POSITION_3, // 011
-    MotorPosition::POSITION_4, // 100
-    MotorPosition::POSITION_5, // 101
-    MotorPosition::POSITION_6, // 110
+    MotorPosition::POSITION_4, // 001
+    MotorPosition::POSITION_6, // 010
+    MotorPosition::POSITION_5, // 011
+    MotorPosition::POSITION_2, // 100
+    MotorPosition::POSITION_3, // 101
+    MotorPosition::POSITION_1, // 110
     MotorPosition::INVALID     // 111
 };
 

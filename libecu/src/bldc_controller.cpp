@@ -5,6 +5,7 @@
 
 #include "../include/bldc_controller.hpp"
 #include <algorithm>
+#include <stdio.h>
 
 namespace libecu {
 

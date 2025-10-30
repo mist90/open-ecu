@@ -171,7 +171,7 @@ int main(void)
     safety_monitor = new libecu::SafetyMonitor(safety_limits);
     
     libecu::MotorControlParams motor_params;
-    motor_params.max_duty_cycle = 0.95f;    // 95% max duty cycle
+    motor_params.max_duty_cycle = 0.3f;    // 95% max duty cycle
     motor_params.max_speed_rpm = 3000.0f;   // 3000 RPM max
     motor_params.acceleration_rate = 1000.0f; // 1000 RPM/s accel
     motor_params.control_frequency = 100;    // 100Hz control loop
@@ -202,7 +202,7 @@ int main(void)
       /* USER CODE END WHILE */
 
       /* USER CODE BEGIN 3 */
-      motor_controller->setTargetSpeed(0.1f);
+      motor_controller->setTargetSpeed(0.5f);
 #ifdef STM32G4
       // 100Hz motor control loop
       if (control_tick) {

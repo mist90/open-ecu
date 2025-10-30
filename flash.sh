@@ -14,7 +14,7 @@ echo "================================"
 
 # Parse command line arguments
 BUILD_TYPE="Debug"
-METHOD="stlink"
+METHOD="openocd"
 VERIFY=false
 
 while [[ $# -gt 0 ]]; do
