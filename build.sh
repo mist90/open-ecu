@@ -122,8 +122,8 @@ fi
 echo -e "${GREEN}Build completed successfully!${NC}"
 echo
 echo -e "${GREEN}Generated files:${NC}"
-echo "  Firmware: open-ecu2.elf"
-echo "  Intel HEX: open-ecu2.hex"
-echo "  Binary: open-ecu2.bin"
+echo "  Firmware: open-ecu.elf"
+echo "  Intel HEX: open-ecu.hex"
+echo "  Binary: open-ecu.bin"
 echo
-echo "Flash command: st-flash write open-ecu2.bin 0x8000000"
+echo "Flash command: st-flash write open-ecu.bin 0x8000000"

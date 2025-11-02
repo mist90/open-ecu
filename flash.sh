@@ -61,9 +61,9 @@ if [[ ! -d $BUILD_DIR ]]; then
 fi
 
 # Check if firmware file exists
-FIRMWARE_ELF="$BUILD_DIR/open-ecu2.elf"
-FIRMWARE_BIN="$BUILD_DIR/open-ecu2.bin"
-FIRMWARE_HEX="$BUILD_DIR/open-ecu2.hex"
+FIRMWARE_ELF="$BUILD_DIR/open-ecu.elf"
+FIRMWARE_BIN="$BUILD_DIR/open-ecu.bin"
+FIRMWARE_HEX="$BUILD_DIR/open-ecu.hex"
 
 if [[ ! -f $FIRMWARE_BIN ]]; then
     echo -e "${RED}Error: Firmware binary $FIRMWARE_BIN not found!${NC}"

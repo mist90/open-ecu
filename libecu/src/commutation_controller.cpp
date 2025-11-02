@@ -62,19 +62,39 @@ bool CommutationController::initialize(uint32_t pwm_frequency)
     return true;
 }
 
-bool CommutationController::update(float duty_cycle, RotationDirection direction)
+uint8_t CommutationController::getCurrentPosition()
 {
     // Read current Hall sensor state
     HallState hall_state = hall_interface_.readState();
     
     // Check if Hall state is valid
     if (!hall_interface_.isValidState(hall_state)) {
-        return false;
+        return 0xFF; // Invalid position
     }
     
     // Get motor position from Hall state
     current_position_ = hall_interface_.getPosition(hall_state);
     if (current_position_ == MotorPosition::INVALID) {
+        return 0xFF; // Invalid position
+    }
+    
+    // Convert MotorPosition to 0-5 range
+    // POSITION_1=1 -> 0, POSITION_2=2 -> 1, ..., POSITION_6=6 -> 5
+    if (current_position_ >= MotorPosition::POSITION_1 && 
+        current_position_ <= MotorPosition::POSITION_6) {
+        return static_cast<uint8_t>(current_position_) - 1;
+    }
+    
+    return 0xFF; // Invalid position
+}
+
+bool CommutationController::update(float duty_cycle, RotationDirection direction)
+{
+    // Get current position (0-5 range)
+    uint8_t position = getCurrentPosition();
+    
+    // Check if position is valid
+    if (position == 0xFF) {
         return false;
     }
     

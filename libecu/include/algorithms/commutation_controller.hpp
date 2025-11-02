@@ -74,10 +74,10 @@ public:
     void emergencyStop();
 
     /**
-     * @brief Get current motor position
-     * @return Current motor position
+     * @brief Get current motor position (0-5 range)
+     * @return Current motor position as step index (0-5), or 0xFF if invalid
      */
-    MotorPosition getCurrentPosition() const { return current_position_; }
+    uint8_t getCurrentPosition();
 
     /**
      * @brief Get current commutation step

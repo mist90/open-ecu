@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.16)
 set(CMAKE_TOOLCHAIN_FILE ${CMAKE_CURRENT_SOURCE_DIR}/cmake/arm-none-eabi-gcc.cmake)
 
 # Project configuration
-project(open-ecu2 C CXX ASM)
+project(open-ecu C CXX ASM)
 set(CMAKE_C_STANDARD 17)
 set(CMAKE_CXX_STANDARD 17)
 
@@ -58,7 +58,8 @@ set(CMAKE_C_FLAGS_RELEASE "-Os -DNDEBUG")
 set(CMAKE_CXX_FLAGS_RELEASE "-Os -DNDEBUG")
 
 # Linker flags
-set(CMAKE_EXE_LINKER_FLAGS "${CPU_PARAMS_STR} --specs=nano.specs --specs=nosys.specs -Wl,--gc-sections -static -Wl,--start-group -lc -lm -Wl,--end-group")
+set(CMAKE_EXE_LINKER_FLAGS "${CPU_PARAMS_STR} --specs=nano.specs --specs=nosys.specs -u _printf_float -u _scanf_float -Wl,--gc-sections -static -Wl,--start-group -lc -lm -Wl,--end-group")
+
 
 # Set linker script
 set(LINKER_SCRIPT ${CMAKE_CURRENT_SOURCE_DIR}/STM32G431CBUX_FLASH.ld)

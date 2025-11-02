@@ -7,6 +7,16 @@
 #include <algorithm>
 #include <stdio.h>
 
+// Speed measurement configuration
+#define SPEED_WINDOW_MIN_MS       10    ///< Minimum measurement window (ms)
+#define SPEED_WINDOW_MAX_MS       5000  ///< Maximum measurement window (ms)
+#define SPEED_MIN_STEPS           4     ///< Minimum steps required for valid speed measurement
+#define SPEED_STEPS_PER_REVOLUTION 24   ///< Total steps per mechanical revolution (6 * num_poles / 2)
+
+extern "C" {
+uint32_t HAL_GetTick(void);
+}
+
 namespace libecu {
 
 BldcController::BldcController(
@@ -23,9 +33,14 @@ BldcController::BldcController(
     , safety_monitor_(safety_monitor)
     , params_(params)
     , direction_(RotationDirection::CLOCKWISE)
-    , last_hall_time_(0)
-    , hall_period_(0)
     , initialized_(false)
+    , speed_first_position_(0)
+    , speed_last_position_(0)
+    , speed_first_time_ms_(0)
+    , speed_last_time_ms_(0)
+    , speed_step_count_(0)
+    , speed_window_min_ms_(SPEED_WINDOW_MIN_MS)
+    , speed_measurement_active_(false)
 {
     // Initialize status
     status_.current_speed_rpm = 0.0f;
@@ -72,7 +87,17 @@ void BldcController::update(const SafetyData& safety_data)
     
     // Calculate current motor speed
     status_.current_speed_rpm = calculateSpeed();
-    status_.position = commutation_controller_.getCurrentPosition();
+    
+    // Update position status (convert from internal current_position_)
+    // This is updated by calculateSpeed() internally
+    if (speed_measurement_active_) {
+        // Convert 0-5 range to MotorPosition enum
+        if (speed_last_position_ <= 5) {
+            status_.position = static_cast<MotorPosition>(speed_last_position_ + 1);
+        } else {
+            status_.position = MotorPosition::INVALID;
+        }
+    }
     
     // Control loop based on mode
     float target_duty_cycle = 0.0f;
@@ -153,6 +178,11 @@ void BldcController::start()
     if (status_.active_fault == SafetyFault::NONE) {
         status_.is_running = true;
         pwm_interface_.enable(true);
+        
+        // Reset speed measurement on motor start
+        speed_measurement_active_ = false;
+        speed_step_count_ = 0;
+        speed_window_min_ms_ = SPEED_WINDOW_MIN_MS;
     }
 }
 
@@ -161,6 +191,11 @@ void BldcController::stop()
     status_.is_running = false;
     status_.duty_cycle = 0.0f;
     commutation_controller_.update(0.0f, direction_);
+    
+    // Reset speed measurement on motor stop
+    speed_measurement_active_ = false;
+    speed_step_count_ = 0;
+    status_.current_speed_rpm = 0.0f;
 }
 
 void BldcController::emergencyStop()
@@ -188,20 +223,141 @@ void BldcController::clearFault(SafetyFault fault)
 
 float BldcController::calculateSpeed()
 {
-    // This is a simplified speed calculation
-    // In a real implementation, you would measure the time between Hall transitions
-    // and calculate RPM based on motor pole pairs
+    /**
+     * Adaptive speed measurement algorithm for BLDC motors
+     * 
+     * Algorithm overview:
+     * 1. Track rotor position changes over time (0..5 cyclic from Hall sensors)
+     * 2. Use adaptive time window to handle wide speed range (slow to fast)
+     * 3. Accumulate steps in current direction
+     * 4. When window reaches minimum duration AND minimum steps accumulated:
+     *    - Calculate speed from steps/time
+     *    - Reset window to minimum
+     * 5. If not enough steps in minimum window:
+     *    - Double the window size (up to maximum)
+     * 6. If maximum window reached with insufficient steps:
+     *    - Motor is stopped (speed = 0)
+     * 7. Handle direction reversals:
+     *    - Subtract reversed steps from accumulator
+     *    - Reduce window size
+     *    - If reversed past starting point, flip measurement direction
+     */
     
-    if (hall_period_ == 0) {
+    // Get current position (0..5 cyclic) from CommutationController
+    uint8_t current_position = commutation_controller_.getCurrentPosition();
+    
+    // Check if position is valid
+    if (current_position == 0xFF) {
+        // Invalid position, return last known speed
+        return status_.current_speed_rpm;
+    }
+    
+    uint32_t current_time_ms = HAL_GetTick();
+    
+    // Initialize measurement on first call
+    if (!speed_measurement_active_) {
+        speed_first_position_ = current_position;
+        speed_last_position_ = current_position;
+        speed_first_time_ms_ = current_time_ms;
+        speed_last_time_ms_ = current_time_ms;
+        speed_step_count_ = 0;
+        speed_window_min_ms_ = SPEED_WINDOW_MIN_MS;
+        speed_measurement_active_ = true;
         return 0.0f;
     }
     
-    // Assuming 6 Hall transitions per electrical revolution
-    // and motor has 1 pole pair (2 poles)
-    float electrical_freq = 1000000.0f / (hall_period_ * 6.0f); // Hz
-    float mechanical_rpm = electrical_freq * 60.0f; // RPM
+    // Check if position has changed
+    if (current_position != speed_last_position_) {
+        // Calculate step delta (handling cyclic 0..5 wrap-around)
+        int8_t delta = 0;
+        int8_t diff_forward = (current_position - speed_last_position_ + 6) % 6;
+        int8_t diff_backward = (speed_last_position_ - current_position + 6) % 6;
+        
+        // Determine direction of movement (choose shorter path)
+        if (diff_forward <= diff_backward) {
+            delta = diff_forward;  // Forward movement
+        } else {
+            delta = -diff_backward; // Backward movement
+        }
+        
+        // Check for direction reversal
+        if ((speed_step_count_ > 0 && delta < 0) || (speed_step_count_ < 0 && delta > 0)) {
+            // Direction reversed: subtract accumulated steps
+            speed_step_count_ += delta;
+            
+            // Reduce window (halve it, but keep at minimum)
+            speed_window_min_ms_ = (speed_window_min_ms_ > SPEED_WINDOW_MIN_MS * 2) ? 
+                                    speed_window_min_ms_ / 2 : SPEED_WINDOW_MIN_MS;
+            
+            // Check if we've gone backwards past the start
+            if ((speed_step_count_ > 0 && delta < 0 && 
+                 (current_time_ms < speed_first_time_ms_ || 
+                  current_position == speed_first_position_)) ||
+                (speed_step_count_ < 0 && delta > 0 && 
+                 (current_time_ms < speed_first_time_ms_ || 
+                  current_position == speed_first_position_))) {
+                // Last step went before first step - reverse measurement direction
+                speed_first_position_ = current_position;
+                speed_first_time_ms_ = current_time_ms;
+                speed_step_count_ = 0;
+                speed_window_min_ms_ = SPEED_WINDOW_MIN_MS;
+            }
+        } else {
+            // Same direction: accumulate steps
+            speed_step_count_ += delta;
+        }
+        
+        // Update last position and time
+        speed_last_position_ = current_position;
+        speed_last_time_ms_ = current_time_ms;
+    }
     
-    return mechanical_rpm;
+    // Calculate elapsed time since first measurement
+    uint32_t elapsed_time_ms = current_time_ms - speed_first_time_ms_;
+    
+    // Check if we have enough data to calculate speed
+    if (elapsed_time_ms >= speed_window_min_ms_) {
+        // Check if we have enough steps
+        int32_t abs_steps = (speed_step_count_ >= 0) ? speed_step_count_ : -speed_step_count_;
+        
+        if (abs_steps >= SPEED_MIN_STEPS) {
+            // Calculate speed in RPM
+            // speed_step_count_ steps in elapsed_time_ms milliseconds
+            // Each full revolution = SPEED_STEPS_PER_REVOLUTION steps
+            // RPM = (steps / elapsed_time_ms) * (1000 ms/s) * (60 s/min) / SPEED_STEPS_PER_REVOLUTION
+            
+            float speed_rpm = (static_cast<float>(speed_step_count_) * 60000.0f) / 
+                             (static_cast<float>(elapsed_time_ms) * SPEED_STEPS_PER_REVOLUTION);
+            
+            // Reset window to minimum for next measurement
+            speed_window_min_ms_ = SPEED_WINDOW_MIN_MS;
+            
+            // Reset measurement window
+            speed_first_position_ = speed_last_position_;
+            speed_first_time_ms_ = speed_last_time_ms_;
+            speed_step_count_ = 0;
+            
+            return speed_rpm;
+        } else {
+            // Not enough steps - double the window
+            if (speed_window_min_ms_ < SPEED_WINDOW_MAX_MS) {
+                speed_window_min_ms_ = speed_window_min_ms_ * 2;
+                if (speed_window_min_ms_ > SPEED_WINDOW_MAX_MS) {
+                    speed_window_min_ms_ = SPEED_WINDOW_MAX_MS;
+                }
+            } else {
+                // Maximum window reached and still not enough steps - motor is stopped
+                speed_first_position_ = speed_last_position_;
+                speed_first_time_ms_ = speed_last_time_ms_;
+                speed_step_count_ = 0;
+                speed_window_min_ms_ = SPEED_WINDOW_MIN_MS;
+                return 0.0f;
+            }
+        }
+    }
+    
+    // Not enough time elapsed yet, return last known speed
+    return status_.current_speed_rpm;
 }
 
 float BldcController::applyAccelerationLimit(float target_speed, float current_speed, float dt)

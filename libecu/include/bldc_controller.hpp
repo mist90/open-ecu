@@ -147,9 +147,16 @@ private:
     // State variables
     MotorStatus status_;
     RotationDirection direction_;
-    uint32_t last_hall_time_;
-    uint32_t hall_period_;
     bool initialized_;
+    
+    // Speed measurement state
+    uint8_t speed_first_position_;      ///< First position in measurement window
+    uint8_t speed_last_position_;       ///< Last position in measurement window
+    uint32_t speed_first_time_ms_;      ///< Time of first position (ms)
+    uint32_t speed_last_time_ms_;       ///< Time of last position (ms)
+    int32_t speed_step_count_;          ///< Accumulated step count (can be negative)
+    uint32_t speed_window_min_ms_;      ///< Current window minimum size (ms)
+    bool speed_measurement_active_;     ///< Speed measurement in progress
 
     /**
      * @brief Calculate motor speed from Hall sensor transitions

@@ -193,7 +193,7 @@ Development of a modular BLDC motor control system with platform-independent cor
 ## Code Organization
 
 ```
-open-ecu2/
+open-ecu/
 ├── Core/                   # STM32CubeMX generated code
 │   ├── Inc/
 │   └── Src/

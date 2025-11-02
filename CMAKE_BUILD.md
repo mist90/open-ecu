@@ -28,7 +28,7 @@ sudo apt install cppcheck clang-format
 ## Project Structure
 
 ```
-open-ecu2/
+open-ecu/
 ├── CMakeLists.txt              # Main CMake configuration
 ├── build.sh                    # Build script
 ├── flash.sh                    # Flash script
@@ -117,14 +117,14 @@ make VERBOSE=1
 ### Manual Flash Commands
 ```bash
 # ST-Link
-st-flash write build/open-ecu2.bin 0x8000000
+st-flash write build/open-ecu.bin 0x8000000
 
 # OpenOCD
 openocd -f interface/stlink.cfg -f target/stm32g4x.cfg \
-        -c "program build/open-ecu2.elf verify reset exit"
+        -c "program build/open-ecu.elf verify reset exit"
 
 # DFU (device in DFU mode)
-dfu-util -a 0 -s 0x08000000:leave -D build/open-ecu2.bin
+dfu-util -a 0 -s 0x08000000:leave -D build/open-ecu.bin
 ```
 
 ## CMake Configuration
@@ -261,8 +261,8 @@ Verification failed
 ./build.sh --release
 
 # Check size breakdown
-arm-none-eabi-nm --size-sort build/open-ecu2.elf
-arm-none-eabi-objdump -h build/open-ecu2.elf
+arm-none-eabi-nm --size-sort build/open-ecu.elf
+arm-none-eabi-objdump -h build/open-ecu.elf
 ```
 
 ### Debug Optimization
@@ -271,7 +271,7 @@ arm-none-eabi-objdump -h build/open-ecu2.elf
 ./build.sh
 
 # Generate assembly listing
-arm-none-eabi-objdump -S build/open-ecu2.elf > listing.txt
+arm-none-eabi-objdump -S build/open-ecu.elf > listing.txt
 ```
 
 ## IDE Integration
@@ -305,7 +305,7 @@ cmake -DCMAKE_BUILD_TYPE=Debug -DCUSTOM_DEFINE=1 ..
 make VERBOSE=1 2>&1 | grep "\.map"
 
 # Analyze with parser
-python scripts/analyze_memory.py build/open-ecu2.map
+python scripts/analyze_memory.py build/open-ecu.map
 ```
 
 ### Static Analysis
