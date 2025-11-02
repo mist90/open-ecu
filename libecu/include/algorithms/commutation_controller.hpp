@@ -108,14 +108,6 @@ private:
     static const CommutationStep COMMUTATION_TABLE_CCW[6];
     
     /**
-     * @brief Get commutation step from Hall position
-     * @param position Motor position
-     * @param direction Rotation direction
-     * @return Commutation step index (0-5)
-     */
-    uint8_t getStepFromPosition(MotorPosition position, RotationDirection direction);
-    
-    /**
      * @brief Apply commutation step
      * @param step Commutation step
      * @param duty_cycle Duty cycle (0.0 to 1.0)

@@ -73,16 +73,16 @@ uint8_t CommutationController::getCurrentPosition()
     }
     
     // Get motor position from Hall state
-    current_position_ = hall_interface_.getPosition(hall_state);
-    if (current_position_ == MotorPosition::INVALID) {
+    libecu::MotorPosition pos = hall_interface_.getPosition(hall_state);
+    if (pos == MotorPosition::INVALID) {
         return 0xFF; // Invalid position
     }
     
     // Convert MotorPosition to 0-5 range
     // POSITION_1=1 -> 0, POSITION_2=2 -> 1, ..., POSITION_6=6 -> 5
-    if (current_position_ >= MotorPosition::POSITION_1 && 
-        current_position_ <= MotorPosition::POSITION_6) {
-        return static_cast<uint8_t>(current_position_) - 1;
+    if (pos >= MotorPosition::POSITION_1 && 
+        pos <= MotorPosition::POSITION_6) {
+        return static_cast<uint8_t>(pos) - 1;
     }
     
     return 0xFF; // Invalid position
@@ -98,15 +98,12 @@ bool CommutationController::update(float duty_cycle, RotationDirection direction
         return false;
     }
     
-    // Get commutation step from position
-    current_step_ = getStepFromPosition(current_position_, direction);
-    
     // Select appropriate commutation table
     const CommutationStep* table = (direction == RotationDirection::CLOCKWISE) ? 
                                    COMMUTATION_TABLE_CW : COMMUTATION_TABLE_CCW;
     
     // Apply commutation step
-    applyCommutationStep(table[current_step_], duty_cycle);
+    applyCommutationStep(table[position], duty_cycle);
     
     is_running_ = true;
     return true;
@@ -163,20 +160,6 @@ void CommutationController::emergencyStop()
     current_position_ = MotorPosition::INVALID;
     last_step_time_us_ = 0;
     step_interval_us_ = 0;
-}
-
-uint8_t CommutationController::getStepFromPosition(MotorPosition position, RotationDirection direction)
-{
-    // Convert motor position to commutation step (0-5)
-    switch (position) {
-        case MotorPosition::POSITION_1: return (direction == RotationDirection::CLOCKWISE) ? 0 : 5;
-        case MotorPosition::POSITION_2: return (direction == RotationDirection::CLOCKWISE) ? 1 : 4;
-        case MotorPosition::POSITION_3: return (direction == RotationDirection::CLOCKWISE) ? 2 : 3;
-        case MotorPosition::POSITION_4: return (direction == RotationDirection::CLOCKWISE) ? 3 : 2;
-        case MotorPosition::POSITION_5: return (direction == RotationDirection::CLOCKWISE) ? 4 : 1;
-        case MotorPosition::POSITION_6: return (direction == RotationDirection::CLOCKWISE) ? 5 : 0;
-        default: return 0;
-    }
 }
 
 void CommutationController::applyCommutationStep(const CommutationStep& step, float duty_cycle)
