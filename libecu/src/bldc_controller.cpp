@@ -10,7 +10,7 @@
 // Speed measurement configuration
 #define SPEED_WINDOW_MIN_MS       10    ///< Minimum measurement window (ms)
 #define SPEED_WINDOW_MAX_MS       5000  ///< Maximum measurement window (ms)
-#define SPEED_MIN_STEPS           4     ///< Minimum steps required for valid speed measurement
+#define SPEED_MIN_STEPS           10     ///< Minimum steps required for valid speed measurement
 #define SPEED_STEPS_PER_REVOLUTION 24   ///< Total steps per mechanical revolution (6 * num_poles / 2)
 
 extern "C" {
@@ -98,6 +98,8 @@ void BldcController::update(const SafetyData& safety_data)
             status_.position = MotorPosition::INVALID;
         }
     }
+
+    //printf("p:%d,v:%f\n", (int)speed_last_position_, status_.current_speed_rpm);
     
     // Control loop based on mode
     float target_duty_cycle = 0.0f;
@@ -126,6 +128,7 @@ void BldcController::update(const SafetyData& safety_data)
                 
                 // Clamp to maximum duty cycle
                 target_duty_cycle = std::min(target_duty_cycle, params_.max_duty_cycle);
+                printf("s:%f,d:%f\n", status_.current_speed_rpm, target_duty_cycle);
                 break;
         }
     }
@@ -280,33 +283,8 @@ float BldcController::calculateSpeed()
             delta = -diff_backward; // Backward movement
         }
         
-        // Check for direction reversal
-        if ((speed_step_count_ > 0 && delta < 0) || (speed_step_count_ < 0 && delta > 0)) {
-            // Direction reversed: subtract accumulated steps
-            speed_step_count_ += delta;
-            
-            // Reduce window (halve it, but keep at minimum)
-            speed_window_min_ms_ = (speed_window_min_ms_ > SPEED_WINDOW_MIN_MS * 2) ? 
-                                    speed_window_min_ms_ / 2 : SPEED_WINDOW_MIN_MS;
-            
-            // Check if we've gone backwards past the start
-            if ((speed_step_count_ > 0 && delta < 0 && 
-                 (current_time_ms < speed_first_time_ms_ || 
-                  current_position == speed_first_position_)) ||
-                (speed_step_count_ < 0 && delta > 0 && 
-                 (current_time_ms < speed_first_time_ms_ || 
-                  current_position == speed_first_position_))) {
-                // Last step went before first step - reverse measurement direction
-                speed_first_position_ = current_position;
-                speed_first_time_ms_ = current_time_ms;
-                speed_step_count_ = 0;
-                speed_window_min_ms_ = SPEED_WINDOW_MIN_MS;
-            }
-        } else {
-            // Same direction: accumulate steps
-            speed_step_count_ += delta;
-        }
-        
+        speed_step_count_ += delta;
+
         // Update last position and time
         speed_last_position_ = current_position;
         speed_last_time_ms_ = current_time_ms;
@@ -326,7 +304,7 @@ float BldcController::calculateSpeed()
             // Each full revolution = SPEED_STEPS_PER_REVOLUTION steps
             // RPM = (steps / elapsed_time_ms) * (1000 ms/s) * (60 s/min) / SPEED_STEPS_PER_REVOLUTION
             
-            float speed_rpm = (static_cast<float>(speed_step_count_) * 60000.0f) / 
+            float speed_rpm = (static_cast<float>(speed_step_count_) * 1000.0f) / 
                              (static_cast<float>(elapsed_time_ms) * SPEED_STEPS_PER_REVOLUTION);
             
             // Reset window to minimum for next measurement
@@ -351,6 +329,7 @@ float BldcController::calculateSpeed()
                 speed_first_time_ms_ = speed_last_time_ms_;
                 speed_step_count_ = 0;
                 speed_window_min_ms_ = SPEED_WINDOW_MIN_MS;
+
                 return 0.0f;
             }
         }

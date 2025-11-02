@@ -154,9 +154,9 @@ int main(void)
     commutation_controller = new libecu::CommutationController(pwm_driver, hall_sensor, 8);
     
     libecu::PidParameters pid_params;
-    pid_params.kp = 0.5f;
-    pid_params.ki = 0.1f;
-    pid_params.kd = 0.01f;
+    pid_params.kp = 0.1f;
+    pid_params.ki = 0.05f;
+    pid_params.kd = 0.0f;
     pid_params.max_output = 1.0f;
     pid_params.min_output = -1.0f;
     pid_params.max_integral = 0.5f;
@@ -183,7 +183,7 @@ int main(void)
     if (!motor_controller->initialize()) {
         Error_Handler();
     }
-    motor_controller->setControlMode(libecu::ControlMode::OPEN_LOOP);
+    motor_controller->setControlMode(libecu::ControlMode::CLOSED_LOOP);
     motor_controller->setDutyCycle(0.1);
     motor_controller->start();
     
@@ -202,7 +202,7 @@ int main(void)
       /* USER CODE END WHILE */
 
       /* USER CODE BEGIN 3 */
-      motor_controller->setTargetSpeed(0.5f);
+      motor_controller->setTargetSpeed(1.0f);
 #ifdef STM32G4
       // 100Hz motor control loop
       if (control_tick) {
