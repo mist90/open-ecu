@@ -11,25 +11,25 @@ uint32_t HAL_GetTick(void);
 
 namespace libecu {
 
-// 6-step commutation table for clockwise rotation
+// 6-step commutation table for counter-clockwise rotation
 // UP = 50% + delta (high-side dominant), DOWN = 50% - delta (low-side dominant)
-const CommutationStep CommutationController::COMMUTATION_TABLE_CW[6] = {
-    {PwmState::UP,  PwmState::DOWN, PwmState::OFF}, // Step 1: U+V- (U high, V low)
-    {PwmState::UP,  PwmState::OFF,  PwmState::DOWN}, // Step 2: U+W- (U high, W low)  
-    {PwmState::OFF, PwmState::UP,   PwmState::DOWN}, // Step 3: V+W- (V high, W low)
-    {PwmState::DOWN, PwmState::UP,  PwmState::OFF}, // Step 4: V+U- (V high, U low)
-    {PwmState::DOWN, PwmState::OFF, PwmState::UP},  // Step 5: W+U- (W high, U low)
-    {PwmState::OFF, PwmState::DOWN, PwmState::UP}   // Step 6: W+V- (W high, V low)
+const CommutationStep CommutationController::COMMUTATION_TABLE_CCW[6] = {
+    {PwmState::OFF, PwmState::DOWN, PwmState::UP},   // 0 -> 5
+    {PwmState::UP,  PwmState::DOWN, PwmState::OFF},  // 1 -> 0
+    {PwmState::UP,  PwmState::OFF,  PwmState::DOWN}, // 2 -> 1
+    {PwmState::OFF, PwmState::UP,   PwmState::DOWN}, // 3 -> 2
+    {PwmState::DOWN, PwmState::UP,  PwmState::OFF},  // 4 -> 3
+    {PwmState::DOWN, PwmState::OFF, PwmState::UP},   // 5 -> 4
 };
 
-// 6-step commutation table for counter-clockwise rotation
-const CommutationStep CommutationController::COMMUTATION_TABLE_CCW[6] = {
-    {PwmState::UP,  PwmState::OFF,  PwmState::DOWN}, // Step 1: U+W- (U high, W low)
-    {PwmState::UP,  PwmState::DOWN, PwmState::OFF}, // Step 2: U+V- (U high, V low)
-    {PwmState::OFF, PwmState::DOWN, PwmState::UP},  // Step 3: W+V- (W high, V low)
-    {PwmState::DOWN, PwmState::OFF, PwmState::UP},  // Step 4: W+U- (W high, U low)
-    {PwmState::DOWN, PwmState::UP,  PwmState::OFF}, // Step 5: V+U- (V high, U low)
-    {PwmState::OFF, PwmState::UP,   PwmState::DOWN}  // Step 6: V+W- (V high, W low)
+// 6-step commutation table for clockwise rotation
+const CommutationStep CommutationController::COMMUTATION_TABLE_CW[6] = {
+    {PwmState::UP,  PwmState::OFF,  PwmState::DOWN}, // 0 -> 1
+    {PwmState::OFF, PwmState::UP,   PwmState::DOWN}, // 1 -> 2
+    {PwmState::DOWN, PwmState::UP,  PwmState::OFF},  // 2 -> 3
+    {PwmState::DOWN, PwmState::OFF, PwmState::UP},   // 3 -> 4
+    {PwmState::OFF, PwmState::DOWN, PwmState::UP},   // 4 -> 5
+    {PwmState::UP,  PwmState::DOWN, PwmState::OFF},  // 5 -> 0
 };
 
 CommutationController::CommutationController(PwmInterface& pwm_interface, HallInterface& hall_interface, uint8_t num_poles)
@@ -93,14 +93,14 @@ bool CommutationController::update(float duty_cycle, RotationDirection direction
     // Get current position (0-5 range)
     uint8_t position = getCurrentPosition();
     
+    // Select appropriate commutation table
+    const CommutationStep* table = (direction == RotationDirection::CLOCKWISE) ? 
+                                   COMMUTATION_TABLE_CW : COMMUTATION_TABLE_CCW;
+    
     // Check if position is valid
     if (position == 0xFF) {
         return false;
     }
-    
-    // Select appropriate commutation table
-    const CommutationStep* table = (direction == RotationDirection::CLOCKWISE) ? 
-                                   COMMUTATION_TABLE_CW : COMMUTATION_TABLE_CCW;
     
     // Apply commutation step
     applyCommutationStep(table[position], duty_cycle);
@@ -130,11 +130,7 @@ bool CommutationController::updateOpenLoop(float duty_cycle, float target_speed_
     // Check if it's time to advance to the next step
     if (is_running_ && (current_time_us - last_step_time_us_) >= step_interval_us_) {
         // Increment step (0-5, wrap around)
-        if (direction == RotationDirection::CLOCKWISE) {
-            current_step_ = (current_step_ + 1) % 6;
-        } else {
-            current_step_ = (current_step_ == 0) ? 5 : current_step_ - 1;
-        }
+        current_step_ = (current_step_ + 1) % 6;
         last_step_time_us_ = current_time_us;
     } else if (!is_running_) {
         // Initialize timing on first run

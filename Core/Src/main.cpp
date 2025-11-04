@@ -203,6 +203,7 @@ int main(void)
 
       /* USER CODE BEGIN 3 */
       motor_controller->setTargetSpeed(1.0f);
+      motor_controller->setDirection(libecu::RotationDirection::CLOCKWISE);
 #ifdef STM32G4
       // 100Hz motor control loop
       if (control_tick) {

@@ -128,6 +128,8 @@ void BldcController::update(const SafetyData& safety_data)
                 
                 // Clamp to maximum duty cycle
                 target_duty_cycle = std::min(target_duty_cycle, params_.max_duty_cycle);
+                if (target_duty_cycle < 0.0f)
+                    target_duty_cycle = 0.0f;
                 printf("s:%f,d:%f\n", status_.current_speed_rpm, target_duty_cycle);
                 break;
         }
