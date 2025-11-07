@@ -133,6 +133,14 @@ public:
      */
     void clearFault(SafetyFault fault);
 
+    /**
+     * @brief Hall sensor interrupt handler (called from GPIO interrupt context)
+     * This method must be called from the Hall sensor GPIO interrupt handlers.
+     * It captures the current Hall sensor state and timestamp for speed calculation.
+     * @param hall_state Current Hall sensor state (0-5, or 0xFF if invalid)
+     */
+    void hallSensorInterruptHandler(uint8_t hall_state);
+
 private:
     // Component references
     PwmInterface& pwm_interface_;
@@ -149,7 +157,20 @@ private:
     RotationDirection direction_;
     bool initialized_;
     
+    // Hall sensor interrupt data structure
+    struct HallInterruptData {
+        uint32_t timestamp_ms;    ///< Timestamp when Hall state changed (milliseconds)
+        uint8_t hall_state;       ///< Hall sensor state (0-5, 0xFF = invalid)
+    };
+    
     // Speed measurement state
+    static const size_t MAX_HALL_DATA_POINTS = 8;  ///< Maximum stored Hall data points
+    HallInterruptData hall_data_[MAX_HALL_DATA_POINTS];  ///< Circular buffer for Hall data
+    volatile size_t hall_data_head_;        ///< Head index for circular buffer
+    volatile size_t hall_data_tail_;        ///< Tail index for circular buffer
+    volatile bool hall_data_overflow_;      ///< Flag indicating buffer overflow
+    
+    // Legacy speed measurement state (kept for compatibility)
     uint8_t speed_first_position_;      ///< First position in measurement window
     uint8_t speed_last_position_;       ///< Last position in measurement window
     uint32_t speed_first_time_ms_;      ///< Time of first position (ms)
