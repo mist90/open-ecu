@@ -42,6 +42,7 @@ BldcController::BldcController(
     , speed_step_count_(0)
     , speed_window_min_us_(SPEED_WINDOW_MIN_US)
     , speed_measurement_active_(false)
+    , last_hall_state_(0xFF)
 {
     // Initialize status
     status_.current_speed_rpm = 0.0f;
@@ -406,7 +407,7 @@ void BldcController::handleSafetyFault(SafetyFault fault)
     }
 }
 
-void BldcController::hallSensorInterruptHandler(uint8_t hall_state)
+void BldcController::hallSensorInterruptHandler()
 {
     /**
      * Hall sensor interrupt handler - called from GPIO interrupt context
@@ -416,10 +417,21 @@ void BldcController::hallSensorInterruptHandler(uint8_t hall_state)
     // Get current timestamp immediately to minimize latency
     uint32_t timestamp_us = time_us();
     
+    // Read current Hall sensor state via CommutationController
+    uint8_t hall_state = commutation_controller_.getCurrentPosition();
+    
     // Validate Hall state (0-5 are valid, 0xFF indicates invalid/error)
     if (hall_state > 5 && hall_state != 0xFF) {
         return; // Invalid Hall state, ignore
     }
+    
+    // Check if state has changed from previous reading
+    if (hall_state == last_hall_state_) {
+        return; // No change in Hall state, ignore
+    }
+    
+    // Update last Hall state
+    last_hall_state_ = hall_state;
     
     // Calculate next head position
     size_t next_head = (hall_data_head_ + 1) % MAX_HALL_DATA_POINTS;

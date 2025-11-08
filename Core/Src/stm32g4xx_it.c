@@ -22,6 +22,10 @@
 #include "stm32g4xx_it.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#ifdef STM32G4
+// Forward declaration - actual variable is in main.cpp
+extern void motor_controller_hall_interrupt_handler(void);
+#endif
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -199,5 +203,48 @@ void SysTick_Handler(void)
 /******************************************************************************/
 
 /* USER CODE BEGIN 1 */
+
+/**
+  * @brief This function handles EXTI line[9:5] interrupts.
+  *        Handles Hall sensor GPIO interrupts (PB6, PB7, PB8)
+  */
+void EXTI9_5_IRQHandler(void)
+{
+  /* USER CODE BEGIN EXTI9_5_IRQn 0 */
+  
+  /* USER CODE END EXTI9_5_IRQn 0 */
+  HAL_GPIO_EXTI_IRQHandler(A__Pin);
+  HAL_GPIO_EXTI_IRQHandler(B__Pin);
+  HAL_GPIO_EXTI_IRQHandler(Z__Pin);
+  /* USER CODE BEGIN EXTI9_5_IRQn 1 */
+  
+  /* USER CODE END EXTI9_5_IRQn 1 */
+}
+
+/**
+  * @brief GPIO EXTI callback for Hall sensor state changes
+  * @param GPIO_Pin: Pin that triggered the interrupt
+  */
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+{
+  /* USER CODE BEGIN HAL_GPIO_EXTI_Callback 0 */
+  
+  /* USER CODE END HAL_GPIO_EXTI_Callback 0 */
+  
+  /* Check if interrupt is from Hall sensor pins */
+  if ((GPIO_Pin == A__Pin) || (GPIO_Pin == B__Pin) || (GPIO_Pin == Z__Pin))
+  {
+    /* USER CODE BEGIN Hall_Sensor_IRQ */
+#ifdef STM32G4
+    // Call the motor controller's Hall sensor interrupt handler
+    motor_controller_hall_interrupt_handler();
+#endif
+    /* USER CODE END Hall_Sensor_IRQ */
+  }
+  
+  /* USER CODE BEGIN HAL_GPIO_EXTI_Callback 1 */
+  
+  /* USER CODE END HAL_GPIO_EXTI_Callback 1 */
+}
 
 /* USER CODE END 1 */

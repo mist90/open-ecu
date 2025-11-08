@@ -140,9 +140,9 @@ public:
      * @brief Hall sensor interrupt handler (called from GPIO interrupt context)
      * This method must be called from the Hall sensor GPIO interrupt handlers.
      * It captures the current Hall sensor state and timestamp for speed calculation.
-     * @param hall_state Current Hall sensor state (0-5, or 0xFF if invalid)
+     * The hall state is read internally via CommutationController::getCurrentPosition().
      */
-    void hallSensorInterruptHandler(uint8_t hall_state);
+    void hallSensorInterruptHandler();
 
 private:
     // Component references
@@ -181,6 +181,7 @@ private:
     int32_t speed_step_count_;          ///< Accumulated step count (can be negative)
     uint32_t speed_window_min_us_;      ///< Current window minimum size (us)
     bool speed_measurement_active_;     ///< Speed measurement in progress
+    uint8_t last_hall_state_;           ///< Last Hall state to detect changes
 
     /**
      * @brief Calculate motor speed from Hall sensor transitions

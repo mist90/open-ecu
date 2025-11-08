@@ -110,6 +110,19 @@ uint32_t time_us()
 	return htim2.Instance->CNT;
 }
 
+/**
+ * @brief C-linkage wrapper for Hall sensor interrupt handler
+ * This function is called from C code (stm32g4xx_it.c) and delegates to the C++ motor controller
+ */
+extern "C" void motor_controller_hall_interrupt_handler(void)
+{
+#ifdef STM32G4
+    if (motor_controller != nullptr) {
+        motor_controller->hallSensorInterruptHandler();
+    }
+#endif
+}
+
 /* USER CODE END 0 */
 
 /**
@@ -566,12 +579,14 @@ static void MX_GPIO_Init(void)
 
   /*Configure GPIO pins : A__Pin B__Pin Z__Pin */
   GPIO_InitStruct.Pin = A__Pin|B__Pin|Z__Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING_FALLING;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
-
+  /* Enable EXTI interrupts for Hall sensor pins */
+  HAL_NVIC_SetPriority(EXTI9_5_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(EXTI9_5_IRQn);
   /* USER CODE END MX_GPIO_Init_2 */
 }
 
