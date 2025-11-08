@@ -5,9 +5,7 @@
 
 #include "../include/algorithms/commutation_controller.hpp"
 
-extern "C" {
-uint32_t HAL_GetTick(void);
-}
+uint32_t time_us();
 
 namespace libecu {
 
@@ -128,11 +126,13 @@ bool CommutationController::updateOpenLoop(float duty_cycle, float target_speed_
     uint32_t current_time_us = getCurrentTimeUs();
     
     // Check if it's time to advance to the next step
-    if (is_running_ && (current_time_us - last_step_time_us_) >= step_interval_us_) {
-        // Increment step (0-5, wrap around)
-        current_step_ = (current_step_ + 1) % 6;
-        last_step_time_us_ = current_time_us;
-    } else if (!is_running_) {
+    if (is_running_ ) {
+        if ((current_time_us - last_step_time_us_) >= step_interval_us_) {
+            // Increment step (0-5, wrap around)
+            current_step_ = (current_step_ + 1) % 6;
+            last_step_time_us_ = current_time_us;
+        }
+    } else {
         // Initialize timing on first run
         last_step_time_us_ = current_time_us;
         is_running_ = true;
@@ -193,10 +193,10 @@ uint32_t CommutationController::calculateStepInterval(float speed_rpm)
 
 uint32_t CommutationController::getCurrentTimeUs()
 {
-    // Use HAL_GetTick() which returns milliseconds, convert to microseconds
+    // Use time_us() which returns milliseconds, convert to microseconds
     // Note: This provides 1ms resolution which is adequate for motor control
     // For higher precision, a dedicated timer would be used in production
-    return HAL_GetTick() * 1000;
+    return time_us();
 }
 
 } // namespace libecu

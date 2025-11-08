@@ -6,6 +6,9 @@
 #ifndef LIBECU_BLDC_CONTROLLER_HPP
 #define LIBECU_BLDC_CONTROLLER_HPP
 
+#include <cstddef>
+#include <cstdint>
+
 #include "interfaces/pwm_interface.hpp"
 #include "interfaces/hall_interface.hpp"
 #include "algorithms/commutation_controller.hpp"
@@ -159,7 +162,7 @@ private:
     
     // Hall sensor interrupt data structure
     struct HallInterruptData {
-        uint32_t timestamp_ms;    ///< Timestamp when Hall state changed (milliseconds)
+        uint32_t timestamp_us;    ///< Timestamp when Hall state changed (microseconds)
         uint8_t hall_state;       ///< Hall sensor state (0-5, 0xFF = invalid)
     };
     
@@ -173,10 +176,10 @@ private:
     // Legacy speed measurement state (kept for compatibility)
     uint8_t speed_first_position_;      ///< First position in measurement window
     uint8_t speed_last_position_;       ///< Last position in measurement window
-    uint32_t speed_first_time_ms_;      ///< Time of first position (ms)
-    uint32_t speed_last_time_ms_;       ///< Time of last position (ms)
+    uint32_t speed_first_time_us_;      ///< Time of first position (us)
+    uint32_t speed_last_time_us_;       ///< Time of last position (us)
     int32_t speed_step_count_;          ///< Accumulated step count (can be negative)
-    uint32_t speed_window_min_ms_;      ///< Current window minimum size (ms)
+    uint32_t speed_window_min_us_;      ///< Current window minimum size (us)
     bool speed_measurement_active_;     ///< Speed measurement in progress
 
     /**

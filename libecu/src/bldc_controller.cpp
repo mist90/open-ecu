@@ -8,14 +8,12 @@
 #include <stdio.h>
 
 // Speed measurement configuration
-#define SPEED_WINDOW_MIN_MS       10    ///< Minimum measurement window (ms)
-#define SPEED_WINDOW_MAX_MS       5000  ///< Maximum measurement window (ms)
+#define SPEED_WINDOW_MIN_US       10000    ///< Minimum measurement window (ms)
+#define SPEED_WINDOW_MAX_US       5000000  ///< Maximum measurement window (ms)
 #define SPEED_MIN_STEPS           10     ///< Minimum steps required for valid speed measurement
 #define SPEED_STEPS_PER_REVOLUTION 24   ///< Total steps per mechanical revolution (6 * num_poles / 2)
 
-extern "C" {
-uint32_t HAL_GetTick(void);
-}
+uint32_t time_us(void);
 
 namespace libecu {
 
@@ -39,10 +37,10 @@ BldcController::BldcController(
     , hall_data_overflow_(false)
     , speed_first_position_(0)
     , speed_last_position_(0)
-    , speed_first_time_ms_(0)
-    , speed_last_time_ms_(0)
+    , speed_first_time_us_(0)
+    , speed_last_time_us_(0)
     , speed_step_count_(0)
-    , speed_window_min_ms_(SPEED_WINDOW_MIN_MS)
+    , speed_window_min_us_(SPEED_WINDOW_MIN_US)
     , speed_measurement_active_(false)
 {
     // Initialize status
@@ -190,7 +188,7 @@ void BldcController::start()
         // Reset speed measurement on motor start
         speed_measurement_active_ = false;
         speed_step_count_ = 0;
-        speed_window_min_ms_ = SPEED_WINDOW_MIN_MS;
+        speed_window_min_us_ = SPEED_WINDOW_MIN_US;
     }
 }
 
@@ -242,14 +240,14 @@ float BldcController::calculateSpeed()
      * 5. Use adaptive algorithm to handle various speed ranges
      */
     
-    uint32_t current_time_ms = HAL_GetTick();
+    uint32_t current_time_us = time_us();
     
     // Check if we have any new Hall sensor data
     if (hall_data_head_ == hall_data_tail_) {
         // No new data available
         // Check if too much time has passed since last data - motor might be stopped
         if (speed_measurement_active_ && 
-            (current_time_ms - speed_last_time_ms_ > SPEED_WINDOW_MAX_MS)) {
+            (current_time_us - speed_last_time_us_ > SPEED_WINDOW_MAX_US)) {
             // Too long since last Hall transition - motor is stopped
             speed_measurement_active_ = false;
             return 0.0f;
@@ -296,7 +294,7 @@ float BldcController::calculateSpeed()
         }
         
         if (first_point) {
-            first_timestamp = data.timestamp_ms;
+            first_timestamp = data.timestamp_us;
             first_state = data.hall_state;
             prev_state = data.hall_state;
             first_point = false;
@@ -318,7 +316,7 @@ float BldcController::calculateSpeed()
             prev_state = data.hall_state;
         }
         
-        last_timestamp = data.timestamp_ms;
+        last_timestamp = data.timestamp_us;
         last_state = data.hall_state;
         current_idx = (current_idx + 1) % MAX_HALL_DATA_POINTS;
     }
@@ -329,7 +327,7 @@ float BldcController::calculateSpeed()
     // Update speed measurement state
     if (valid_transitions > 0) {
         speed_last_position_ = last_state;
-        speed_last_time_ms_ = last_timestamp;
+        speed_last_time_us_ = last_timestamp;
         speed_measurement_active_ = true;
     }
     
@@ -338,34 +336,34 @@ float BldcController::calculateSpeed()
         return status_.current_speed_rpm; // No valid transitions
     }
     
-    uint32_t elapsed_time_ms = last_timestamp - first_timestamp;
+    uint32_t elapsed_time_us = last_timestamp - first_timestamp;
     
     // Ensure minimum time window for stability
-    if (elapsed_time_ms < SPEED_WINDOW_MIN_MS) {
+    if (elapsed_time_us < SPEED_WINDOW_MIN_US) {
         return status_.current_speed_rpm; // Not enough time elapsed
     }
     
     // Check if we have enough steps for reliable measurement
     int32_t abs_steps = (total_steps >= 0) ? total_steps : -total_steps;
     
-    if (abs_steps < SPEED_MIN_STEPS && elapsed_time_ms < SPEED_WINDOW_MAX_MS) {
+    if (abs_steps < SPEED_MIN_STEPS && elapsed_time_us < SPEED_WINDOW_MAX_US) {
         return status_.current_speed_rpm; // Not enough steps yet, wait for more data
     }
     
     if (abs_steps == 0) {
         // No net movement - could be oscillating or stopped
-        if (elapsed_time_ms > SPEED_WINDOW_MAX_MS) {
+        if (elapsed_time_us > SPEED_WINDOW_MAX_US) {
             return 0.0f; // Likely stopped
         }
         return status_.current_speed_rpm; // Keep last speed
     }
     
     // Calculate speed in RPM
-    // total_steps steps in elapsed_time_ms milliseconds
+    // total_steps steps in elapsed_time_us microseconds
     // Each full revolution = SPEED_STEPS_PER_REVOLUTION steps
-    // RPM = (steps / elapsed_time_ms) * (1000 ms/s) * (60 s/min) / SPEED_STEPS_PER_REVOLUTION
-    float speed_rpm = (static_cast<float>(total_steps) * 60000.0f) / 
-                     (static_cast<float>(elapsed_time_ms) * SPEED_STEPS_PER_REVOLUTION);
+    // RPM = (steps / elapsed_time_us) * (1000000 us/s) * (60 s/min) / SPEED_STEPS_PER_REVOLUTION
+    float speed_rpm = (static_cast<float>(total_steps) * 60000000.0f) / 
+                     (static_cast<float>(elapsed_time_us) * SPEED_STEPS_PER_REVOLUTION);
     
     return speed_rpm;
 }
@@ -416,7 +414,7 @@ void BldcController::hallSensorInterruptHandler(uint8_t hall_state)
      */
     
     // Get current timestamp immediately to minimize latency
-    uint32_t timestamp_ms = HAL_GetTick();
+    uint32_t timestamp_us = time_us();
     
     // Validate Hall state (0-5 are valid, 0xFF indicates invalid/error)
     if (hall_state > 5 && hall_state != 0xFF) {
@@ -434,7 +432,7 @@ void BldcController::hallSensorInterruptHandler(uint8_t hall_state)
     }
     
     // Store the new Hall data
-    hall_data_[hall_data_head_].timestamp_ms = timestamp_ms;
+    hall_data_[hall_data_head_].timestamp_us = timestamp_us;
     hall_data_[hall_data_head_].hall_state = hall_state;
     
     // Advance head pointer
