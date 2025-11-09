@@ -202,7 +202,7 @@ int main(void)
     
     libecu::MotorControlParams motor_params;
     motor_params.max_duty_cycle = 0.7f;
-    motor_params.max_speed_rpm = 3000.0f;   // 3000 RPM max
+    motor_params.max_speed_rpm = 60.0f;
     motor_params.acceleration_rate = 1000.0f; // 1000 RPM/s accel
     motor_params.control_frequency = PERIODIC_TIMER_FREQ;
     
