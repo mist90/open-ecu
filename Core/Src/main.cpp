@@ -189,7 +189,7 @@ int main(void)
     pid_params.kd = 0.0f;
     pid_params.max_output = 1.0f;
     pid_params.min_output = 0.0f;
-    pid_params.max_integral = 20.0f;
+    pid_params.max_integral = 10.0f;
     pid_controller = new libecu::PidController(pid_params);
     
     libecu::SafetyLimits safety_limits;
