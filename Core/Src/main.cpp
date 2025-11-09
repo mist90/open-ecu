@@ -110,6 +110,14 @@ uint32_t time_us()
 	return htim2.Instance->CNT;
 }
 
+// Use CMSIS intrinsics for interrupt control
+void disable_interrupts() {
+    __asm volatile ("cpsid i" : : : "memory");
+}
+void enable_interrupts() {
+    __asm volatile ("cpsie i" : : : "memory");
+}
+
 /**
  * @brief C-linkage wrapper for Hall sensor interrupt handler
  * This function is called from C code (stm32g4xx_it.c) and delegates to the C++ motor controller
@@ -176,12 +184,12 @@ int main(void)
     commutation_controller = new libecu::CommutationController(pwm_driver, hall_sensor, 8);
     
     libecu::PidParameters pid_params;
-    pid_params.kp = 0.001f;
+    pid_params.kp = 0.01f;
     pid_params.ki = 0.05f;
     pid_params.kd = 0.0f;
     pid_params.max_output = 1.0f;
     pid_params.min_output = 0.0f;
-    pid_params.max_integral = 10.0f;
+    pid_params.max_integral = 20.0f;
     pid_controller = new libecu::PidController(pid_params);
     
     libecu::SafetyLimits safety_limits;
@@ -193,7 +201,7 @@ int main(void)
     safety_monitor = new libecu::SafetyMonitor(safety_limits);
     
     libecu::MotorControlParams motor_params;
-    motor_params.max_duty_cycle = 0.3f;    // 95% max duty cycle
+    motor_params.max_duty_cycle = 0.7f;
     motor_params.max_speed_rpm = 3000.0f;   // 3000 RPM max
     motor_params.acceleration_rate = 1000.0f; // 1000 RPM/s accel
     motor_params.control_frequency = PERIODIC_TIMER_FREQ;
@@ -224,7 +232,7 @@ int main(void)
       /* USER CODE END WHILE */
 
       /* USER CODE BEGIN 3 */
-      motor_controller->setTargetSpeed(5.0f);
+      motor_controller->setTargetSpeed(10.0f);
       motor_controller->setDirection(libecu::RotationDirection::CLOCKWISE);
 #ifdef STM32G4
       // 100Hz motor control loop

@@ -91,6 +91,12 @@ public:
      */
     bool isRunning() const { return is_running_; }
 
+    /**
+     * @brief Get number of motor pole pairs
+     * @return Number of pole pairs
+     */
+    uint8_t getNumPoles() const { return num_poles_; }
+
 private:
     PwmInterface& pwm_interface_;
     HallInterface& hall_interface_;

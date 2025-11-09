@@ -9,24 +9,14 @@
 #include <cmath>
 
 // Platform-specific interrupt control
-#ifdef STM32G4
-// Use CMSIS intrinsics for interrupt control
-static inline void disable_interrupts() {
-    __asm volatile ("cpsid i" : : : "memory");
-}
-static inline void enable_interrupts() {
-    __asm volatile ("cpsie i" : : : "memory");
-}
-#else
-// Define dummy functions for non-STM32 platforms
-static inline void disable_interrupts() {}
-static inline void enable_interrupts() {}
-#endif
+void disable_interrupts();
+void enable_interrupts();
 
 // Speed measurement configuration
 #define SPEED_TIMEOUT_US          1000000  ///< Timeout for speed measurement (1 second)
-#define SPEED_STEPS_PER_REVOLUTION 24      ///< Total steps per mechanical revolution (6 * num_poles / 2)
+#define BLDC_NUM_PHASES           3        ///< Number of phases in BLDC motor
 
+// Platform specific time function
 uint32_t time_us(void);
 
 namespace libecu {
@@ -313,10 +303,14 @@ float BldcController::calculateSpeed()
     
     // Calculate speed in RPM
     // pulse_count pulses in time_diff_us microseconds
-    // Each full revolution = SPEED_STEPS_PER_REVOLUTION pulses
-    // RPM = (pulses / time_diff_us) * (1000000 us/s) / SPEED_STEPS_PER_REVOLUTION
+    // Each full revolution = num_poles * BLDC_NUM_PHASES pulses (Hall transitions per revolution)
+    // For num_poles=8: steps_per_rev = 8 * 3 = 24
+    // RPM = (pulses / time_diff_us) * (1000000 us/s) / steps_per_revolution
+    uint8_t num_poles = commutation_controller_.getNumPoles();
+    uint32_t steps_per_revolution = num_poles * BLDC_NUM_PHASES;
+    
     float speed_rpm = (static_cast<float>(pulse_count) * 1000000.0f) / 
-                     (static_cast<float>(time_diff_us) * SPEED_STEPS_PER_REVOLUTION);
+                     (static_cast<float>(time_diff_us) * steps_per_revolution);
     
     // Account for direction setting
     // Positive pulse_count with CLOCKWISE = positive speed
