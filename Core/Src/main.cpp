@@ -43,7 +43,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
+#define PERIODIC_TIMER_FREQ 1000
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -176,12 +176,12 @@ int main(void)
     commutation_controller = new libecu::CommutationController(pwm_driver, hall_sensor, 8);
     
     libecu::PidParameters pid_params;
-    pid_params.kp = 0.1f;
+    pid_params.kp = 0.001f;
     pid_params.ki = 0.05f;
     pid_params.kd = 0.0f;
     pid_params.max_output = 1.0f;
-    pid_params.min_output = -1.0f;
-    pid_params.max_integral = 0.5f;
+    pid_params.min_output = 0.0f;
+    pid_params.max_integral = 10.0f;
     pid_controller = new libecu::PidController(pid_params);
     
     libecu::SafetyLimits safety_limits;
@@ -196,7 +196,7 @@ int main(void)
     motor_params.max_duty_cycle = 0.3f;    // 95% max duty cycle
     motor_params.max_speed_rpm = 3000.0f;   // 3000 RPM max
     motor_params.acceleration_rate = 1000.0f; // 1000 RPM/s accel
-    motor_params.control_frequency = 100;    // 100Hz control loop
+    motor_params.control_frequency = PERIODIC_TIMER_FREQ;
     
     motor_controller = new libecu::BldcController(
         pwm_driver, hall_sensor, *commutation_controller, 
@@ -206,11 +206,11 @@ int main(void)
         Error_Handler();
     }
     motor_controller->setControlMode(libecu::ControlMode::CLOSED_LOOP);
-    motor_controller->setDutyCycle(0.1);
+    motor_controller->setDutyCycle(0.3);
     motor_controller->start();
     
     // Setup 1000Hz control loop with SysTick
-    HAL_SYSTICK_Config(SystemCoreClock / 1000);
+    HAL_SYSTICK_Config(SystemCoreClock / PERIODIC_TIMER_FREQ);
 #endif
 
     /* USER CODE END 2 */
@@ -224,7 +224,7 @@ int main(void)
       /* USER CODE END WHILE */
 
       /* USER CODE BEGIN 3 */
-      motor_controller->setTargetSpeed(1.0f);
+      motor_controller->setTargetSpeed(5.0f);
       motor_controller->setDirection(libecu::RotationDirection::CLOCKWISE);
 #ifdef STM32G4
       // 100Hz motor control loop

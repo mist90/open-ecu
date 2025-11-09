@@ -29,6 +29,8 @@ void PidController::reset()
     first_run_ = true;
 }
 
+#include <stdio.h>
+
 float PidController::update(float setpoint, float feedback, float dt)
 {
     // Calculate error

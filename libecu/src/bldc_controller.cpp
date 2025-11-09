@@ -6,12 +6,26 @@
 #include "../include/bldc_controller.hpp"
 #include <algorithm>
 #include <stdio.h>
+#include <cmath>
+
+// Platform-specific interrupt control
+#ifdef STM32G4
+// Use CMSIS intrinsics for interrupt control
+static inline void disable_interrupts() {
+    __asm volatile ("cpsid i" : : : "memory");
+}
+static inline void enable_interrupts() {
+    __asm volatile ("cpsie i" : : : "memory");
+}
+#else
+// Define dummy functions for non-STM32 platforms
+static inline void disable_interrupts() {}
+static inline void enable_interrupts() {}
+#endif
 
 // Speed measurement configuration
-#define SPEED_WINDOW_MIN_US       10000    ///< Minimum measurement window (ms)
-#define SPEED_WINDOW_MAX_US       5000000  ///< Maximum measurement window (ms)
-#define SPEED_MIN_STEPS           10     ///< Minimum steps required for valid speed measurement
-#define SPEED_STEPS_PER_REVOLUTION 24   ///< Total steps per mechanical revolution (6 * num_poles / 2)
+#define SPEED_TIMEOUT_US          1000000  ///< Timeout for speed measurement (1 second)
+#define SPEED_STEPS_PER_REVOLUTION 24      ///< Total steps per mechanical revolution (6 * num_poles / 2)
 
 uint32_t time_us(void);
 
@@ -32,17 +46,11 @@ BldcController::BldcController(
     , params_(params)
     , direction_(RotationDirection::CLOCKWISE)
     , initialized_(false)
-    , hall_data_head_(0)
-    , hall_data_tail_(0)
-    , hall_data_overflow_(false)
-    , speed_first_position_(0)
-    , speed_last_position_(0)
-    , speed_first_time_us_(0)
-    , speed_last_time_us_(0)
-    , speed_step_count_(0)
-    , speed_window_min_us_(SPEED_WINDOW_MIN_US)
-    , speed_measurement_active_(false)
+    , speed_start_time_us_(0)
+    , speed_end_time_us_(0)
+    , speed_pulse_count_(0)
     , last_hall_state_(0xFF)
+    , last_pid_update_time_us_(0)
 {
     // Initialize status
     status_.current_speed_rpm = 0.0f;
@@ -88,20 +96,21 @@ void BldcController::update(const SafetyData& safety_data)
     }
     
     // Calculate current motor speed
-    status_.current_speed_rpm = calculateSpeed();
+    float measured_speed = calculateSpeed();
     
-    // Update position status (convert from internal current_position_)
-    // This is updated by calculateSpeed() internally
-    if (speed_measurement_active_) {
-        // Convert 0-5 range to MotorPosition enum
-        if (speed_last_position_ <= 5) {
-            status_.position = static_cast<MotorPosition>(speed_last_position_ + 1);
-        } else {
-            status_.position = MotorPosition::INVALID;
-        }
+    // Update current speed only if measurement is valid (not NAN)
+    if (!std::isnan(measured_speed)) {
+        status_.current_speed_rpm = measured_speed;
     }
-
-    //printf("p:%d,v:%f\n", (int)speed_last_position_, status_.current_speed_rpm);
+    // If NAN, keep previous status_.current_speed_rpm value
+    
+    // Update position status from current Hall sensor reading
+    uint8_t current_position = commutation_controller_.getCurrentPosition();
+    if (current_position <= 5) {
+        status_.position = static_cast<MotorPosition>(current_position + 1);
+    } else {
+        status_.position = MotorPosition::INVALID;
+    }
     
     // Control loop based on mode
     float target_duty_cycle = 0.0f;
@@ -113,26 +122,46 @@ void BldcController::update(const SafetyData& safety_data)
                 break;
                 
             case ControlMode::CLOSED_LOOP:
-                // Apply acceleration limiting
-                float dt = 1.0f / params_.control_frequency;
-                float limited_target = applyAccelerationLimit(
-                    status_.target_speed_rpm, 
-                    status_.current_speed_rpm, 
-                    dt
-                );
-                
-                // PID control
-                target_duty_cycle = pid_controller_.update(
-                    limited_target, 
-                    status_.current_speed_rpm, 
-                    dt
-                );
-                
-                // Clamp to maximum duty cycle
-                target_duty_cycle = std::min(target_duty_cycle, params_.max_duty_cycle);
-                if (target_duty_cycle < 0.0f)
-                    target_duty_cycle = 0.0f;
-                printf("s:%f,d:%f\n", status_.current_speed_rpm, target_duty_cycle);
+                // Only run PID control if we have valid speed measurement
+                if (!std::isnan(measured_speed)) {
+                    // Calculate real time difference since last PID update
+                    uint32_t current_time_us = time_us();
+                    float dt;
+                    
+                    if (last_pid_update_time_us_ == 0) {
+                        // First PID update - use nominal period
+                        dt = 1.0f / params_.control_frequency;
+                    } else {
+                        // Calculate actual time difference in seconds
+                        uint32_t dt_us = current_time_us - last_pid_update_time_us_;
+                        dt = static_cast<float>(dt_us) / 1000000.0f;
+                    }
+                    
+                    // Update timestamp for next iteration
+                    last_pid_update_time_us_ = current_time_us;
+                    
+                    // Apply acceleration limiting
+                    float limited_target = applyAccelerationLimit(
+                        status_.target_speed_rpm, 
+                        status_.current_speed_rpm, 
+                        dt
+                    );
+                    
+                    // PID control
+                    target_duty_cycle = pid_controller_.update(
+                        limited_target, 
+                        status_.current_speed_rpm, 
+                        dt
+                    );
+                    
+                    // Clamp to maximum duty cycle
+                    target_duty_cycle = std::min(target_duty_cycle, params_.max_duty_cycle);
+                    
+                    printf("s:%f,d:%f\n", status_.current_speed_rpm, target_duty_cycle);
+                } else {
+                    // No valid measurement yet, keep previous duty cycle
+                    target_duty_cycle = status_.duty_cycle;
+                }
                 break;
         }
     }
@@ -171,6 +200,7 @@ void BldcController::setControlMode(ControlMode mode)
         // Reset PID when switching to closed loop
         if (mode == ControlMode::CLOSED_LOOP) {
             pid_controller_.reset();
+            last_pid_update_time_us_ = 0;  // Reset timing for fresh start
         }
     }
 }
@@ -187,9 +217,15 @@ void BldcController::start()
         pwm_interface_.enable(true);
         
         // Reset speed measurement on motor start
-        speed_measurement_active_ = false;
-        speed_step_count_ = 0;
-        speed_window_min_us_ = SPEED_WINDOW_MIN_US;
+        disable_interrupts();
+        speed_start_time_us_ = 0;
+        speed_end_time_us_ = 0;
+        speed_pulse_count_ = 0;
+        last_hall_state_ = 0xFF;
+        enable_interrupts();
+        
+        // Reset PID timing
+        last_pid_update_time_us_ = 0;
     }
 }
 
@@ -200,9 +236,15 @@ void BldcController::stop()
     commutation_controller_.update(0.0f, direction_);
     
     // Reset speed measurement on motor stop
-    speed_measurement_active_ = false;
-    speed_step_count_ = 0;
+    disable_interrupts();
+    speed_start_time_us_ = 0;
+    speed_end_time_us_ = 0;
+    speed_pulse_count_ = 0;
+    enable_interrupts();
     status_.current_speed_rpm = 0.0f;
+    
+    // Reset PID timing
+    last_pid_update_time_us_ = 0;
 }
 
 void BldcController::emergencyStop()
@@ -231,140 +273,65 @@ void BldcController::clearFault(SafetyFault fault)
 float BldcController::calculateSpeed()
 {
     /**
-     * Interrupt-driven speed measurement algorithm for BLDC motors
-     * 
-     * Algorithm overview:
-     * 1. Use Hall sensor data captured by interrupt handlers
-     * 2. Process multiple data points from circular buffer for accurate measurement
-     * 3. Calculate speed based on time intervals between Hall state changes
-     * 4. Handle direction changes and invalid states
-     * 5. Use adaptive algorithm to handle various speed ranges
+     * Simplified speed measurement algorithm:
+     * - Uses start and end timestamps from ISR
+     * - Calculates speed based on pulse count and time difference
+     * - Accounts for rotation direction
      */
     
     uint32_t current_time_us = time_us();
     
-    // Check if we have any new Hall sensor data
-    if (hall_data_head_ == hall_data_tail_) {
-        // No new data available
-        // Check if too much time has passed since last data - motor might be stopped
-        if (speed_measurement_active_ && 
-            (current_time_us - speed_last_time_us_ > SPEED_WINDOW_MAX_US)) {
-            // Too long since last Hall transition - motor is stopped
-            speed_measurement_active_ = false;
-            return 0.0f;
-        }
-        return status_.current_speed_rpm; // Return last known speed
+    // Atomically copy volatile variables (disable interrupts during copy)
+    disable_interrupts();
+    uint32_t start_time = speed_start_time_us_;
+    uint32_t end_time = speed_end_time_us_;
+    int32_t pulse_count = speed_pulse_count_;
+    enable_interrupts();
+    
+    // Check if measurement has been initialized
+    if (start_time == 0) {
+        return NAN; // Not initialized yet
     }
     
-    // Reset overflow flag (we're processing the data now)
-    hall_data_overflow_ = false;
-    
-    // Count available data points
-    size_t data_count = 0;
-    if (hall_data_head_ >= hall_data_tail_) {
-        data_count = hall_data_head_ - hall_data_tail_;
-    } else {
-        data_count = MAX_HALL_DATA_POINTS - hall_data_tail_ + hall_data_head_;
+    // Check for timeout - motor might be stopped
+    if ((current_time_us - end_time) > SPEED_TIMEOUT_US) {
+        return 0.0f; // Motor stopped (no pulses for 1 second)
     }
     
-    // Need at least 2 data points to calculate speed
-    if (data_count < 2) {
-        return status_.current_speed_rpm;
+    // Check if we have any pulses to measure
+    if (pulse_count == 0) {
+        return NAN; // No new pulses, measurement not ready
     }
     
-    // Process Hall sensor data points to calculate speed
-    int32_t total_steps = 0;
-    uint32_t first_timestamp = 0;
-    uint32_t last_timestamp = 0;
-    uint8_t first_state = 0xFF;
-    uint8_t last_state = 0xFF;
-    size_t valid_transitions = 0;
+    // Calculate time difference
+    uint32_t time_diff_us = end_time - start_time;
     
-    // Process all available data points
-    size_t current_idx = hall_data_tail_;
-    bool first_point = true;
-    uint8_t prev_state = 0xFF;
-    
-    while (current_idx != hall_data_head_) {
-        const HallInterruptData& data = hall_data_[current_idx];
-        
-        // Skip invalid states
-        if (data.hall_state == 0xFF || data.hall_state > 5) {
-            current_idx = (current_idx + 1) % MAX_HALL_DATA_POINTS;
-            continue;
-        }
-        
-        if (first_point) {
-            first_timestamp = data.timestamp_us;
-            first_state = data.hall_state;
-            prev_state = data.hall_state;
-            first_point = false;
-        } else {
-            // Calculate step delta between consecutive valid Hall states
-            int8_t delta = 0;
-            int8_t diff_forward = (data.hall_state - prev_state + 6) % 6;
-            int8_t diff_backward = (prev_state - data.hall_state + 6) % 6;
-            
-            // Determine direction of movement (choose shorter path)
-            if (diff_forward <= diff_backward) {
-                delta = diff_forward;  // Forward movement
-            } else {
-                delta = -diff_backward; // Backward movement
-            }
-            
-            total_steps += delta;
-            valid_transitions++;
-            prev_state = data.hall_state;
-        }
-        
-        last_timestamp = data.timestamp_us;
-        last_state = data.hall_state;
-        current_idx = (current_idx + 1) % MAX_HALL_DATA_POINTS;
-    }
-    
-    // Update tail pointer to mark data as processed
-    hall_data_tail_ = hall_data_head_;
-    
-    // Update speed measurement state
-    if (valid_transitions > 0) {
-        speed_last_position_ = last_state;
-        speed_last_time_us_ = last_timestamp;
-        speed_measurement_active_ = true;
-    }
-    
-    // Calculate speed if we have enough data
-    if (valid_transitions == 0) {
-        return status_.current_speed_rpm; // No valid transitions
-    }
-    
-    uint32_t elapsed_time_us = last_timestamp - first_timestamp;
-    
-    // Ensure minimum time window for stability
-    if (elapsed_time_us < SPEED_WINDOW_MIN_US) {
-        return status_.current_speed_rpm; // Not enough time elapsed
-    }
-    
-    // Check if we have enough steps for reliable measurement
-    int32_t abs_steps = (total_steps >= 0) ? total_steps : -total_steps;
-    
-    if (abs_steps < SPEED_MIN_STEPS && elapsed_time_us < SPEED_WINDOW_MAX_US) {
-        return status_.current_speed_rpm; // Not enough steps yet, wait for more data
-    }
-    
-    if (abs_steps == 0) {
-        // No net movement - could be oscillating or stopped
-        if (elapsed_time_us > SPEED_WINDOW_MAX_US) {
-            return 0.0f; // Likely stopped
-        }
-        return status_.current_speed_rpm; // Keep last speed
+    // Avoid division by zero
+    if (time_diff_us == 0) {
+        return NAN; // Time difference too small, measurement not valid
     }
     
     // Calculate speed in RPM
-    // total_steps steps in elapsed_time_us microseconds
-    // Each full revolution = SPEED_STEPS_PER_REVOLUTION steps
-    // RPM = (steps / elapsed_time_us) * (1000000 us/s) * (60 s/min) / SPEED_STEPS_PER_REVOLUTION
-    float speed_rpm = (static_cast<float>(total_steps) * 60000000.0f) / 
-                     (static_cast<float>(elapsed_time_us) * SPEED_STEPS_PER_REVOLUTION);
+    // pulse_count pulses in time_diff_us microseconds
+    // Each full revolution = SPEED_STEPS_PER_REVOLUTION pulses
+    // RPM = (pulses / time_diff_us) * (1000000 us/s) / SPEED_STEPS_PER_REVOLUTION
+    float speed_rpm = (static_cast<float>(pulse_count) * 1000000.0f) / 
+                     (static_cast<float>(time_diff_us) * SPEED_STEPS_PER_REVOLUTION);
+    
+    // Account for direction setting
+    // Positive pulse_count with CLOCKWISE = positive speed
+    // Negative pulse_count with CLOCKWISE = negative speed (moving backwards)
+    // Invert sign for COUNTER_CLOCKWISE
+    if (direction_ == RotationDirection::COUNTER_CLOCKWISE) {
+        speed_rpm = -speed_rpm;
+    }
+    
+    // Update measurement window: move start time to current end time
+    // Reset pulse counter for next measurement period
+    disable_interrupts();
+    speed_start_time_us_ = speed_end_time_us_;
+    speed_pulse_count_ = 0;
+    enable_interrupts();
     
     return speed_rpm;
 }
@@ -412,6 +379,12 @@ void BldcController::hallSensorInterruptHandler()
     /**
      * Hall sensor interrupt handler - called from GPIO interrupt context
      * This function must be interrupt-safe and as fast as possible
+     * 
+     * Algorithm:
+     * - Read current Hall state
+     * - Calculate step delta (can be negative for reverse movement)
+     * - Update end timestamp and increment pulse counter
+     * - Initialize start timestamp on first call
      */
     
     // Get current timestamp immediately to minimize latency
@@ -430,25 +403,35 @@ void BldcController::hallSensorInterruptHandler()
         return; // No change in Hall state, ignore
     }
     
+    // Calculate step delta between current and previous Hall state
+    int8_t delta = 0;
+    if (last_hall_state_ != 0xFF) {
+        // Calculate forward and backward differences
+        int8_t diff_forward = (hall_state - last_hall_state_ + 6) % 6;
+        int8_t diff_backward = (last_hall_state_ - hall_state + 6) % 6;
+        
+        // Choose shorter path (determines direction)
+        if (diff_forward <= diff_backward) {
+            delta = diff_forward;  // Forward movement (positive)
+        } else {
+            delta = -diff_backward; // Backward movement (negative)
+        }
+    }
+    
     // Update last Hall state
     last_hall_state_ = hall_state;
     
-    // Calculate next head position
-    size_t next_head = (hall_data_head_ + 1) % MAX_HALL_DATA_POINTS;
-    
-    // Check for buffer overflow
-    if (next_head == hall_data_tail_) {
-        // Buffer is full, mark overflow and advance tail to overwrite oldest data
-        hall_data_overflow_ = true;
-        hall_data_tail_ = (hall_data_tail_ + 1) % MAX_HALL_DATA_POINTS;
+    // Initialize start time on first valid transition
+    if (speed_start_time_us_ == 0) {
+        speed_start_time_us_ = timestamp_us;
+        speed_end_time_us_ = timestamp_us;
+        speed_pulse_count_ = 0;
+        return;
     }
     
-    // Store the new Hall data
-    hall_data_[hall_data_head_].timestamp_us = timestamp_us;
-    hall_data_[hall_data_head_].hall_state = hall_state;
-    
-    // Advance head pointer
-    hall_data_head_ = next_head;
+    // Update end timestamp and pulse counter
+    speed_end_time_us_ = timestamp_us;
+    speed_pulse_count_ += delta;
 }
 
 } // namespace libecu

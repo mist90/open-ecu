@@ -160,28 +160,14 @@ private:
     RotationDirection direction_;
     bool initialized_;
     
-    // Hall sensor interrupt data structure
-    struct HallInterruptData {
-        uint32_t timestamp_us;    ///< Timestamp when Hall state changed (microseconds)
-        uint8_t hall_state;       ///< Hall sensor state (0-5, 0xFF = invalid)
-    };
+    // Speed measurement state (interrupt-driven)
+    volatile uint32_t speed_start_time_us_;  ///< Start timestamp for speed measurement
+    volatile uint32_t speed_end_time_us_;    ///< End timestamp for speed measurement
+    volatile int32_t speed_pulse_count_;     ///< Pulse count (can be negative for reverse)
+    volatile uint8_t last_hall_state_;       ///< Last Hall state to detect changes
     
-    // Speed measurement state
-    static const size_t MAX_HALL_DATA_POINTS = 8;  ///< Maximum stored Hall data points
-    HallInterruptData hall_data_[MAX_HALL_DATA_POINTS];  ///< Circular buffer for Hall data
-    volatile size_t hall_data_head_;        ///< Head index for circular buffer
-    volatile size_t hall_data_tail_;        ///< Tail index for circular buffer
-    volatile bool hall_data_overflow_;      ///< Flag indicating buffer overflow
-    
-    // Legacy speed measurement state (kept for compatibility)
-    uint8_t speed_first_position_;      ///< First position in measurement window
-    uint8_t speed_last_position_;       ///< Last position in measurement window
-    uint32_t speed_first_time_us_;      ///< Time of first position (us)
-    uint32_t speed_last_time_us_;       ///< Time of last position (us)
-    int32_t speed_step_count_;          ///< Accumulated step count (can be negative)
-    uint32_t speed_window_min_us_;      ///< Current window minimum size (us)
-    bool speed_measurement_active_;     ///< Speed measurement in progress
-    uint8_t last_hall_state_;           ///< Last Hall state to detect changes
+    // Control loop timing
+    uint32_t last_pid_update_time_us_;       ///< Timestamp of last successful PID update
 
     /**
      * @brief Calculate motor speed from Hall sensor transitions
