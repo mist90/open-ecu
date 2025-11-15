@@ -4,19 +4,7 @@
  */
 
 #include "stm32_hall_sensor.hpp"
-
-#ifdef STM32G4
 #include "../../Core/Inc/main.h"
-#else
-#define GPIO_PIN_6   0x40
-#define GPIO_PIN_7   0x80  
-#define GPIO_PIN_8   0x100
-typedef struct {
-    uint32_t pins;
-} GPIO_TypeDef;
-extern GPIO_TypeDef GPIOB_Mock;
-#define GPIOB (&GPIOB_Mock)
-#endif
 
 namespace libecu {
 
@@ -67,12 +55,7 @@ bool Stm32HallSensor::isValidState(const HallState& state) {
 }
 
 bool Stm32HallSensor::readGpioPin(void* port, uint16_t pin) {
-#ifdef STM32G4
     return HAL_GPIO_ReadPin(static_cast<GPIO_TypeDef*>(port), pin) == GPIO_PIN_SET;
-#else
-    GPIO_TypeDef* gpio = static_cast<GPIO_TypeDef*>(port);
-    return (gpio->pins & pin) != 0;
-#endif
 }
 
 } // namespace libecu

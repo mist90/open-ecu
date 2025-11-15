@@ -66,16 +66,6 @@ public:
     virtual void setChannelState(PwmChannel channel, PwmState state, float duty_cycle = 0.0f) = 0;
 
     /**
-     * @brief Set PWM duty cycle for a channel (legacy method)
-     * @param channel PWM channel
-     * @param duty_cycle Duty cycle (0.0 to 1.0)
-     *                   0.5 = neutral (50% base)
-     *                   >0.5 = positive torque direction
-     *                   <0.5 = negative torque direction
-     */
-    virtual void setDutyCycle(PwmChannel channel, float duty_cycle) = 0;
-
-    /**
      * @brief Set PWM state for a channel (legacy method)
      * @param channel PWM channel
      * @param state PWM state
@@ -104,9 +94,9 @@ public:
      * Used for motor startup and balanced operation
      */
     virtual void setNeutral() {
-        setDutyCycle(PwmChannel::PHASE_U, 0.5f);
-        setDutyCycle(PwmChannel::PHASE_V, 0.5f);
-        setDutyCycle(PwmChannel::PHASE_W, 0.5f);
+        setChannelState(PwmChannel::PHASE_U, PwmState::OFF, 0.0f);
+        setChannelState(PwmChannel::PHASE_V, PwmState::OFF, 0.0f);
+        setChannelState(PwmChannel::PHASE_W, PwmState::OFF, 0.0f);
     }
 };
 

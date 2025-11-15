@@ -4,20 +4,8 @@
  */
 
 #include "stm32_pwm.hpp"
-
-#ifdef STM32G4
 #include "../../Core/Inc/main.h"
 extern TIM_HandleTypeDef htim1;
-#else
-struct TIM_HandleTypeDef_Impl {
-    void* Instance;
-    struct {
-        uint32_t Period;
-        uint32_t Prescaler;
-    } Init;
-};
-static TIM_HandleTypeDef_Impl mock_timer;
-#endif
 
 namespace libecu {
 
@@ -28,8 +16,7 @@ Stm32Pwm::Stm32Pwm(void* htim)
 bool Stm32Pwm::initialize(uint32_t frequency, uint16_t dead_time_ns) {
     frequency_ = frequency;
     dead_time_ns_ = dead_time_ns;
-    
-#ifdef STM32G4
+
     // Calculate timer settings
     uint32_t timer_clock = HAL_RCC_GetPCLK2Freq() * 2;
     uint32_t prescaler = 0;
@@ -93,25 +80,8 @@ bool Stm32Pwm::initialize(uint32_t frequency, uint16_t dead_time_ns) {
     if (HAL_TIMEx_ConfigBreakDeadTime(tim_handle, &sBreakDeadTimeConfig) != HAL_OK) {
         return false;
     }
-#else
-    period_ = 4249;  // Mock value for testing
-#endif
-    
-    return true;
-}
 
-void Stm32Pwm::setDutyCycle(PwmChannel channel, float duty_cycle) {
-    if (duty_cycle < 0.0f || duty_cycle > 1.0f) {
-        return;
-    }
-    
-    uint32_t compare_value = calculateCompareValue(duty_cycle);
-    uint32_t tim_channel = getTimChannel(channel);
-    
-#ifdef STM32G4
-    TIM_HandleTypeDef* tim_handle = static_cast<TIM_HandleTypeDef*>(htim_);
-    __HAL_TIM_SET_COMPARE(tim_handle, tim_channel, compare_value);
-#endif
+    return true;
 }
 
 void Stm32Pwm::setChannelState(PwmChannel channel, PwmState state, float duty_cycle) {
@@ -119,7 +89,6 @@ void Stm32Pwm::setChannelState(PwmChannel channel, PwmState state, float duty_cy
     if (duty_cycle < 0.0f) duty_cycle = 0.0f;
     if (duty_cycle > 1.0f) duty_cycle = 1.0f;
 
-#ifdef STM32G4
     TIM_HandleTypeDef* tim_handle = static_cast<TIM_HandleTypeDef*>(htim_);
     TIM_TypeDef* tim_instance = (TIM_TypeDef*)tim_handle->Instance;
     uint32_t tim_channel = getTimChannel(channel);
@@ -164,7 +133,6 @@ void Stm32Pwm::setChannelState(PwmChannel channel, PwmState state, float duty_cy
             HAL_TIMEx_PWMN_Start(tim_handle, tim_channel);
             break;
     }
-#endif
 }
 
 void Stm32Pwm::setState(PwmChannel channel, PwmState state) {
@@ -174,8 +142,7 @@ void Stm32Pwm::setState(PwmChannel channel, PwmState state) {
 
 void Stm32Pwm::enable(bool enable) {
     enabled_ = enable;
-    
-#ifdef STM32G4
+
     TIM_HandleTypeDef* tim_handle = static_cast<TIM_HandleTypeDef*>(htim_);
     if (enable) {
         HAL_TIM_PWM_Start(tim_handle, TIM_CHANNEL_1);
@@ -188,13 +155,11 @@ void Stm32Pwm::enable(bool enable) {
     } else {
         emergencyStop();
     }
-#endif
 }
 
 void Stm32Pwm::emergencyStop() {
     enabled_ = false;
     
-#ifdef STM32G4
     TIM_HandleTypeDef* tim_handle = static_cast<TIM_HandleTypeDef*>(htim_);
     HAL_TIM_PWM_Stop(tim_handle, TIM_CHANNEL_1);
     HAL_TIM_PWM_Stop(tim_handle, TIM_CHANNEL_2);
@@ -207,7 +172,6 @@ void Stm32Pwm::emergencyStop() {
     __HAL_TIM_SET_COMPARE(tim_handle, TIM_CHANNEL_1, 0);
     __HAL_TIM_SET_COMPARE(tim_handle, TIM_CHANNEL_2, 0);
     __HAL_TIM_SET_COMPARE(tim_handle, TIM_CHANNEL_3, 0);
-#endif
 }
 
 uint32_t Stm32Pwm::getFrequency() const {
@@ -215,16 +179,12 @@ uint32_t Stm32Pwm::getFrequency() const {
 }
 
 uint32_t Stm32Pwm::getTimChannel(PwmChannel channel) {
-#ifdef STM32G4
     switch (channel) {
         case PwmChannel::PHASE_U: return TIM_CHANNEL_1;
         case PwmChannel::PHASE_V: return TIM_CHANNEL_2;
         case PwmChannel::PHASE_W: return TIM_CHANNEL_3;
         default: return TIM_CHANNEL_1;
     }
-#else
-    return 0;
-#endif
 }
 
 uint32_t Stm32Pwm::calculateCompareValue(float duty_cycle) {
