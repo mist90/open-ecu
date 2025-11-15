@@ -21,7 +21,6 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#ifdef STM32G4
 #include "../../libecu/include/libecu.hpp"
 #include "../../libecu/include/bldc_controller.hpp"
 #include "../../libecu/hal/stm32g4/stm32_pwm.hpp"
@@ -33,7 +32,6 @@
 #include <stddef.h>
 #include <string.h>
 #include <stdio.h>
-#endif
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -59,7 +57,6 @@ TIM_HandleTypeDef htim2;
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
-#ifdef STM32G4
 static libecu::Stm32Pwm pwm_driver(&htim1);
 static libecu::HallGpioConfig hall_config{A__GPIO_Port, A__Pin, B__Pin, Z__Pin};
 static libecu::Stm32HallSensor hall_sensor(hall_config);
@@ -67,7 +64,6 @@ static libecu::CommutationController* commutation_controller = nullptr;
 static libecu::PidController* pid_controller = nullptr;
 static libecu::SafetyMonitor* safety_monitor = nullptr;
 static libecu::BldcController* motor_controller = nullptr;
-#endif
 static volatile bool control_tick = false;
 static uint32_t control_counter = 0;
 /* USER CODE END PV */
@@ -124,11 +120,9 @@ void enable_interrupts() {
  */
 extern "C" void motor_controller_hall_interrupt_handler(void)
 {
-#ifdef STM32G4
     if (motor_controller != nullptr) {
         motor_controller->hallSensorInterruptHandler();
     }
-#endif
 }
 
 /* USER CODE END 0 */
@@ -169,43 +163,39 @@ int main(void)
   MX_OPAMP2_Init();
   MX_OPAMP3_Init();
     /* USER CODE BEGIN 2 */
-#ifdef STM32G4
     // Initialize motor control components
     if (!pwm_driver.initialize(20000, 100)) {  // 20kHz PWM, 100ns dead-time
         Error_Handler();
     }
-    
+
     if (!hall_sensor.initialize()) {
         Error_Handler();
     }
-    
+
     // Create component instances
     // Using 2 pole pairs (4-pole motor) as default
     commutation_controller = new libecu::CommutationController(pwm_driver, hall_sensor, 8);
-    
+
     libecu::PidParameters pid_params;
     pid_params.kp = 0.01f;
     pid_params.ki = 0.05f;
     pid_params.kd = 0.0f;
     pid_params.max_output = 1.0f;
     pid_params.min_output = 0.0f;
-    pid_params.max_integral = 10.0f;
+    pid_params.max_integral = 20.0f;
     pid_controller = new libecu::PidController(pid_params);
-    
+
     libecu::SafetyLimits safety_limits;
     safety_limits.max_current = 10.0f;      // 10A max current
     safety_limits.max_temperature = 85.0f;  // 85°C max temp
-    safety_limits.min_voltage = 10.0f;      // 10V min bus voltage
-    safety_limits.max_voltage = 50.0f;      // 50V max bus voltage
-    safety_limits.fault_timeout = 1000;     // 1 second timeout
     safety_monitor = new libecu::SafetyMonitor(safety_limits);
-    
+
     libecu::MotorControlParams motor_params;
-    motor_params.max_duty_cycle = 0.7f;
+    motor_params.max_duty_cycle = 0.8f;
     motor_params.max_speed_rpm = 60.0f;
     motor_params.acceleration_rate = 1000.0f; // 1000 RPM/s accel
     motor_params.control_frequency = PERIODIC_TIMER_FREQ;
-    
+
     motor_controller = new libecu::BldcController(
         pwm_driver, hall_sensor, *commutation_controller, 
         *pid_controller, *safety_monitor, motor_params);
@@ -214,12 +204,18 @@ int main(void)
         Error_Handler();
     }
     motor_controller->setControlMode(libecu::ControlMode::CLOSED_LOOP);
+
+    // This setting is for libecu::ControlMode::OPEN_LOOP mode only
     motor_controller->setDutyCycle(0.3);
+
     motor_controller->start();
-    
+
     // Setup 1000Hz control loop with SysTick
     HAL_SYSTICK_Config(SystemCoreClock / PERIODIC_TIMER_FREQ);
-#endif
+
+    // This setting is for libecu::ControlMode::CLOSED_LOOP mode only
+    motor_controller->setTargetSpeed(10.0f);
+    motor_controller->setDirection(libecu::RotationDirection::CLOCKWISE);
 
     /* USER CODE END 2 */
 
@@ -232,10 +228,8 @@ int main(void)
       /* USER CODE END WHILE */
 
       /* USER CODE BEGIN 3 */
-      motor_controller->setTargetSpeed(10.0f);
-      motor_controller->setDirection(libecu::RotationDirection::CLOCKWISE);
-#ifdef STM32G4
-      // 100Hz motor control loop
+
+      // motor control loop
       if (control_tick) {
           control_tick = false;
           
@@ -265,8 +259,6 @@ int main(void)
               control_counter++;
           }
       }
-#endif
-      
     }
     /* USER CODE END 3 */
 }
@@ -392,9 +384,6 @@ static void MX_TIM1_Init(void)
   /* USER CODE END TIM1_Init 0 */
 
   TIM_MasterConfigTypeDef sMasterConfig = {0};
-  TIM_OC_InitTypeDef sConfigOC = {0};
-  TIM_BreakDeadTimeConfigTypeDef sBreakDeadTimeConfig = {0};
-
   /* USER CODE BEGIN TIM1_Init 1 */
 
   /* USER CODE END TIM1_Init 1 */
@@ -413,42 +402,6 @@ static void MX_TIM1_Init(void)
   sMasterConfig.MasterOutputTrigger2 = TIM_TRGO2_RESET;
   sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
   if (HAL_TIMEx_MasterConfigSynchronization(&htim1, &sMasterConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  sConfigOC.OCMode = TIM_OCMODE_PWM1;
-  sConfigOC.Pulse = 0;
-  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
-  sConfigOC.OCNPolarity = TIM_OCNPOLARITY_HIGH;
-  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
-  sConfigOC.OCIdleState = TIM_OCIDLESTATE_RESET;
-  sConfigOC.OCNIdleState = TIM_OCNIDLESTATE_RESET;
-  if (HAL_TIM_PWM_ConfigChannel(&htim1, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  if (HAL_TIM_PWM_ConfigChannel(&htim1, &sConfigOC, TIM_CHANNEL_2) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  if (HAL_TIM_PWM_ConfigChannel(&htim1, &sConfigOC, TIM_CHANNEL_3) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  sBreakDeadTimeConfig.OffStateRunMode = TIM_OSSR_DISABLE;
-  sBreakDeadTimeConfig.OffStateIDLEMode = TIM_OSSI_DISABLE;
-  sBreakDeadTimeConfig.LockLevel = TIM_LOCKLEVEL_OFF;
-  sBreakDeadTimeConfig.DeadTime = 0;
-  sBreakDeadTimeConfig.BreakState = TIM_BREAK_DISABLE;
-  sBreakDeadTimeConfig.BreakPolarity = TIM_BREAKPOLARITY_HIGH;
-  sBreakDeadTimeConfig.BreakFilter = 0;
-  sBreakDeadTimeConfig.BreakAFMode = TIM_BREAK_AFMODE_INPUT;
-  sBreakDeadTimeConfig.Break2State = TIM_BREAK2_DISABLE;
-  sBreakDeadTimeConfig.Break2Polarity = TIM_BREAK2POLARITY_HIGH;
-  sBreakDeadTimeConfig.Break2Filter = 0;
-  sBreakDeadTimeConfig.Break2AFMode = TIM_BREAK_AFMODE_INPUT;
-  sBreakDeadTimeConfig.AutomaticOutput = TIM_AUTOMATICOUTPUT_DISABLE;
-  if (HAL_TIMEx_ConfigBreakDeadTime(&htim1, &sBreakDeadTimeConfig) != HAL_OK)
   {
     Error_Handler();
   }

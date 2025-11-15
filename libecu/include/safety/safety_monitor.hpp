@@ -29,9 +29,6 @@ enum class SafetyFault : uint8_t {
 struct SafetyLimits {
     float max_current;      ///< Maximum phase current (A)
     float max_temperature;  ///< Maximum temperature (°C)
-    float min_voltage;      ///< Minimum bus voltage (V)
-    float max_voltage;      ///< Maximum bus voltage (V)
-    uint32_t fault_timeout; ///< Fault timeout in milliseconds
 };
 
 /**
@@ -121,13 +118,6 @@ private:
      * @return true if overtemperature detected
      */
     bool checkTemperature(const SafetyData& data);
-
-    /**
-     * @brief Check for voltage faults
-     * @param data Safety data
-     * @return true if voltage fault detected
-     */
-    bool checkVoltage(const SafetyData& data);
 
     /**
      * @brief Set active fault

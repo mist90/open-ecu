@@ -44,12 +44,6 @@ SafetyFault SafetyMonitor::update(const SafetyData& data)
         return active_fault_;
     }
     
-    // Check voltage faults
-    if (checkVoltage(data)) {
-        // Fault type is set by checkVoltage function
-        return active_fault_;
-    }
-    
     // No faults detected
     if (active_fault_ != SafetyFault::NONE) {
         active_fault_ = SafetyFault::NONE;
@@ -97,21 +91,6 @@ bool SafetyMonitor::checkOvercurrent(const SafetyData& data)
 bool SafetyMonitor::checkTemperature(const SafetyData& data)
 {
     return data.temperature > limits_.max_temperature;
-}
-
-bool SafetyMonitor::checkVoltage(const SafetyData& data)
-{
-    if (data.bus_voltage < limits_.min_voltage) {
-        setFault(SafetyFault::UNDERVOLTAGE);
-        return true;
-    }
-    
-    if (data.bus_voltage > limits_.max_voltage) {
-        setFault(SafetyFault::OVERVOLTAGE);
-        return true;
-    }
-    
-    return false;
 }
 
 void SafetyMonitor::setFault(SafetyFault fault)
