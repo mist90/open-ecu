@@ -121,8 +121,18 @@ void Stm32Pwm::setChannelState(PwmChannel channel, PwmState state, float duty_cy
 
 #ifdef STM32G4
     TIM_HandleTypeDef* tim_handle = static_cast<TIM_HandleTypeDef*>(htim_);
+    TIM_TypeDef* tim_instance = (TIM_TypeDef*)tim_handle->Instance;
     uint32_t tim_channel = getTimChannel(channel);
     uint32_t compare_value = calculateCompareValue(duty_cycle);
+
+    // Determine which channel we're configuring (0=CH1, 1=CH2, 2=CH3)
+    uint32_t channel_index = static_cast<uint32_t>(channel);
+
+    // CCER register bit positions for polarity control
+    // CCxP = bit 1 + 4*x (main output polarity)
+    // CCxNP = bit 3 + 4*x (complementary output polarity)
+    uint32_t ccxp_bit = (1UL << (1 + 4 * channel_index));   // CCxP
+    uint32_t ccxnp_bit = (1UL << (3 + 4 * channel_index));  // CCxNP
 
     switch (state) {
         case PwmState::OFF:
@@ -134,42 +144,24 @@ void Stm32Pwm::setChannelState(PwmChannel channel, PwmState state, float duty_cy
 
         case PwmState::UP:
             // Non-inverse PWM: High-side active for duty_cycle, low-side complementary
-            // Configure normal polarity (active high)
-            {
-                TIM_OC_InitTypeDef sConfigOC = {0};
-                sConfigOC.OCMode = TIM_OCMODE_PWM1;
-                sConfigOC.Pulse = compare_value;
-                sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
-                sConfigOC.OCNPolarity = TIM_OCNPOLARITY_HIGH;
-                sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
-                sConfigOC.OCIdleState = TIM_OCIDLESTATE_RESET;
-                sConfigOC.OCNIdleState = TIM_OCNIDLESTATE_RESET;
+            // Set normal polarity (active high) by clearing CCxP and CCxNP bits
+            tim_instance->CCER &= ~(ccxp_bit | ccxnp_bit);
 
-                HAL_TIM_PWM_ConfigChannel(tim_handle, &sConfigOC, tim_channel);
-                __HAL_TIM_SET_COMPARE(tim_handle, tim_channel, compare_value);
-                HAL_TIM_PWM_Start(tim_handle, tim_channel);
-                HAL_TIMEx_PWMN_Start(tim_handle, tim_channel);
-            }
+            // Set compare value and start outputs
+            __HAL_TIM_SET_COMPARE(tim_handle, tim_channel, compare_value);
+            HAL_TIM_PWM_Start(tim_handle, tim_channel);
+            HAL_TIMEx_PWMN_Start(tim_handle, tim_channel);
             break;
 
         case PwmState::DOWN:
             // Inverse PWM: Low-side active for duty_cycle, high-side complementary
-            // Achieved by inverting output polarity (active low)
-            {
-                TIM_OC_InitTypeDef sConfigOC = {0};
-                sConfigOC.OCMode = TIM_OCMODE_PWM1;
-                sConfigOC.Pulse = compare_value;
-                sConfigOC.OCPolarity = TIM_OCPOLARITY_LOW;
-                sConfigOC.OCNPolarity = TIM_OCNPOLARITY_LOW;
-                sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
-                sConfigOC.OCIdleState = TIM_OCIDLESTATE_RESET;
-                sConfigOC.OCNIdleState = TIM_OCNIDLESTATE_RESET;
+            // Set inverted polarity (active low) by setting CCxP and CCxNP bits
+            tim_instance->CCER |= (ccxp_bit | ccxnp_bit);
 
-                HAL_TIM_PWM_ConfigChannel(tim_handle, &sConfigOC, tim_channel);
-                __HAL_TIM_SET_COMPARE(tim_handle, tim_channel, compare_value);
-                HAL_TIM_PWM_Start(tim_handle, tim_channel);
-                HAL_TIMEx_PWMN_Start(tim_handle, tim_channel);
-            }
+            // Set compare value and start outputs
+            __HAL_TIM_SET_COMPARE(tim_handle, tim_channel, compare_value);
+            HAL_TIM_PWM_Start(tim_handle, tim_channel);
+            HAL_TIMEx_PWMN_Start(tim_handle, tim_channel);
             break;
     }
 #endif
