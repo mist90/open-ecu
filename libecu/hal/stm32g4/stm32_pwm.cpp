@@ -56,21 +56,37 @@ bool Stm32Pwm::initialize(uint32_t frequency, uint16_t dead_time_ns) {
     sBreakDeadTimeConfig.OffStateRunMode = TIM_OSSR_DISABLE;
     sBreakDeadTimeConfig.OffStateIDLEMode = TIM_OSSI_DISABLE;
     sBreakDeadTimeConfig.LockLevel = TIM_LOCKLEVEL_OFF;
-    
+
     // Calculate dead-time register value
-    // TIM1 clock is typically 170MHz, dead-time units depend on TDTS
+    // tDTS = timer clock period, dead time is specified in tDTS units
+    // For STM32G4 TIM1 at 170MHz: tDTS ≈ 5.88ns (when CKD=00, no clock division)
     uint32_t tim_clock = HAL_RCC_GetPCLK2Freq() * 2;  // 170MHz typically
-    uint32_t dead_time_ticks = (dead_time_ns_ * tim_clock) / 1000000000UL;
-    
-    // STM32 dead-time has different ranges based on DTG[7:0] value
+
+    // Avoid overflow: rearrange (dead_time_ns * tim_clock) / 1e9
+    // to: dead_time_ns / (1e9 / tim_clock)
+    // Calculate tDTS period in nanoseconds: 1e9 / tim_clock
+    uint32_t tDTS_ns = 1000000000UL / tim_clock;  // Period of one tDTS tick in nanoseconds
+    uint32_t dead_time_ticks = dead_time_ns_ / tDTS_ns;  // Dead time in tDTS ticks
+
+    // STM32 dead-time generator has different ranges based on DTG[7:0] value:
+    // DTG[7:5]=0xx: Dead time = DTG[6:0] × tDTS (0 to 127 ticks)
+    // DTG[7:5]=10x: Dead time = (128 + DTG[5:0]) × 2 × tDTS (128 to 254 ticks, step 2)
+    // DTG[7:5]=110: Dead time = (256 + DTG[4:0]) × 8 × tDTS (256 to 504 ticks, step 8)
+    // DTG[7:5]=111: Dead time = (512 + DTG[4:0]) × 16 × tDTS (512 to 1008 ticks, step 16)
     if (dead_time_ticks <= 127) {
+        // Range 1: 0 to 127 ticks
         sBreakDeadTimeConfig.DeadTime = dead_time_ticks;
     } else if (dead_time_ticks <= 254) {
+        // Range 2: 128 to 254 ticks (steps of 2)
         sBreakDeadTimeConfig.DeadTime = 0x80 | ((dead_time_ticks - 128) / 2);
     } else if (dead_time_ticks <= 504) {
+        // Range 3: 256 to 504 ticks (steps of 8)
         sBreakDeadTimeConfig.DeadTime = 0xC0 | ((dead_time_ticks - 256) / 8);
     } else {
-        sBreakDeadTimeConfig.DeadTime = 0xE0 | ((dead_time_ticks - 512) / 16);
+        // Range 4: 512 to 1008 ticks (steps of 16)
+        uint32_t dtg_value = (dead_time_ticks - 512) / 16;
+        if (dtg_value > 31) dtg_value = 31;  // Clamp to max (DTG[4:0] is 5 bits)
+        sBreakDeadTimeConfig.DeadTime = 0xE0 | dtg_value;
     }
     
     sBreakDeadTimeConfig.BreakState = TIM_BREAK_DISABLE;
