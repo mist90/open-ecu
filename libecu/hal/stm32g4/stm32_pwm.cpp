@@ -114,39 +114,58 @@ void Stm32Pwm::setDutyCycle(PwmChannel channel, float duty_cycle) {
 #endif
 }
 
-void Stm32Pwm::setChannelState(PwmChannel channel, PwmState state, float delta) {
-    // Clamp delta to valid range
-    if (delta < 0.0f) delta = 0.0f;
-    if (delta > 0.5f) delta = 0.5f;
-    
+void Stm32Pwm::setChannelState(PwmChannel channel, PwmState state, float duty_cycle) {
+    // Clamp duty_cycle to valid range
+    if (duty_cycle < 0.0f) duty_cycle = 0.0f;
+    if (duty_cycle > 1.0f) duty_cycle = 1.0f;
+
 #ifdef STM32G4
     TIM_HandleTypeDef* tim_handle = static_cast<TIM_HandleTypeDef*>(htim_);
     uint32_t tim_channel = getTimChannel(channel);
-    
+    uint32_t compare_value = calculateCompareValue(duty_cycle);
+
     switch (state) {
         case PwmState::OFF:
-            // Disable both high-side and low-side (complementary) outputs
+            // High impedance - disable both high-side and low-side outputs
             HAL_TIM_PWM_Stop(tim_handle, tim_channel);
             HAL_TIMEx_PWMN_Stop(tim_handle, tim_channel);
             __HAL_TIM_SET_COMPARE(tim_handle, tim_channel, 0);
             break;
-            
+
         case PwmState::UP:
-            // Complementary PWM at 50% + delta (positive direction)
+            // Non-inverse PWM: High-side active for duty_cycle, low-side complementary
+            // Configure normal polarity (active high)
             {
-                float duty_cycle = 0.5f + delta;
-                uint32_t compare_value = calculateCompareValue(duty_cycle);
+                TIM_OC_InitTypeDef sConfigOC = {0};
+                sConfigOC.OCMode = TIM_OCMODE_PWM1;
+                sConfigOC.Pulse = compare_value;
+                sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+                sConfigOC.OCNPolarity = TIM_OCNPOLARITY_HIGH;
+                sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+                sConfigOC.OCIdleState = TIM_OCIDLESTATE_RESET;
+                sConfigOC.OCNIdleState = TIM_OCNIDLESTATE_RESET;
+
+                HAL_TIM_PWM_ConfigChannel(tim_handle, &sConfigOC, tim_channel);
                 __HAL_TIM_SET_COMPARE(tim_handle, tim_channel, compare_value);
                 HAL_TIM_PWM_Start(tim_handle, tim_channel);
                 HAL_TIMEx_PWMN_Start(tim_handle, tim_channel);
             }
             break;
-            
+
         case PwmState::DOWN:
-            // Complementary PWM at 50% - delta (negative direction)
+            // Inverse PWM: Low-side active for duty_cycle, high-side complementary
+            // Achieved by inverting output polarity (active low)
             {
-                float duty_cycle = 0.5f - delta;
-                uint32_t compare_value = calculateCompareValue(duty_cycle);
+                TIM_OC_InitTypeDef sConfigOC = {0};
+                sConfigOC.OCMode = TIM_OCMODE_PWM1;
+                sConfigOC.Pulse = compare_value;
+                sConfigOC.OCPolarity = TIM_OCPOLARITY_LOW;
+                sConfigOC.OCNPolarity = TIM_OCNPOLARITY_LOW;
+                sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+                sConfigOC.OCIdleState = TIM_OCIDLESTATE_RESET;
+                sConfigOC.OCNIdleState = TIM_OCNIDLESTATE_RESET;
+
+                HAL_TIM_PWM_ConfigChannel(tim_handle, &sConfigOC, tim_channel);
                 __HAL_TIM_SET_COMPARE(tim_handle, tim_channel, compare_value);
                 HAL_TIM_PWM_Start(tim_handle, tim_channel);
                 HAL_TIMEx_PWMN_Start(tim_handle, tim_channel);
@@ -157,7 +176,7 @@ void Stm32Pwm::setChannelState(PwmChannel channel, PwmState state, float delta) 
 }
 
 void Stm32Pwm::setState(PwmChannel channel, PwmState state) {
-    // Legacy method - use setChannelState with default delta
+    // Legacy method - use setChannelState with default duty_cycle
     setChannelState(channel, state, 0.0f);
 }
 

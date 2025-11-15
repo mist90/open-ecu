@@ -24,22 +24,22 @@ enum class PwmChannel : uint8_t {
  * @brief PWM state for 3-phase complementary switching control
  */
 enum class PwmState : uint8_t {
-    OFF = 0,  ///< Both high and low side switches disabled (motor disabled)
-    UP = 1,   ///< Complementary PWM at 50% + delta (positive direction)
-    DOWN = 2  ///< Complementary PWM at 50% - delta (negative direction)
+    OFF = 0,  ///< High impedance - both high and low side switches disabled
+    UP = 1,   ///< Non-inverse PWM - high-side active, low-side complementary
+    DOWN = 2  ///< Inverse PWM - low-side active, high-side complementary
 };
 
 /**
  * @brief Abstract interface for 3-phase complementary PWM control
- * 
+ *
  * This interface provides complementary PWM control for 3-phase BLDC motors.
  * Each phase has a high-side and low-side switch that operate complementarily
  * with dead-time protection to prevent shoot-through current.
- * 
+ *
  * PWM Operation:
- * - 50% duty cycle = neutral position (balanced)
- * - >50% duty cycle = positive torque direction  
- * - <50% duty cycle = negative torque direction
+ * - UP state: High-side switches at duty_cycle, low-side complementary (phase → V+)
+ * - DOWN state: Low-side switches at duty_cycle, high-side complementary (phase → GND)
+ * - OFF state: Both switches disabled, phase floating (high-Z)
  * - Dead-time ensures switches never conduct simultaneously
  */
 class PwmInterface {
@@ -58,12 +58,12 @@ public:
      * @brief Set PWM state and modulation for a channel
      * @param channel PWM channel
      * @param state PWM state (OFF/UP/DOWN)
-     * @param delta Modulation delta (0.0 to 0.5)
-     *              For UP: actual_duty = 0.5 + delta (high-side dominant)
-     *              For DOWN: actual_duty = 0.5 - delta (low-side dominant)  
-     *              For OFF: delta is ignored (both switches disabled)
+     * @param duty_cycle PWM duty cycle (0.0 to 1.0)
+     *                   For UP: High-side active for duty_cycle
+     *                   For DOWN: Low-side active for duty_cycle
+     *                   For OFF: duty_cycle is ignored (both switches disabled)
      */
-    virtual void setChannelState(PwmChannel channel, PwmState state, float delta = 0.0f) = 0;
+    virtual void setChannelState(PwmChannel channel, PwmState state, float duty_cycle = 0.0f) = 0;
 
     /**
      * @brief Set PWM duty cycle for a channel (legacy method)

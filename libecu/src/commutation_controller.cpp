@@ -10,7 +10,7 @@ uint32_t time_us();
 namespace libecu {
 
 // 6-step commutation table for counter-clockwise rotation
-// UP = 50% + delta (high-side dominant), DOWN = 50% - delta (low-side dominant)
+// UP = high-side active, DOWN = low-side active, OFF = high impedance
 const CommutationStep CommutationController::COMMUTATION_TABLE_CCW[6] = {
     {PwmState::OFF, PwmState::DOWN, PwmState::UP},   // 0 -> 5
     {PwmState::UP,  PwmState::DOWN, PwmState::OFF},  // 1 -> 0
@@ -161,22 +161,26 @@ void CommutationController::emergencyStop()
 void CommutationController::applyCommutationStep(const CommutationStep& step, float duty_cycle)
 {
     // duty_cycle 0.0-1.0 where:
-    // 0.0 = 0V (neutral, delta = 0)
-    // 1.0 = maximum voltage (delta = 0.5)
-    // For UP state: actual_duty = 0.5 + delta = 0.5 + duty_cycle/2
-    // For DOWN state: actual_duty = 0.5 - delta = 0.5 - duty_cycle/2
-    
+    // 0.0 = 0V output (no switching)
+    // 1.0 = maximum voltage output
+    // For UP state: high-side switches at duty_cycle
+    // For DOWN state: low-side switches at duty_cycle
+    // For OFF state: both switches disabled (high-Z)
+
     // Clamp duty_cycle to valid range
     if (duty_cycle < 0.0f) duty_cycle = 0.0f;
     if (duty_cycle > 1.0f) duty_cycle = 1.0f;
-    
-    // Calculate delta: duty_cycle 0.0-1.0 maps to delta 0.0-0.5
-    float delta = duty_cycle * 0.5f;
-    
-    // Apply PWM states with delta modulation using new setChannelState method
-    pwm_interface_.setChannelState(PwmChannel::PHASE_U, step.phase_u, delta);
-    pwm_interface_.setChannelState(PwmChannel::PHASE_V, step.phase_v, delta);
-    pwm_interface_.setChannelState(PwmChannel::PHASE_W, step.phase_w, delta);
+
+    // Convert duty_cycle to 0.5-1.0 range
+    // This is becase duty_cycle==0.5 is current keeping mode,
+    // >0.5 - positive current growing,
+    // <0.5 - negative current growing 
+    duty_cycle = 0.5f + duty_cycle * 0.5f;
+
+    // Apply PWM states with direct duty_cycle control
+    pwm_interface_.setChannelState(PwmChannel::PHASE_U, step.phase_u, duty_cycle);
+    pwm_interface_.setChannelState(PwmChannel::PHASE_V, step.phase_v, duty_cycle);
+    pwm_interface_.setChannelState(PwmChannel::PHASE_W, step.phase_w, duty_cycle);
 }
 
 uint32_t CommutationController::calculateStepInterval(float speed_rpm)
