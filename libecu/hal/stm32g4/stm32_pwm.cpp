@@ -5,7 +5,9 @@
 
 #include "stm32_pwm.hpp"
 #include "../../Core/Inc/main.h"
+
 extern TIM_HandleTypeDef htim1;
+extern "C" void HAL_TIM_MspPostInit(TIM_HandleTypeDef* htim);
 
 namespace libecu {
 
@@ -21,20 +23,40 @@ bool Stm32Pwm::initialize(uint32_t frequency, uint16_t dead_time_ns) {
     uint32_t timer_clock = HAL_RCC_GetPCLK2Freq() * 2;
     uint32_t prescaler = 0;
     period_ = (timer_clock / frequency) - 1;
-    
+
     while (period_ > 65535) {
         prescaler++;
         period_ = (timer_clock / ((prescaler + 1) * frequency)) - 1;
     }
-    
+
     TIM_HandleTypeDef* tim_handle = static_cast<TIM_HandleTypeDef*>(htim_);
-    tim_handle->Init.Period = period_;
+
+    // Full TIM1 initialization (moved from MX_TIM1_Init)
+    tim_handle->Instance = TIM1;
     tim_handle->Init.Prescaler = prescaler;
-    
+    tim_handle->Init.CounterMode = TIM_COUNTERMODE_UP;
+    tim_handle->Init.Period = period_;
+    tim_handle->Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+    tim_handle->Init.RepetitionCounter = 0;
+    tim_handle->Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+
     if (HAL_TIM_PWM_Init(tim_handle) != HAL_OK) {
         return false;
     }
-    
+
+    // Configure master synchronization
+    TIM_MasterConfigTypeDef sMasterConfig = {0};
+    sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+    sMasterConfig.MasterOutputTrigger2 = TIM_TRGO2_RESET;
+    sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+
+    if (HAL_TIMEx_MasterConfigSynchronization(tim_handle, &sMasterConfig) != HAL_OK) {
+        return false;
+    }
+
+    // Initialize GPIO pins for PWM outputs (moved from MX_TIM1_Init)
+    HAL_TIM_MspPostInit(tim_handle);
+
     // Configure PWM channels
     TIM_OC_InitTypeDef sConfigOC = {0};
     sConfigOC.OCMode = TIM_OCMODE_PWM1;
