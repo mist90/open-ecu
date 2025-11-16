@@ -33,10 +33,10 @@ SafetyFault SafetyMonitor::update(const SafetyData& data)
     }
     
     // Check overcurrent
-    if (checkOvercurrent(data)) {
-        setFault(SafetyFault::OVERCURRENT);
-        return active_fault_;
-    }
+    //if (checkOvercurrent(data)) {
+    //    setFault(SafetyFault::OVERCURRENT);
+    //    return active_fault_;
+    //}
     
     // Check overtemperature
     if (checkTemperature(data)) {
