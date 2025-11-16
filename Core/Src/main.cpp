@@ -64,8 +64,6 @@ TIM_HandleTypeDef htim2;
 
 UART_HandleTypeDef huart2;
 
-
-ADC_HandleTypeDef hadc1;
 DMA_HandleTypeDef hdma_adc1;
 
 /* USER CODE BEGIN PV */
@@ -523,14 +521,19 @@ static void MX_OPAMP1_Init(void)
 
   /* USER CODE END OPAMP1_Init 1 */
   hopamp1.Instance = OPAMP1;
-  hopamp1.Init.PowerSupplyRange = OPAMP_POWERSUPPLY_HIGH;
+  hopamp1.Init.PowerMode = OPAMP_POWERMODE_NORMALSPEED;
   hopamp1.Init.Mode = OPAMP_PGA_MODE;
   hopamp1.Init.NonInvertingInput = OPAMP_NONINVERTINGINPUT_IO0;
-  hopamp1.Init.InvertingInput = OPAMP_INVERTINGINPUT_CONNECT_NO;
+  hopamp1.Init.InvertingInput = OPAMP_INVERTINGINPUT_IO0;  // Not used in PGA mode
   hopamp1.Init.PgaGain = OPAMP_PGA_GAIN_16_OR_MINUS_15;
   hopamp1.Init.PgaConnect = OPAMP_PGA_CONNECT_INVERTINGINPUT_NO;
   hopamp1.Init.InternalOutput = ENABLE;
+  hopamp1.Init.TimerControlledMuxmode = OPAMP_TIMERCONTROLLEDMUXMODE_DISABLE;
+  hopamp1.Init.InvertingInputSecondary = OPAMP_SEC_INVERTINGINPUT_IO0;
+  hopamp1.Init.NonInvertingInputSecondary = OPAMP_SEC_NONINVERTINGINPUT_IO0;
   hopamp1.Init.UserTrimming = OPAMP_TRIMMING_FACTORY;
+  hopamp1.Init.TrimmingValueP = 0;
+  hopamp1.Init.TrimmingValueN = 0;
   if (HAL_OPAMP_Init(&hopamp1) != HAL_OK)
   {
     Error_Handler();
@@ -557,14 +560,19 @@ static void MX_OPAMP2_Init(void)
 
   /* USER CODE END OPAMP2_Init 1 */
   hopamp2.Instance = OPAMP2;
-  hopamp2.Init.PowerSupplyRange = OPAMP_POWERSUPPLY_HIGH;
+  hopamp2.Init.PowerMode = OPAMP_POWERMODE_NORMALSPEED;
   hopamp2.Init.Mode = OPAMP_PGA_MODE;
   hopamp2.Init.NonInvertingInput = OPAMP_NONINVERTINGINPUT_IO0;
-  hopamp2.Init.InvertingInput = OPAMP_INVERTINGINPUT_CONNECT_NO;
+  hopamp2.Init.InvertingInput = OPAMP_INVERTINGINPUT_IO0;  // Not used in PGA mode
   hopamp2.Init.PgaGain = OPAMP_PGA_GAIN_16_OR_MINUS_15;
   hopamp2.Init.PgaConnect = OPAMP_PGA_CONNECT_INVERTINGINPUT_NO;
   hopamp2.Init.InternalOutput = ENABLE;
+  hopamp2.Init.TimerControlledMuxmode = OPAMP_TIMERCONTROLLEDMUXMODE_DISABLE;
+  hopamp2.Init.InvertingInputSecondary = OPAMP_SEC_INVERTINGINPUT_IO0;
+  hopamp2.Init.NonInvertingInputSecondary = OPAMP_SEC_NONINVERTINGINPUT_IO0;
   hopamp2.Init.UserTrimming = OPAMP_TRIMMING_FACTORY;
+  hopamp2.Init.TrimmingValueP = 0;
+  hopamp2.Init.TrimmingValueN = 0;
   if (HAL_OPAMP_Init(&hopamp2) != HAL_OK)
   {
     Error_Handler();
@@ -591,14 +599,19 @@ static void MX_OPAMP3_Init(void)
 
   /* USER CODE END OPAMP3_Init 1 */
   hopamp3.Instance = OPAMP3;
-  hopamp3.Init.PowerSupplyRange = OPAMP_POWERSUPPLY_HIGH;
+  hopamp3.Init.PowerMode = OPAMP_POWERMODE_NORMALSPEED;
   hopamp3.Init.Mode = OPAMP_PGA_MODE;
   hopamp3.Init.NonInvertingInput = OPAMP_NONINVERTINGINPUT_IO0;
-  hopamp3.Init.InvertingInput = OPAMP_INVERTINGINPUT_CONNECT_NO;
+  hopamp3.Init.InvertingInput = OPAMP_INVERTINGINPUT_IO0;  // Not used in PGA mode
   hopamp3.Init.PgaGain = OPAMP_PGA_GAIN_16_OR_MINUS_15;
   hopamp3.Init.PgaConnect = OPAMP_PGA_CONNECT_INVERTINGINPUT_NO;
   hopamp3.Init.InternalOutput = ENABLE;
+  hopamp3.Init.TimerControlledMuxmode = OPAMP_TIMERCONTROLLEDMUXMODE_DISABLE;
+  hopamp3.Init.InvertingInputSecondary = OPAMP_SEC_INVERTINGINPUT_IO0;
+  hopamp3.Init.NonInvertingInputSecondary = OPAMP_SEC_NONINVERTINGINPUT_IO0;
   hopamp3.Init.UserTrimming = OPAMP_TRIMMING_FACTORY;
+  hopamp3.Init.TrimmingValueP = 0;
+  hopamp3.Init.TrimmingValueN = 0;
   if (HAL_OPAMP_Init(&hopamp3) != HAL_OK)
   {
     Error_Handler();
