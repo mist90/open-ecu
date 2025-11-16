@@ -233,12 +233,10 @@ int main(void)
     }
 
     // Start ADC injected conversions (triggered by TIM1_TRGO2)
-    // ADC1: Phase U (VOPAMP1) + Phase W (IN12/OPAMP3)
-    // ADC2: Phase V (VOPAMP2)
+    // In dual-mode simultaneous, only start the master (ADC1)
+    // ADC1 (master): Phase U (VOPAMP1) + Phase W (IN12/OPAMP3)
+    // ADC2 (slave): Phase V (VOPAMP2) - automatically started by master
     if (HAL_ADCEx_InjectedStart(&hadc1) != HAL_OK) {
-        Error_Handler();
-    }
-    if (HAL_ADCEx_InjectedStart(&hadc2) != HAL_OK) {
         Error_Handler();
     }
 
