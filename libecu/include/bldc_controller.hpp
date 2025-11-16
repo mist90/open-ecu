@@ -11,8 +11,10 @@
 
 #include "interfaces/pwm_interface.hpp"
 #include "interfaces/hall_interface.hpp"
+#include "interfaces/adc_interface.hpp"
 #include "algorithms/commutation_controller.hpp"
 #include "algorithms/pid_controller.hpp"
+#include "algorithms/current_controller.hpp"
 #include "safety/safety_monitor.hpp"
 
 namespace libecu {
@@ -21,8 +23,9 @@ namespace libecu {
  * @brief Motor control mode
  */
 enum class ControlMode : uint8_t {
-    OPEN_LOOP = 0,    ///< Open loop control (direct duty cycle)
-    CLOSED_LOOP = 1   ///< Closed loop speed control with PID
+    OPEN_LOOP = 0,      ///< Open loop control (direct duty cycle)
+    CLOSED_LOOP = 1,    ///< Closed loop speed control with PID
+    CURRENT_CONTROL = 2 ///< Cascaded current control (speed → current → duty)
 };
 
 /**
@@ -42,6 +45,8 @@ struct MotorStatus {
     float current_speed_rpm;  ///< Current motor speed (RPM)
     float target_speed_rpm;   ///< Target motor speed (RPM)
     float duty_cycle;         ///< Current duty cycle
+    float target_current;     ///< Target motor current (A)
+    float measured_current;   ///< Measured motor current (A)
     MotorPosition position;   ///< Current motor position
     SafetyFault active_fault; ///< Active safety fault
     bool is_running;          ///< Motor running status
@@ -58,9 +63,11 @@ public:
      * @param pwm_interface PWM interface
      * @param hall_interface Hall sensor interface
      * @param commutation_controller Commutation controller
-     * @param pid_controller PID controller
+     * @param pid_controller Speed PID controller
      * @param safety_monitor Safety monitor
      * @param params Motor control parameters
+     * @param adc_interface ADC interface for current sensing (optional, nullptr for voltage mode only)
+     * @param current_controller Current PI controller (optional, nullptr for voltage mode only)
      */
     BldcController(
         PwmInterface& pwm_interface,
@@ -68,7 +75,9 @@ public:
         CommutationController& commutation_controller,
         PidController& pid_controller,
         SafetyMonitor& safety_monitor,
-        const MotorControlParams& params
+        const MotorControlParams& params,
+        AdcInterface* adc_interface = nullptr,
+        CurrentController* current_controller = nullptr
     );
 
     /**
@@ -131,6 +140,12 @@ public:
     MotorStatus getStatus() const;
 
     /**
+     * @brief Set target current for current control mode
+     * @param current_a Target current in Amperes
+     */
+    void setTargetCurrent(float current_a);
+
+    /**
      * @brief Clear safety fault
      * @param fault Fault to clear
      */
@@ -144,13 +159,22 @@ public:
      */
     void hallSensorInterruptHandler();
 
+    /**
+     * @brief PWM interrupt handler for high-frequency current control loop (20kHz)
+     * Call this from TIM1 update interrupt when current control mode is active.
+     * This runs the inner current control loop at PWM frequency.
+     */
+    void pwmInterruptHandler();
+
 private:
     // Component references
     PwmInterface& pwm_interface_;
     HallInterface& hall_interface_;
     CommutationController& commutation_controller_;
-    PidController& pid_controller_;
+    PidController& pid_controller_;          // Speed controller (outer loop)
     SafetyMonitor& safety_monitor_;
+    AdcInterface* adc_interface_;            // Optional: for current sensing
+    CurrentController* current_controller_;   // Optional: for current control
 
     // Configuration
     MotorControlParams params_;
@@ -189,6 +213,12 @@ private:
      * @param fault Active safety fault
      */
     void handleSafetyFault(SafetyFault fault);
+
+    /**
+     * @brief Get current from active conducting phase based on commutation state
+     * @return Measured phase current in Amperes
+     */
+    float getCurrentFromActivePhase();
 };
 
 } // namespace libecu

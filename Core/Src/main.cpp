@@ -25,8 +25,10 @@
 #include "../../libecu/include/bldc_controller.hpp"
 #include "../../libecu/hal/stm32g4/stm32_pwm.hpp"
 #include "../../libecu/hal/stm32g4/stm32_hall_sensor.hpp"
+#include "../../libecu/hal/stm32g4/stm32_adc.hpp"
 #include "../../libecu/include/algorithms/commutation_controller.hpp"
 #include "../../libecu/include/algorithms/pid_controller.hpp"
+#include "../../libecu/include/algorithms/current_controller.hpp"
 #include "../../libecu/include/safety/safety_monitor.hpp"
 #include <stdint.h>
 #include <stddef.h>
@@ -56,13 +58,22 @@ TIM_HandleTypeDef htim2;
 
 UART_HandleTypeDef huart2;
 
+OPAMP_HandleTypeDef hopamp1;
+OPAMP_HandleTypeDef hopamp2;
+OPAMP_HandleTypeDef hopamp3;
+
+ADC_HandleTypeDef hadc1;
+DMA_HandleTypeDef hdma_adc1;
+
 /* USER CODE BEGIN PV */
 static libecu::Stm32Pwm pwm_driver(&htim1);
 static libecu::HallGpioConfig hall_config{A__GPIO_Port, A__Pin, B__Pin, Z__Pin};
 static libecu::Stm32HallSensor hall_sensor(hall_config);
+static libecu::Stm32Adc adc_driver(&hadc1, &hdma_adc1);
 static libecu::CommutationController* commutation_controller = nullptr;
 static libecu::PidController* pid_controller = nullptr;
 static libecu::SafetyMonitor* safety_monitor = nullptr;
+static libecu::CurrentController* current_controller = nullptr;
 static libecu::BldcController* motor_controller = nullptr;
 static volatile bool control_tick = false;
 static uint32_t control_counter = 0;
@@ -77,6 +88,8 @@ static void MX_OPAMP1_Init(void);
 static void MX_OPAMP2_Init(void);
 static void MX_OPAMP3_Init(void);
 static void MX_TIM2_Init(void);
+static void MX_ADC1_Init(void);
+static void MX_DMA_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -125,6 +138,17 @@ extern "C" void motor_controller_hall_interrupt_handler(void)
     }
 }
 
+/**
+ * @brief C-linkage wrapper for PWM interrupt handler (current control loop)
+ * This function is called from C code (stm32g4xx_it.c) at 20kHz for current control
+ */
+extern "C" void motor_controller_pwm_interrupt_handler(void)
+{
+    if (motor_controller != nullptr) {
+        motor_controller->pwmInterruptHandler();
+    }
+}
+
 /* USER CODE END 0 */
 
 /**
@@ -156,12 +180,20 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_TIM1_Init();
   MX_TIM2_Init();
   MX_USART2_UART_Init();
   MX_OPAMP1_Init();
   MX_OPAMP2_Init();
   MX_OPAMP3_Init();
+  MX_ADC1_Init();
+
+  /* Start OPAMPs for current sensing */
+  HAL_OPAMP_Start(&hopamp1);
+  HAL_OPAMP_Start(&hopamp2);
+  HAL_OPAMP_Start(&hopamp3);
+
     /* USER CODE BEGIN 2 */
     // Initialize motor control components
     if (!pwm_driver.initialize(20000, 100)) {  // 20kHz PWM, 100ns dead-time
@@ -172,8 +204,25 @@ int main(void)
         Error_Handler();
     }
 
+    // Initialize ADC for current sensing
+    libecu::CurrentSensorCalibration adc_calibration;
+    adc_calibration.shunt_resistance_ohms = 0.003f;  // 3 milliohm shunts
+    adc_calibration.opamp_gain = 16.0f;              // PGA gain
+    adc_calibration.adc_reference_voltage = 3.3f;    // 3.3V ADC reference
+    adc_calibration.adc_resolution_bits = 12;        // 12-bit ADC
+    adc_calibration.offset_voltage = 1.65f;          // Mid-supply offset (will be calibrated)
+
+    if (!adc_driver.initialize(adc_calibration)) {
+        Error_Handler();
+    }
+
+    // Calibrate zero-current offset (motor must be stationary)
+    if (!adc_driver.calibrateZeroOffset()) {
+        Error_Handler();
+    }
+
     // Create component instances
-    // Using 2 pole pairs (4-pole motor) as default
+    // Using 8 pole pairs for commutation
     commutation_controller = new libecu::CommutationController(pwm_driver, hall_sensor, 8);
 
     libecu::PidParameters pid_params;
@@ -184,6 +233,17 @@ int main(void)
     pid_params.min_output = 0.0f;
     pid_params.max_integral = 20.0f;
     pid_controller = new libecu::PidController(pid_params);
+
+    // Create current controller for current control mode
+    libecu::CurrentControllerParameters current_params;
+    current_params.kp = 0.5f;                  // Current loop proportional gain
+    current_params.ki = 50.0f;                 // Current loop integral gain
+    current_params.max_output = 1.0f;          // Max duty cycle
+    current_params.min_output = 0.0f;          // Min duty cycle
+    current_params.max_integral = 10.0f;       // Anti-windup limit
+    current_params.sample_time_s = 1.0f / 20000.0f;  // 20kHz (50μs)
+    current_params.max_current = 10.0f;        // 10A maximum current
+    current_controller = new libecu::CurrentController(current_params);
 
     libecu::SafetyLimits safety_limits;
     safety_limits.max_current = 10.0f;      // 10A max current
@@ -197,12 +257,16 @@ int main(void)
     motor_params.control_frequency = PERIODIC_TIMER_FREQ;
 
     motor_controller = new libecu::BldcController(
-        pwm_driver, hall_sensor, *commutation_controller, 
-        *pid_controller, *safety_monitor, motor_params);
+        pwm_driver, hall_sensor, *commutation_controller,
+        *pid_controller, *safety_monitor, motor_params,
+        &adc_driver, current_controller);
     
     if (!motor_controller->initialize()) {
         Error_Handler();
     }
+    // Enable TIM1 update interrupt for 20kHz current control loop
+    HAL_TIM_Base_Start_IT(&htim1);
+
     motor_controller->setControlMode(libecu::ControlMode::CLOSED_LOOP);
 
     // This setting is for libecu::ControlMode::OPEN_LOOP mode only
@@ -234,16 +298,21 @@ int main(void)
           control_tick = false;
           
           if (motor_controller && safety_monitor) {
-              // Collect safety data (simplified for this example)
+              // Collect safety data
               libecu::SafetyData safety_data = {0};
-              safety_data.phase_u_current = 0.0f;  // Would read from ADC
-              safety_data.phase_v_current = 0.0f;  // Would read from ADC  
-              safety_data.phase_w_current = 0.0f;  // Would read from ADC
-              safety_data.temperature = 25.0f;     // Would read from temp sensor
-              safety_data.bus_voltage = 24.0f;     // Would read from voltage sensor
-              safety_data.emergency_stop = false;  // Would read from E-stop button
-              safety_data.hall_fault = false;      // Would check hall sensors
-              
+
+              // Read actual phase currents from ADC
+              adc_driver.readAllCurrents(
+                  safety_data.phase_u_current,
+                  safety_data.phase_v_current,
+                  safety_data.phase_w_current
+              );
+
+              safety_data.temperature = 25.0f;     // TODO: Read from temp sensor
+              safety_data.bus_voltage = 24.0f;     // TODO: Read from voltage sensor
+              safety_data.emergency_stop = false;  // TODO: Read from E-stop button
+              safety_data.hall_fault = false;      // TODO: Check hall sensors
+
               // Update motor controller with safety data
               motor_controller->update(safety_data);
               
@@ -323,6 +392,19 @@ static void MX_OPAMP1_Init(void)
   /* USER CODE BEGIN OPAMP1_Init 1 */
 
   /* USER CODE END OPAMP1_Init 1 */
+  hopamp1.Instance = OPAMP1;
+  hopamp1.Init.PowerSupplyRange = OPAMP_POWERSUPPLY_HIGH;
+  hopamp1.Init.Mode = OPAMP_PGA_MODE;
+  hopamp1.Init.NonInvertingInput = OPAMP_NONINVERTINGINPUT_IO0;
+  hopamp1.Init.InvertingInput = OPAMP_INVERTINGINPUT_CONNECT_NO;
+  hopamp1.Init.PgaGain = OPAMP_PGA_GAIN_16_OR_MINUS_15;
+  hopamp1.Init.PgaConnect = OPAMP_PGA_CONNECT_INVERTINGINPUT_NO;
+  hopamp1.Init.InternalOutput = ENABLE;
+  hopamp1.Init.UserTrimming = OPAMP_TRIMMING_FACTORY;
+  if (HAL_OPAMP_Init(&hopamp1) != HAL_OK)
+  {
+    Error_Handler();
+  }
   /* USER CODE BEGIN OPAMP1_Init 2 */
 
   /* USER CODE END OPAMP1_Init 2 */
@@ -344,6 +426,19 @@ static void MX_OPAMP2_Init(void)
   /* USER CODE BEGIN OPAMP2_Init 1 */
 
   /* USER CODE END OPAMP2_Init 1 */
+  hopamp2.Instance = OPAMP2;
+  hopamp2.Init.PowerSupplyRange = OPAMP_POWERSUPPLY_HIGH;
+  hopamp2.Init.Mode = OPAMP_PGA_MODE;
+  hopamp2.Init.NonInvertingInput = OPAMP_NONINVERTINGINPUT_IO0;
+  hopamp2.Init.InvertingInput = OPAMP_INVERTINGINPUT_CONNECT_NO;
+  hopamp2.Init.PgaGain = OPAMP_PGA_GAIN_16_OR_MINUS_15;
+  hopamp2.Init.PgaConnect = OPAMP_PGA_CONNECT_INVERTINGINPUT_NO;
+  hopamp2.Init.InternalOutput = ENABLE;
+  hopamp2.Init.UserTrimming = OPAMP_TRIMMING_FACTORY;
+  if (HAL_OPAMP_Init(&hopamp2) != HAL_OK)
+  {
+    Error_Handler();
+  }
   /* USER CODE BEGIN OPAMP2_Init 2 */
 
   /* USER CODE END OPAMP2_Init 2 */
@@ -365,6 +460,19 @@ static void MX_OPAMP3_Init(void)
   /* USER CODE BEGIN OPAMP3_Init 1 */
 
   /* USER CODE END OPAMP3_Init 1 */
+  hopamp3.Instance = OPAMP3;
+  hopamp3.Init.PowerSupplyRange = OPAMP_POWERSUPPLY_HIGH;
+  hopamp3.Init.Mode = OPAMP_PGA_MODE;
+  hopamp3.Init.NonInvertingInput = OPAMP_NONINVERTINGINPUT_IO0;
+  hopamp3.Init.InvertingInput = OPAMP_INVERTINGINPUT_CONNECT_NO;
+  hopamp3.Init.PgaGain = OPAMP_PGA_GAIN_16_OR_MINUS_15;
+  hopamp3.Init.PgaConnect = OPAMP_PGA_CONNECT_INVERTINGINPUT_NO;
+  hopamp3.Init.InternalOutput = ENABLE;
+  hopamp3.Init.UserTrimming = OPAMP_TRIMMING_FACTORY;
+  if (HAL_OPAMP_Init(&hopamp3) != HAL_OK)
+  {
+    Error_Handler();
+  }
   /* USER CODE BEGIN OPAMP3_Init 2 */
 
   /* USER CODE END OPAMP3_Init 2 */
@@ -577,6 +685,132 @@ void Error_Handler(void)
   {
   }
   /* USER CODE END Error_Handler_Debug */
+}
+
+/**
+  * @brief DMA Initialization Function
+  * @param None
+  * @retval None
+  *
+  * NOTE: This function should be configured using STM32CubeMX.
+  * Configure DMA for ADC1 with the following settings:
+  * - DMA1 Channel 1 for ADC1
+  * - Direction: Peripheral to Memory
+  * - Mode: Circular
+  * - Data Width: Word (32-bit)
+  */
+static void MX_DMA_Init(void)
+{
+  /* USER CODE BEGIN DMA_Init 0 */
+
+  /* USER CODE END DMA_Init 0 */
+
+  /* DMA controller clock enable */
+  __HAL_RCC_DMA1_CLK_ENABLE();
+
+  /* DMA interrupt init */
+  /* DMA1_Channel1_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Channel1_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Channel1_IRQn);
+
+  /* USER CODE BEGIN DMA_Init 1 */
+  // TODO: Configure DMA1 Channel 1 for ADC1 using STM32CubeMX
+  // This stub enables the clock and interrupt
+  /* USER CODE END DMA_Init 1 */
+}
+
+/**
+  * @brief ADC1 Initialization Function
+  * @param None
+  * @retval None
+  *
+  * NOTE: This function should be configured using STM32CubeMX.
+  * Required configuration:
+  * - Channels: IN1 (OPAMP1_VOUT), IN2 (OPAMP2_VOUT), IN3 (OPAMP3_VOUT)
+  * - Resolution: 12 bits
+  * - Trigger: TIM1 TRGO (Update Event) for PWM-synchronized sampling
+  * - Scan Mode: Enabled (3 channels)
+  * - Continuous Mode: Disabled (triggered by TIM1)
+  * - DMA: Enabled, Circular mode
+  */
+static void MX_ADC1_Init(void)
+{
+  /* USER CODE BEGIN ADC1_Init 0 */
+
+  /* USER CODE END ADC1_Init 0 */
+
+  ADC_MultiModeTypeDef multimode = {0};
+  ADC_ChannelConfTypeDef sConfig = {0};
+
+  /* USER CODE BEGIN ADC1_Init 1 */
+
+  /* USER CODE END ADC1_Init 1 */
+
+  /** Common config
+  */
+  hadc1.Instance = ADC1;
+  hadc1.Init.ClockPrescaler = ADC_CLOCK_ASYNC_DIV1;
+  hadc1.Init.Resolution = ADC_RESOLUTION_12B;
+  hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
+  hadc1.Init.GainCompensation = 0;
+  hadc1.Init.ScanConvMode = ADC_SCAN_ENABLE;
+  hadc1.Init.EOCSelection = ADC_EOC_SEQ_CONV;
+  hadc1.Init.LowPowerAutoWait = DISABLE;
+  hadc1.Init.ContinuousConvMode = DISABLE;
+  hadc1.Init.NbrOfConversion = 3;
+  hadc1.Init.DiscontinuousConvMode = DISABLE;
+  hadc1.Init.ExternalTrigConv = ADC_EXTERNALTRIG_T1_TRGO;
+  hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_RISING;
+  hadc1.Init.DMAContinuousRequests = ENABLE;
+  hadc1.Init.Overrun = ADC_OVR_DATA_OVERWRITTEN;
+  hadc1.Init.OversamplingMode = DISABLE;
+  if (HAL_ADC_Init(&hadc1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure the ADC multi-mode
+  */
+  multimode.Mode = ADC_MODE_INDEPENDENT;
+  if (HAL_ADCEx_MultiModeConfigChannel(&hadc1, &multimode) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Regular Channel
+  */
+  sConfig.Channel = ADC_CHANNEL_1;  // OPAMP1_VOUT (Phase U)
+  sConfig.Rank = ADC_REGULAR_RANK_1;
+  sConfig.SamplingTime = ADC_SAMPLETIME_12CYCLES_5;
+  sConfig.SingleDiff = ADC_SINGLE_ENDED;
+  sConfig.OffsetNumber = ADC_OFFSET_NONE;
+  sConfig.Offset = 0;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Regular Channel
+  */
+  sConfig.Channel = ADC_CHANNEL_2;  // OPAMP2_VOUT (Phase V)
+  sConfig.Rank = ADC_REGULAR_RANK_2;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Regular Channel
+  */
+  sConfig.Channel = ADC_CHANNEL_3;  // OPAMP3_VOUT (Phase W)
+  sConfig.Rank = ADC_REGULAR_RANK_3;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN ADC1_Init 2 */
+  // TODO: Verify OPAMP output channels are correctly routed to ADC1 channels 1/2/3
+  // This may require STM32CubeMX configuration
+  /* USER CODE END ADC1_Init 2 */
 }
 
 #ifdef  USE_FULL_ASSERT

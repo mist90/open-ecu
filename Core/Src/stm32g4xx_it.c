@@ -23,8 +23,9 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #ifdef STM32G4
-// Forward declaration - actual variable is in main.cpp
+// Forward declarations - actual functions are in main.cpp
 extern void motor_controller_hall_interrupt_handler(void);
+extern void motor_controller_pwm_interrupt_handler(void);
 #endif
 /* USER CODE END Includes */
 
@@ -243,8 +244,48 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
   }
   
   /* USER CODE BEGIN HAL_GPIO_EXTI_Callback 1 */
-  
+
   /* USER CODE END HAL_GPIO_EXTI_Callback 1 */
+}
+
+/**
+  * @brief This function handles TIM1 update interrupt and TIM16 global interrupt.
+  *        Used for high-frequency current control loop (20kHz)
+  */
+void TIM1_UP_TIM16_IRQHandler(void)
+{
+  /* USER CODE BEGIN TIM1_UP_TIM16_IRQn 0 */
+
+  /* USER CODE END TIM1_UP_TIM16_IRQn 0 */
+  HAL_TIM_IRQHandler(&htim1);
+  /* USER CODE BEGIN TIM1_UP_TIM16_IRQn 1 */
+
+  /* USER CODE END TIM1_UP_TIM16_IRQn 1 */
+}
+
+/**
+  * @brief TIM1 period elapsed callback (called at PWM frequency, 20kHz)
+  * @param htim: Timer handle
+  */
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+  /* USER CODE BEGIN HAL_TIM_PeriodElapsedCallback 0 */
+
+  /* USER CODE END HAL_TIM_PeriodElapsedCallback 0 */
+
+  if (htim->Instance == TIM1)
+  {
+    /* USER CODE BEGIN TIM1_PWM_Interrupt */
+#ifdef STM32G4
+    // Call motor controller's PWM interrupt handler for current control loop
+    motor_controller_pwm_interrupt_handler();
+#endif
+    /* USER CODE END TIM1_PWM_Interrupt */
+  }
+
+  /* USER CODE BEGIN HAL_TIM_PeriodElapsedCallback 1 */
+
+  /* USER CODE END HAL_TIM_PeriodElapsedCallback 1 */
 }
 
 /* USER CODE END 1 */

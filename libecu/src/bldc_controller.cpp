@@ -27,12 +27,16 @@ BldcController::BldcController(
     CommutationController& commutation_controller,
     PidController& pid_controller,
     SafetyMonitor& safety_monitor,
-    const MotorControlParams& params)
+    const MotorControlParams& params,
+    AdcInterface* adc_interface,
+    CurrentController* current_controller)
     : pwm_interface_(pwm_interface)
     , hall_interface_(hall_interface)
     , commutation_controller_(commutation_controller)
     , pid_controller_(pid_controller)
     , safety_monitor_(safety_monitor)
+    , adc_interface_(adc_interface)
+    , current_controller_(current_controller)
     , params_(params)
     , direction_(RotationDirection::CLOCKWISE)
     , initialized_(false)
@@ -46,6 +50,8 @@ BldcController::BldcController(
     status_.current_speed_rpm = 0.0f;
     status_.target_speed_rpm = 0.0f;
     status_.duty_cycle = 0.0f;
+    status_.target_current = 0.0f;
+    status_.measured_current = 0.0f;
     status_.position = MotorPosition::INVALID;
     status_.active_fault = SafetyFault::NONE;
     status_.is_running = false;
@@ -117,7 +123,7 @@ void BldcController::update(const SafetyData& safety_data)
                     // Calculate real time difference since last PID update
                     uint32_t current_time_us = time_us();
                     float dt;
-                    
+
                     if (last_pid_update_time_us_ == 0) {
                         // First PID update - use nominal period
                         dt = 1.0f / params_.control_frequency;
@@ -126,46 +132,96 @@ void BldcController::update(const SafetyData& safety_data)
                         uint32_t dt_us = current_time_us - last_pid_update_time_us_;
                         dt = static_cast<float>(dt_us) / 1000000.0f;
                     }
-                    
+
                     // Update timestamp for next iteration
                     last_pid_update_time_us_ = current_time_us;
-                    
+
                     // Apply acceleration limiting
                     float limited_target = applyAccelerationLimit(
-                        status_.target_speed_rpm, 
-                        status_.current_speed_rpm, 
+                        status_.target_speed_rpm,
+                        status_.current_speed_rpm,
                         dt
                     );
-                    
+
                     // PID control
                     target_duty_cycle = pid_controller_.update(
-                        limited_target, 
-                        status_.current_speed_rpm, 
+                        limited_target,
+                        status_.current_speed_rpm,
                         dt
                     );
-                    
+
                     // Clamp to maximum duty cycle
                     target_duty_cycle = std::min(target_duty_cycle, params_.max_duty_cycle);
-                    
+
                     printf("s:%f,d:%f\n", status_.current_speed_rpm, target_duty_cycle);
                 } else {
                     // No valid measurement yet, keep previous duty cycle
                     target_duty_cycle = status_.duty_cycle;
                 }
                 break;
+
+            case ControlMode::CURRENT_CONTROL:
+                // Cascaded control: outer loop (speed → current) runs here at 100Hz
+                // Inner loop (current → duty) runs in pwmInterruptHandler() at 20kHz
+                if (!std::isnan(measured_speed) && current_controller_) {
+                    // Calculate time difference
+                    uint32_t current_time_us = time_us();
+                    float dt;
+
+                    if (last_pid_update_time_us_ == 0) {
+                        dt = 1.0f / params_.control_frequency;
+                    } else {
+                        uint32_t dt_us = current_time_us - last_pid_update_time_us_;
+                        dt = static_cast<float>(dt_us) / 1000000.0f;
+                    }
+
+                    last_pid_update_time_us_ = current_time_us;
+
+                    // Apply acceleration limiting
+                    float limited_target = applyAccelerationLimit(
+                        status_.target_speed_rpm,
+                        status_.current_speed_rpm,
+                        dt
+                    );
+
+                    // Speed PID outputs target current (not duty cycle)
+                    float target_current = pid_controller_.update(
+                        limited_target,
+                        status_.current_speed_rpm,
+                        dt
+                    );
+
+                    // Store target current for inner loop
+                    status_.target_current = target_current;
+
+                    // Enable current controller for inner loop execution
+                    current_controller_->setEnabled(true);
+
+                    printf("s:%f,i:%f\n", status_.current_speed_rpm, target_current);
+                } else {
+                    // No valid measurement or no current controller
+                    status_.target_current = 0.0f;
+                    if (current_controller_) {
+                        current_controller_->setEnabled(false);
+                    }
+                }
+                // duty_cycle is updated by pwmInterruptHandler(), not here
+                target_duty_cycle = status_.duty_cycle;
+                break;
         }
     }
     
     // Update commutation based on control mode
     status_.duty_cycle = target_duty_cycle;
-    
+
     if (status_.mode == ControlMode::OPEN_LOOP) {
         // Use target speed for open-loop control
         commutation_controller_.updateOpenLoop(target_duty_cycle, status_.target_speed_rpm, direction_);
-    } else {
-        // Use Hall sensor feedback for closed-loop control
+    } else if (status_.mode == ControlMode::CLOSED_LOOP) {
+        // Use Hall sensor feedback for closed-loop speed control
         commutation_controller_.update(target_duty_cycle, direction_);
     }
+    // Note: CURRENT_CONTROL mode updates commutation in pwmInterruptHandler() at 20kHz
 }
 
 void BldcController::setTargetSpeed(float speed_rpm)
@@ -426,6 +482,82 @@ void BldcController::hallSensorInterruptHandler()
     // Update end timestamp and pulse counter
     speed_end_time_us_ = timestamp_us;
     speed_pulse_count_ += delta;
+}
+
+void BldcController::setTargetCurrent(float current_a) {
+    status_.target_current = current_a;
+}
+
+void BldcController::pwmInterruptHandler() {
+    // Only run current control loop in CURRENT_CONTROL mode
+    if (status_.mode != ControlMode::CURRENT_CONTROL) {
+        return;
+    }
+
+    // Check if current controller and ADC are available
+    if (!current_controller_ || !adc_interface_) {
+        return;
+    }
+
+    // Check if current controller is enabled
+    if (!current_controller_->isEnabled()) {
+        return;
+    }
+
+    // Read current from active conducting phase
+    float measured_current = getCurrentFromActivePhase();
+    status_.measured_current = measured_current;
+
+    // Run current controller: target_current → duty_cycle
+    float duty_cycle = current_controller_->update(status_.target_current, measured_current);
+    status_.duty_cycle = duty_cycle;
+
+    // Apply duty cycle via commutation controller
+    // Get current commutation step and apply the calculated duty cycle
+    uint8_t position = commutation_controller_.getCurrentPosition();
+    if (position != 0xFF) {
+        commutation_controller_.update(duty_cycle, direction_);
+    }
+}
+
+float BldcController::getCurrentFromActivePhase() {
+    if (!adc_interface_) {
+        return 0.0f;
+    }
+
+    // Determine which phase is actively conducting based on commutation step
+    // In 6-step commutation, one phase is always actively switching (UP or DOWN)
+    // We want to read current from the phase that is conducting (typically the DOWN phase)
+
+    uint8_t step = commutation_controller_.getCurrentStep();
+
+    // Based on commutation tables in commutation_controller.cpp:
+    // Step 0: U=UP,   V=OFF,  W=DOWN → Read W
+    // Step 1: U=OFF,  V=UP,   W=DOWN → Read W
+    // Step 2: U=DOWN, V=UP,   W=OFF  → Read U
+    // Step 3: U=DOWN, V=OFF,  W=UP   → Read U
+    // Step 4: U=OFF,  V=DOWN, W=UP   → Read V
+    // Step 5: U=UP,   V=DOWN, W=OFF  → Read V
+
+    switch (step) {
+        case 0:
+        case 1:
+            // W is conducting (DOWN)
+            return adc_interface_->readPhaseCurrent(PwmChannel::PHASE_W);
+        case 2:
+        case 3:
+            // U is conducting (DOWN)
+            return adc_interface_->readPhaseCurrent(PwmChannel::PHASE_U);
+        case 4:
+        case 5:
+            // V is conducting (DOWN)
+            return adc_interface_->readPhaseCurrent(PwmChannel::PHASE_V);
+        default:
+            // Invalid step, return average of all phases
+            float i_u, i_v, i_w;
+            adc_interface_->readAllCurrents(i_u, i_v, i_w);
+            return (i_u + i_v + i_w) / 3.0f;
+    }
 }
 
 } // namespace libecu
