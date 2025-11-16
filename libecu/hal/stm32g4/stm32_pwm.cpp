@@ -45,9 +45,10 @@ bool Stm32Pwm::initialize(uint32_t frequency, uint16_t dead_time_ns) {
     }
 
     // Configure master synchronization
+    // TRGO2 = UPDATE event triggers ADC injected conversions at PWM frequency (20kHz)
     TIM_MasterConfigTypeDef sMasterConfig = {0};
     sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
-    sMasterConfig.MasterOutputTrigger2 = TIM_TRGO2_RESET;
+    sMasterConfig.MasterOutputTrigger2 = TIM_TRGO2_UPDATE;  // Trigger ADCs on UPDATE (PWM period)
     sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
 
     if (HAL_TIMEx_MasterConfigSynchronization(tim_handle, &sMasterConfig) != HAL_OK) {

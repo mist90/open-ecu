@@ -207,6 +207,14 @@ int main(void)
         Error_Handler();
     }
 
+    // Calibrate ADCs (must be done before starting conversions)
+    if (HAL_ADCEx_Calibration_Start(&hadc1, ADC_SINGLE_ENDED) != HAL_OK) {
+        Error_Handler();
+    }
+    if (HAL_ADCEx_Calibration_Start(&hadc2, ADC_SINGLE_ENDED) != HAL_OK) {
+        Error_Handler();
+    }
+
     // Initialize ADC for current sensing
     libecu::CurrentSensorCalibration adc_calibration;
     adc_calibration.shunt_resistance_ohms = 0.003f;  // 3 milliohm shunts
@@ -221,6 +229,16 @@ int main(void)
 
     // Calibrate zero-current offset (motor must be stationary)
     if (!adc_driver.calibrateZeroOffset()) {
+        Error_Handler();
+    }
+
+    // Start ADC injected conversions (triggered by TIM1_TRGO2)
+    // ADC1: Phase U (VOPAMP1) + Phase W (IN12/OPAMP3)
+    // ADC2: Phase V (VOPAMP2)
+    if (HAL_ADCEx_InjectedStart(&hadc1) != HAL_OK) {
+        Error_Handler();
+    }
+    if (HAL_ADCEx_InjectedStart(&hadc2) != HAL_OK) {
         Error_Handler();
     }
 
@@ -406,8 +424,8 @@ static void MX_ADC1_Init(void)
   hadc1.Init.Resolution = ADC_RESOLUTION_12B;
   hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
   hadc1.Init.GainCompensation = 0;
-  hadc1.Init.ScanConvMode = ADC_SCAN_DISABLE;
-  hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
+  hadc1.Init.ScanConvMode = ADC_SCAN_ENABLE;  // Enable scan for injected channels
+  hadc1.Init.EOCSelection = ADC_EOC_SEQ_CONV;  // EOC after sequence
   hadc1.Init.LowPowerAutoWait = DISABLE;
   hadc1.Init.ContinuousConvMode = DISABLE;
   hadc1.Init.NbrOfConversion = 1;
@@ -422,15 +440,17 @@ static void MX_ADC1_Init(void)
     Error_Handler();
   }
 
-  /** Configure the ADC multi-mode
+  /** Configure the ADC multi-mode for simultaneous injected conversions
   */
-  multimode.Mode = ADC_MODE_INDEPENDENT;
+  multimode.Mode = ADC_DUALMODE_INJECSIMULT;  // Simultaneous injected mode
+  multimode.DMAAccessMode = ADC_DMAACCESSMODE_DISABLED;
+  multimode.TwoSamplingDelay = ADC_TWOSAMPLINGDELAY_1CYCLE;
   if (HAL_ADCEx_MultiModeConfigChannel(&hadc1, &multimode) != HAL_OK)
   {
     Error_Handler();
   }
 
-  /** Configure Regular Channel
+  /** Configure Regular Channel (for diagnostics - not used in current control)
   */
   sConfig.Channel = ADC_CHANNEL_VOPAMP1;
   sConfig.Rank = ADC_REGULAR_RANK_1;
@@ -439,6 +459,37 @@ static void MX_ADC1_Init(void)
   sConfig.OffsetNumber = ADC_OFFSET_NONE;
   sConfig.Offset = 0;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Injected Channel 1: Phase U current (OPAMP1)
+  */
+  ADC_InjectionConfTypeDef sConfigInjected = {0};
+  sConfigInjected.InjectedChannel = ADC_CHANNEL_VOPAMP1;
+  sConfigInjected.InjectedRank = ADC_INJECTED_RANK_1;
+  sConfigInjected.InjectedSamplingTime = ADC_SAMPLETIME_47CYCLES_5;  // Fast sampling for 20kHz
+  sConfigInjected.InjectedSingleDiff = ADC_SINGLE_ENDED;
+  sConfigInjected.InjectedOffsetNumber = ADC_OFFSET_NONE;
+  sConfigInjected.InjectedOffset = 0;
+  sConfigInjected.InjectedNbrOfConversion = 2;  // 2 injected channels on ADC1
+  sConfigInjected.InjectedDiscontinuousConvMode = DISABLE;
+  sConfigInjected.AutoInjectedConv = DISABLE;
+  sConfigInjected.QueueInjectedContext = DISABLE;
+  sConfigInjected.ExternalTrigInjecConv = ADC_EXTERNALTRIGINJEC_T1_TRGO2;  // TIM1 TRGO2 trigger
+  sConfigInjected.ExternalTrigInjecConvEdge = ADC_EXTERNALTRIGINJECCONV_EDGE_RISING;
+  sConfigInjected.InjecOversamplingMode = DISABLE;
+
+  if (HAL_ADCEx_InjectedConfigChannel(&hadc1, &sConfigInjected) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Injected Channel 2: Phase W current (OPAMP3 via ADC1_IN12)
+  */
+  sConfigInjected.InjectedChannel = ADC_CHANNEL_12;  // OPAMP3_OUT internally connected
+  sConfigInjected.InjectedRank = ADC_INJECTED_RANK_2;
+  if (HAL_ADCEx_InjectedConfigChannel(&hadc1, &sConfigInjected) != HAL_OK)
   {
     Error_Handler();
   }
@@ -473,7 +524,7 @@ static void MX_ADC2_Init(void)
   hadc2.Init.Resolution = ADC_RESOLUTION_12B;
   hadc2.Init.DataAlign = ADC_DATAALIGN_RIGHT;
   hadc2.Init.GainCompensation = 0;
-  hadc2.Init.ScanConvMode = ADC_SCAN_DISABLE;
+  hadc2.Init.ScanConvMode = ADC_SCAN_DISABLE;  // Single injected channel
   hadc2.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
   hadc2.Init.LowPowerAutoWait = DISABLE;
   hadc2.Init.ContinuousConvMode = DISABLE;
@@ -489,7 +540,7 @@ static void MX_ADC2_Init(void)
     Error_Handler();
   }
 
-  /** Configure Regular Channel
+  /** Configure Regular Channel (for diagnostics - not used in current control)
   */
   sConfig.Channel = ADC_CHANNEL_VOPAMP2;
   sConfig.Rank = ADC_REGULAR_RANK_1;
@@ -498,6 +549,28 @@ static void MX_ADC2_Init(void)
   sConfig.OffsetNumber = ADC_OFFSET_NONE;
   sConfig.Offset = 0;
   if (HAL_ADC_ConfigChannel(&hadc2, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Injected Channel 1: Phase V current (OPAMP2)
+  */
+  ADC_InjectionConfTypeDef sConfigInjected2 = {0};
+  sConfigInjected2.InjectedChannel = ADC_CHANNEL_VOPAMP2;
+  sConfigInjected2.InjectedRank = ADC_INJECTED_RANK_1;
+  sConfigInjected2.InjectedSamplingTime = ADC_SAMPLETIME_47CYCLES_5;  // Match ADC1 timing
+  sConfigInjected2.InjectedSingleDiff = ADC_SINGLE_ENDED;
+  sConfigInjected2.InjectedOffsetNumber = ADC_OFFSET_NONE;
+  sConfigInjected2.InjectedOffset = 0;
+  sConfigInjected2.InjectedNbrOfConversion = 1;  // 1 injected channel on ADC2
+  sConfigInjected2.InjectedDiscontinuousConvMode = DISABLE;
+  sConfigInjected2.AutoInjectedConv = DISABLE;
+  sConfigInjected2.QueueInjectedContext = DISABLE;
+  sConfigInjected2.ExternalTrigInjecConv = ADC_EXTERNALTRIGINJEC_T1_TRGO2;  // TIM1 TRGO2 trigger
+  sConfigInjected2.ExternalTrigInjecConvEdge = ADC_EXTERNALTRIGINJECCONV_EDGE_RISING;
+  sConfigInjected2.InjecOversamplingMode = DISABLE;
+
+  if (HAL_ADCEx_InjectedConfigChannel(&hadc2, &sConfigInjected2) != HAL_OK)
   {
     Error_Handler();
   }
