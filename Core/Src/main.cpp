@@ -43,7 +43,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define PERIODIC_TIMER_FREQ 1000
+#define PERIODIC_TIMER_FREQ 5000
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/

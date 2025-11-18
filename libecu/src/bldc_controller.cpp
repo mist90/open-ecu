@@ -153,7 +153,7 @@ void BldcController::update(const SafetyData& safety_data)
                     // Clamp to maximum duty cycle
                     target_duty_cycle = std::min(target_duty_cycle, params_.max_duty_cycle);
 
-                    printf("s:%f,d:%f\n", status_.current_speed_rpm, target_duty_cycle);
+                    //printf("s:%f,d:%f\n", status_.current_speed_rpm, target_duty_cycle);
                 } else {
                     // No valid measurement yet, keep previous duty cycle
                     target_duty_cycle = status_.duty_cycle;
