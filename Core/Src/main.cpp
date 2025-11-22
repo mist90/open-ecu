@@ -298,7 +298,7 @@ int main(void)
     // Enable TIM1 update interrupt for 20kHz current control loop
     HAL_TIM_Base_Start_IT(&htim1);
 
-    motor_controller->setControlMode(libecu::ControlMode::CLOSED_LOOP);
+    motor_controller->setControlMode(libecu::ControlMode::CURRENT_CONTROL);
 
     // This setting is for libecu::ControlMode::OPEN_LOOP mode only
     motor_controller->setDutyCycle(0.3);
