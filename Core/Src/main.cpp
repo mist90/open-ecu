@@ -122,10 +122,12 @@ uint32_t time_us()
 }
 
 // Use CMSIS intrinsics for interrupt control
-void disable_interrupts() {
+// These functions are used by libecu library for critical sections
+extern "C" void disable_interrupts() {
     __asm volatile ("cpsid i" : : : "memory");
 }
-void enable_interrupts() {
+
+extern "C" void enable_interrupts() {
     __asm volatile ("cpsie i" : : : "memory");
 }
 
@@ -283,6 +285,16 @@ int main(void)
     if (!motor_controller->initialize()) {
         Error_Handler();
     }
+
+    /* Configure interrupt priorities for real-time control
+     * Lower preempt priority number = higher priority (can preempt higher numbers)
+     * Priority 0: TIM1 (20kHz current loop) - highest priority, time-critical
+     * Priority 2: SysTick (5kHz control loop) - medium priority
+     * Priority 5: Hall sensors (EXTI9_5) - lowest priority, already configured in MX_GPIO_Init
+     */
+    HAL_NVIC_SetPriority(TIM1_UP_TIM16_IRQn, 0, 0);
+    HAL_NVIC_EnableIRQ(TIM1_UP_TIM16_IRQn);
+
     // Enable TIM1 update interrupt for 20kHz current control loop
     HAL_TIM_Base_Start_IT(&htim1);
 
@@ -293,8 +305,10 @@ int main(void)
 
     motor_controller->start();
 
-    // Setup 1000Hz control loop with SysTick
+    // Setup 5kHz control loop with SysTick
     HAL_SYSTICK_Config(SystemCoreClock / PERIODIC_TIMER_FREQ);
+    // SysTick priority must be lower than TIM1 (higher number = lower priority)
+    HAL_NVIC_SetPriority(SysTick_IRQn, 2, 0);
 
     // This setting is for libecu::ControlMode::CLOSED_LOOP mode only
     motor_controller->setTargetSpeed(10.0f);

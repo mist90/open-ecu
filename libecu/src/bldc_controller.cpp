@@ -4,6 +4,7 @@
  */
 
 #include "../include/bldc_controller.hpp"
+#include "../include/platform/critical_section.hpp"
 #include <algorithm>
 #include <stdio.h>
 #include <cmath>
@@ -191,8 +192,11 @@ void BldcController::update(const SafetyData& safety_data)
                         dt
                     );
 
-                    // Store target current for inner loop
-                    status_.target_current = target_current;
+                    // Store target current for inner loop (atomic write)
+                    {
+                        CriticalSection cs;
+                        status_.target_current = target_current;
+                    }
 
                     // Enable current controller for inner loop execution
                     current_controller_->setEnabled(true);
@@ -200,19 +204,29 @@ void BldcController::update(const SafetyData& safety_data)
                     //printf("s:%f,i:%f\n", status_.current_speed_rpm, target_current);
                 } else {
                     // No valid measurement or no current controller
-                    status_.target_current = 0.0f;
+                    {
+                        CriticalSection cs;
+                        status_.target_current = 0.0f;
+                    }
                     if (current_controller_) {
                         current_controller_->setEnabled(false);
                     }
                 }
-                // duty_cycle is updated by pwmInterruptHandler(), not here
-                target_duty_cycle = status_.duty_cycle;
+                // duty_cycle is updated by pwmInterruptHandler(), not here (atomic read)
+                {
+                    CriticalSection cs;
+                    target_duty_cycle = status_.duty_cycle;
+                }
                 break;
         }
     }
-    
+
     // Update commutation based on control mode
-    status_.duty_cycle = target_duty_cycle;
+    // Protect duty_cycle write (can race with pwmInterruptHandler in CURRENT_CONTROL mode)
+    {
+        CriticalSection cs;
+        status_.duty_cycle = target_duty_cycle;
+    }
 
     if (status_.mode == ControlMode::OPEN_LOOP) {
         // Use target speed for open-loop control
@@ -226,23 +240,26 @@ void BldcController::update(const SafetyData& safety_data)
 
 void BldcController::setTargetSpeed(float speed_rpm)
 {
+    CriticalSection cs;
     // Clamp to maximum speed
     status_.target_speed_rpm = std::min(std::abs(speed_rpm), params_.max_speed_rpm);
-    
+
     // Set direction based on sign
     direction_ = (speed_rpm >= 0.0f) ? RotationDirection::CLOCKWISE : RotationDirection::COUNTER_CLOCKWISE;
 }
 
 void BldcController::setDutyCycle(float duty_cycle)
 {
+    CriticalSection cs;
     status_.duty_cycle = std::max(0.0f, std::min(duty_cycle, params_.max_duty_cycle));
 }
 
 void BldcController::setControlMode(ControlMode mode)
 {
+    CriticalSection cs;
     if (status_.mode != mode) {
         status_.mode = mode;
-        
+
         // Reset PID when switching to closed loop
         if (mode == ControlMode::CLOSED_LOOP) {
             pid_controller_.reset();
@@ -253,6 +270,7 @@ void BldcController::setControlMode(ControlMode mode)
 
 void BldcController::setDirection(RotationDirection direction)
 {
+    CriticalSection cs;
     direction_ = direction;
 }
 
@@ -485,12 +503,24 @@ void BldcController::hallSensorInterruptHandler()
 }
 
 void BldcController::setTargetCurrent(float current_a) {
+    CriticalSection cs;
     status_.target_current = current_a;
 }
 
 void BldcController::pwmInterruptHandler() {
+    // Read shared data atomically (avoid torn reads from SysTick interrupt)
+    ControlMode mode;
+    float target_current;
+    RotationDirection dir;
+    {
+        CriticalSection cs;
+        mode = status_.mode;
+        target_current = status_.target_current;
+        dir = direction_;
+    }
+
     // Only run current control loop in CURRENT_CONTROL mode
-    if (status_.mode != ControlMode::CURRENT_CONTROL) {
+    if (mode != ControlMode::CURRENT_CONTROL) {
         return;
     }
 
@@ -506,17 +536,22 @@ void BldcController::pwmInterruptHandler() {
 
     // Read current from active conducting phase
     float measured_current = getCurrentFromActivePhase();
-    status_.measured_current = measured_current;
 
     // Run current controller: target_current → duty_cycle
-    float duty_cycle = current_controller_->update(status_.target_current, measured_current);
-    status_.duty_cycle = duty_cycle;
+    float duty_cycle = current_controller_->update(target_current, measured_current);
+
+    // Write results atomically (avoid torn writes from SysTick interrupt)
+    {
+        CriticalSection cs;
+        status_.measured_current = measured_current;
+        status_.duty_cycle = duty_cycle;
+    }
 
     // Apply duty cycle via commutation controller
     // Get current commutation step and apply the calculated duty cycle
     uint8_t position = commutation_controller_.getCurrentPosition();
     if (position != 0xFF) {
-        commutation_controller_.update(duty_cycle, direction_);
+        commutation_controller_.update(duty_cycle, dir);
     }
 }
 
