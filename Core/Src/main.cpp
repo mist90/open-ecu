@@ -229,8 +229,8 @@ int main(void)
         Error_Handler();
     }
 
-    // Calibrate zero-current offset (motor must be stationary)
-    if (!adc_driver.calibrateZeroOffset()) {
+    // Start TIM1 to generate TRGO2 triggers for ADC (must be before ADC start)
+    if (HAL_TIM_Base_Start(&htim1) != HAL_OK) {
         Error_Handler();
     }
 
@@ -239,6 +239,12 @@ int main(void)
     // ADC1 (master): Phase U (VOPAMP1) + Phase W (IN12/OPAMP3)
     // ADC2 (slave): Phase V (VOPAMP2) - automatically started by master
     if (HAL_ADCEx_InjectedStart(&hadc1) != HAL_OK) {
+        Error_Handler();
+    }
+
+    // Calibrate zero-current offset (motor must be stationary)
+    // Must be AFTER ADC is started and TIM1 is generating triggers
+    if (!adc_driver.calibrateZeroOffset()) {
         Error_Handler();
     }
 
@@ -296,6 +302,7 @@ int main(void)
     HAL_NVIC_EnableIRQ(TIM1_UP_TIM16_IRQn);
 
     // Enable TIM1 update interrupt for 20kHz current control loop
+    // (TIM1 base is already started earlier for ADC calibration)
     HAL_TIM_Base_Start_IT(&htim1);
 
     motor_controller->setControlMode(libecu::ControlMode::CLOSED_LOOP);
