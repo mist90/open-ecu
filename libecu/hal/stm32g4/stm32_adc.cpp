@@ -134,6 +134,8 @@ uint32_t Stm32Adc::getRawAdcValue(PwmChannel channel) {
     }
 }
 
+#include <stdio.h>
+
 bool Stm32Adc::calibrateZeroOffset() {
     if (!initialized_) {
         return false;
@@ -165,6 +167,8 @@ bool Stm32Adc::calibrateZeroOffset() {
     offset_voltage_u_ = sum_u / num_samples;
     offset_voltage_v_ = sum_v / num_samples;
     offset_voltage_w_ = sum_w / num_samples;
+
+    printf("zero offsets: %f %f %f\n", offset_voltage_u_, offset_voltage_v_, offset_voltage_w_);
 
     // Also store average in calibration structure for backward compatibility
     calibration_.offset_voltage = (offset_voltage_u_ + offset_voltage_v_ + offset_voltage_w_) / 3.0f;

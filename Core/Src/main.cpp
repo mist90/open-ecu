@@ -263,17 +263,17 @@ int main(void)
     current_params.min_output = 0.0f;          // Min duty cycle
     current_params.max_integral = 10.0f;       // Anti-windup limit
     current_params.sample_time_s = 1.0f / 20000.0f;  // 20kHz (50μs)
-    current_params.max_current = 10.0f;        // 10A maximum current
+    current_params.max_current = 5.4f;         // 5.4A maximum current
     current_controller = new libecu::CurrentController(current_params);
 
     libecu::SafetyLimits safety_limits;
-    safety_limits.max_current = 10.0f;      // 10A max current
+    safety_limits.max_current =  6.0f;      // 6A max current
     safety_limits.max_temperature = 85.0f;  // 85°C max temp
     safety_monitor = new libecu::SafetyMonitor(safety_limits);
 
     libecu::MotorControlParams motor_params;
-    motor_params.max_duty_cycle = 0.8f;
-    motor_params.max_speed_rpm = 60.0f;
+    motor_params.max_duty_cycle = 0.85f;
+    motor_params.max_speed_rpm = 150.0f;
     motor_params.acceleration_rate = 1000.0f; // 1000 RPM/s accel
     motor_params.control_frequency = PERIODIC_TIMER_FREQ;
 
@@ -298,7 +298,7 @@ int main(void)
     // Enable TIM1 update interrupt for 20kHz current control loop
     HAL_TIM_Base_Start_IT(&htim1);
 
-    motor_controller->setControlMode(libecu::ControlMode::CURRENT_CONTROL);
+    motor_controller->setControlMode(libecu::ControlMode::CLOSED_LOOP);
 
     // This setting is for libecu::ControlMode::OPEN_LOOP mode only
     motor_controller->setDutyCycle(0.3);
