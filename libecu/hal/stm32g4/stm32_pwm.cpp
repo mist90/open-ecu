@@ -19,14 +19,16 @@ bool Stm32Pwm::initialize(uint32_t frequency, uint16_t dead_time_ns) {
     frequency_ = frequency;
     dead_time_ns_ = dead_time_ns;
 
-    // Calculate timer settings
+    // Calculate timer settings for center-aligned mode
+    // In center-aligned mode, counter goes 0→ARR→0, so period = 2*ARR
+    // To get desired frequency: ARR = timer_clock / (2 * frequency)
     uint32_t timer_clock = HAL_RCC_GetPCLK2Freq() * 2;
     uint32_t prescaler = 0;
-    period_ = (timer_clock / frequency) - 1;
+    period_ = (timer_clock / (2 * frequency)) - 1;
 
     while (period_ > 65535) {
         prescaler++;
-        period_ = (timer_clock / ((prescaler + 1) * frequency)) - 1;
+        period_ = (timer_clock / (2 * (prescaler + 1) * frequency)) - 1;
     }
 
     TIM_HandleTypeDef* tim_handle = static_cast<TIM_HandleTypeDef*>(htim_);
@@ -34,7 +36,7 @@ bool Stm32Pwm::initialize(uint32_t frequency, uint16_t dead_time_ns) {
     // Full TIM1 initialization (moved from MX_TIM1_Init)
     tim_handle->Instance = TIM1;
     tim_handle->Init.Prescaler = prescaler;
-    tim_handle->Init.CounterMode = TIM_COUNTERMODE_UP;
+    tim_handle->Init.CounterMode = TIM_COUNTERMODE_CENTERALIGNED1;  // Center-aligned mode 1
     tim_handle->Init.Period = period_;
     tim_handle->Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
     tim_handle->Init.RepetitionCounter = 0;
@@ -44,11 +46,24 @@ bool Stm32Pwm::initialize(uint32_t frequency, uint16_t dead_time_ns) {
         return false;
     }
 
+    // Configure OC4 channel for ADC trigger timing (at center of PWM period)
+    // In center-aligned mode, OC4 match at ARR/2 occurs at the center (bottom of triangle)
+    TIM_OC_InitTypeDef sConfigOC4 = {0};
+    sConfigOC4.OCMode = TIM_OCMODE_PWM1;
+    sConfigOC4.Pulse = period_ / 2;  // 50% duty = center of period
+    sConfigOC4.OCPolarity = TIM_OCPOLARITY_HIGH;
+    sConfigOC4.OCFastMode = TIM_OCFAST_DISABLE;
+    sConfigOC4.OCIdleState = TIM_OCIDLESTATE_RESET;
+
+    if (HAL_TIM_OC_ConfigChannel(tim_handle, &sConfigOC4, TIM_CHANNEL_4) != HAL_OK) {
+        return false;
+    }
+
     // Configure master synchronization
-    // TRGO2 = UPDATE event triggers ADC injected conversions at PWM frequency (20kHz)
+    // TRGO2 = OC4REF triggers ADC at center of PWM period (when low-side is conducting)
     TIM_MasterConfigTypeDef sMasterConfig = {0};
     sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
-    sMasterConfig.MasterOutputTrigger2 = TIM_TRGO2_UPDATE;  // Trigger ADCs on UPDATE (PWM period)
+    sMasterConfig.MasterOutputTrigger2 = TIM_TRGO2_OC4REF;  // Trigger ADCs on OC4 match (center)
     sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
 
     if (HAL_TIMEx_MasterConfigSynchronization(tim_handle, &sMasterConfig) != HAL_OK) {

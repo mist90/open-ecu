@@ -537,8 +537,12 @@ void BldcController::pwmInterruptHandler() {
     // Read current from active conducting phase
     float measured_current = getCurrentFromActivePhase();
 
-    // Run current controller: target_current → duty_cycle
-    float duty_cycle = current_controller_->update(target_current, measured_current);
+    // Run current controller: target_current → delta
+    // Current controller outputs delta around 0, where 0 = neutral (no current)
+    float delta = current_controller_->update(target_current, measured_current);
+
+    // Convert to duty cycle: 0.5 is neutral, add delta for positive/negative current
+    float duty_cycle = 0.5f + delta;
 
     // Write results atomically (avoid torn writes from SysTick interrupt)
     {

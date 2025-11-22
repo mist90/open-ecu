@@ -21,6 +21,9 @@ Stm32Adc::Stm32Adc(void* hadc, void* hdma)
     , calibration_()
     , initialized_(false)
     , adc_buffer_{0, 0, 0}
+    , offset_voltage_u_(0.0f)
+    , offset_voltage_v_(0.0f)
+    , offset_voltage_w_(0.0f)
 {
 }
 
@@ -43,13 +46,30 @@ bool Stm32Adc::isConversionComplete() {
     return (HAL_ADC_GetState(adc_handle) & HAL_ADC_STATE_REG_EOC) != 0;
 }
 
-float Stm32Adc::convertAdcToCurrent(uint32_t adc_raw) {
+float Stm32Adc::convertAdcToCurrent(uint32_t adc_raw, PwmChannel channel) {
     // Convert ADC raw value to voltage
     float adc_max_value = (1 << calibration_.adc_resolution_bits) - 1;  // e.g., 4095 for 12-bit
     float v_adc = (adc_raw * calibration_.adc_reference_voltage) / adc_max_value;
 
+    // Select offset voltage for this specific phase
+    float offset_voltage = 0.0f;
+    switch (channel) {
+        case PwmChannel::PHASE_U:
+            offset_voltage = offset_voltage_u_;
+            break;
+        case PwmChannel::PHASE_V:
+            offset_voltage = offset_voltage_v_;
+            break;
+        case PwmChannel::PHASE_W:
+            offset_voltage = offset_voltage_w_;
+            break;
+        default:
+            offset_voltage = calibration_.offset_voltage;  // Fallback
+            break;
+    }
+
     // Remove offset (zero-current voltage)
-    float v_shunt_amplified = v_adc - calibration_.offset_voltage;
+    float v_shunt_amplified = v_adc - offset_voltage;
 
     // Convert back to shunt voltage (before OPAMP)
     float v_shunt = v_shunt_amplified / calibration_.opamp_gain;
@@ -87,7 +107,7 @@ float Stm32Adc::readPhaseCurrent(PwmChannel channel) {
             break;
     }
 
-    return convertAdcToCurrent(adc_raw);
+    return convertAdcToCurrent(adc_raw, channel);
 }
 
 void Stm32Adc::readAllCurrents(float& i_u, float& i_v, float& i_w) {
@@ -96,9 +116,9 @@ void Stm32Adc::readAllCurrents(float& i_u, float& i_v, float& i_w) {
     uint32_t adc_v = HAL_ADCEx_InjectedGetValue(&hadc2, ADC_INJECTED_RANK_1);  // Phase V
     uint32_t adc_w = HAL_ADCEx_InjectedGetValue(&hadc1, ADC_INJECTED_RANK_2);  // Phase W
 
-    i_u = convertAdcToCurrent(adc_u);
-    i_v = convertAdcToCurrent(adc_v);
-    i_w = convertAdcToCurrent(adc_w);
+    i_u = convertAdcToCurrent(adc_u, PwmChannel::PHASE_U);
+    i_v = convertAdcToCurrent(adc_v, PwmChannel::PHASE_V);
+    i_w = convertAdcToCurrent(adc_w, PwmChannel::PHASE_W);
 }
 
 uint32_t Stm32Adc::getRawAdcValue(PwmChannel channel) {
@@ -141,9 +161,13 @@ bool Stm32Adc::calibrateZeroOffset() {
         sum_w += (adc_w * calibration_.adc_reference_voltage) / adc_max;
     }
 
-    // Calculate average voltage (should be around mid-supply, e.g., 1.65V)
-    float avg_offset = (sum_u + sum_v + sum_w) / (3.0f * num_samples);
-    calibration_.offset_voltage = avg_offset;
+    // Calculate average offset voltage for each phase separately
+    offset_voltage_u_ = sum_u / num_samples;
+    offset_voltage_v_ = sum_v / num_samples;
+    offset_voltage_w_ = sum_w / num_samples;
+
+    // Also store average in calibration structure for backward compatibility
+    calibration_.offset_voltage = (offset_voltage_u_ + offset_voltage_v_ + offset_voltage_w_) / 3.0f;
 
     return true;
 }

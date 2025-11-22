@@ -44,12 +44,18 @@ private:
     // DMA buffer for 3-channel ADC readings (Phase U, V, W)
     volatile uint32_t adc_buffer_[3];
 
+    // Zero-current offset voltages for each phase (calibrated)
+    float offset_voltage_u_;
+    float offset_voltage_v_;
+    float offset_voltage_w_;
+
     /**
      * @brief Convert raw ADC value to current in Amperes
      * @param adc_raw Raw ADC reading (0 to 4095 for 12-bit)
+     * @param channel PWM channel to use correct offset
      * @return Current in Amperes
      */
-    float convertAdcToCurrent(uint32_t adc_raw);
+    float convertAdcToCurrent(uint32_t adc_raw, PwmChannel channel);
 
     /**
      * @brief Get ADC channel index for PWM channel
