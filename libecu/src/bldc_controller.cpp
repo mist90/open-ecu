@@ -197,7 +197,7 @@ void BldcController::update(const SafetyData& safety_data)
                     // Enable current controller for inner loop execution
                     current_controller_->setEnabled(true);
 
-                    printf("s:%f,i:%f\n", status_.current_speed_rpm, target_current);
+                    //printf("s:%f,i:%f\n", status_.current_speed_rpm, target_current);
                 } else {
                     // No valid measurement or no current controller
                     status_.target_current = 0.0f;

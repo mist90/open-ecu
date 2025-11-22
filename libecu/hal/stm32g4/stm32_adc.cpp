@@ -27,32 +27,20 @@ Stm32Adc::Stm32Adc(void* hadc, void* hdma)
 bool Stm32Adc::initialize(const CurrentSensorCalibration& calibration) {
     calibration_ = calibration;
 
-#ifdef STM32G4
     // ADC calibration and injected channel startup is done in main.cpp
     // before calling this function. Here we just store the calibration.
     initialized_ = true;
     return true;
-#else
-    // Mock implementation for testing
-    initialized_ = true;
-    return true;
-#endif
 }
 
 void Stm32Adc::startConversion() {
-#ifdef STM32G4
     ADC_HandleTypeDef* adc_handle = static_cast<ADC_HandleTypeDef*>(hadc_);
     HAL_ADC_Start_DMA(adc_handle, (uint32_t*)adc_buffer_, 3);
-#endif
 }
 
 bool Stm32Adc::isConversionComplete() {
-#ifdef STM32G4
     ADC_HandleTypeDef* adc_handle = static_cast<ADC_HandleTypeDef*>(hadc_);
     return (HAL_ADC_GetState(adc_handle) & HAL_ADC_STATE_REG_EOC) != 0;
-#else
-    return true;
-#endif
 }
 
 float Stm32Adc::convertAdcToCurrent(uint32_t adc_raw) {
@@ -82,7 +70,6 @@ uint32_t Stm32Adc::getChannelIndex(PwmChannel channel) {
 }
 
 float Stm32Adc::readPhaseCurrent(PwmChannel channel) {
-#ifdef STM32G4
     uint32_t adc_raw = 0;
 
     switch (channel) {
@@ -101,13 +88,9 @@ float Stm32Adc::readPhaseCurrent(PwmChannel channel) {
     }
 
     return convertAdcToCurrent(adc_raw);
-#else
-    return 0.0f;
-#endif
 }
 
 void Stm32Adc::readAllCurrents(float& i_u, float& i_v, float& i_w) {
-#ifdef STM32G4
     // Read from injected data registers (automatically triggered by TIM1_TRGO2)
     uint32_t adc_u = HAL_ADCEx_InjectedGetValue(&hadc1, ADC_INJECTED_RANK_1);  // Phase U
     uint32_t adc_v = HAL_ADCEx_InjectedGetValue(&hadc2, ADC_INJECTED_RANK_1);  // Phase V
@@ -116,13 +99,9 @@ void Stm32Adc::readAllCurrents(float& i_u, float& i_v, float& i_w) {
     i_u = convertAdcToCurrent(adc_u);
     i_v = convertAdcToCurrent(adc_v);
     i_w = convertAdcToCurrent(adc_w);
-#else
-    i_u = i_v = i_w = 0.0f;
-#endif
 }
 
 uint32_t Stm32Adc::getRawAdcValue(PwmChannel channel) {
-#ifdef STM32G4
     switch (channel) {
         case PwmChannel::PHASE_U:
             return HAL_ADCEx_InjectedGetValue(&hadc1, ADC_INJECTED_RANK_1);
@@ -133,9 +112,6 @@ uint32_t Stm32Adc::getRawAdcValue(PwmChannel channel) {
         default:
             return 0;
     }
-#else
-    return 0;
-#endif
 }
 
 bool Stm32Adc::calibrateZeroOffset() {
@@ -144,7 +120,6 @@ bool Stm32Adc::calibrateZeroOffset() {
     }
 
     // Wait for stable readings
-#ifdef STM32G4
     HAL_Delay(100);
 
     // Average multiple samples for better accuracy
@@ -171,9 +146,6 @@ bool Stm32Adc::calibrateZeroOffset() {
     calibration_.offset_voltage = avg_offset;
 
     return true;
-#else
-    return true;
-#endif
 }
 
 const CurrentSensorCalibration& Stm32Adc::getCalibration() const {
