@@ -56,7 +56,8 @@ BldcController::BldcController(
     status_.position = MotorPosition::INVALID;
     status_.active_fault = SafetyFault::NONE;
     status_.is_running = false;
-    status_.mode = ControlMode::OPEN_LOOP;
+    status_.control_mode = ControlMode::OPEN_LOOP;
+    status_.electric_mode = ElectricMode::VOLTAGE_MODE;
 }
 
 bool BldcController::initialize()
@@ -109,17 +110,18 @@ void BldcController::update(const SafetyData& safety_data)
         status_.position = MotorPosition::INVALID;
     }
     
-    // Control loop based on mode
+    // Control loop based on control mode and electric mode
     float target_duty_cycle = 0.0f;
-    
+
     if (status_.is_running) {
-        switch (status_.mode) {
+        switch (status_.control_mode) {
             case ControlMode::OPEN_LOOP:
+                // Open-loop: always use fixed duty cycle (electric mode ignored)
                 target_duty_cycle = status_.duty_cycle;
                 break;
-                
-            case ControlMode::CLOSED_LOOP:
-                // Only run PID control if we have valid speed measurement
+
+            case ControlMode::CLOSED_LOOP_VELOCITY:
+                // Velocity control with speed PID
                 if (!std::isnan(measured_speed)) {
                     // Calculate real time difference since last PID update
                     uint32_t current_time_us = time_us();
@@ -144,98 +146,77 @@ void BldcController::update(const SafetyData& safety_data)
                         dt
                     );
 
-                    // PID control
-                    target_duty_cycle = pid_controller_.update(
-                        limited_target,
-                        status_.current_speed_rpm,
-                        dt
-                    );
+                    // Electric mode determines output of speed PID
+                    if (status_.electric_mode == ElectricMode::VOLTAGE_MODE) {
+                        // Speed PID → duty cycle (direct voltage control)
+                        target_duty_cycle = pid_controller_.update(
+                            limited_target,
+                            status_.current_speed_rpm,
+                            dt
+                        );
+                        target_duty_cycle = std::min(target_duty_cycle, params_.max_duty_cycle);
+                    } else {
+                        // Speed PID → current target (cascaded control)
+                        // Inner current loop runs in pwmInterruptHandler() at 20kHz
+                        float target_current = pid_controller_.update(
+                            limited_target,
+                            status_.current_speed_rpm,
+                            dt
+                        );
 
-                    // Clamp to maximum duty cycle
-                    target_duty_cycle = std::min(target_duty_cycle, params_.max_duty_cycle);
+                        // Store target current for inner loop (atomic write)
+                        {
+                            CriticalSection cs;
+                            status_.target_current = target_current;
+                        }
 
-                    //printf("s:%f,d:%f\n", status_.current_speed_rpm, target_duty_cycle);
+                        // duty_cycle is updated by pwmInterruptHandler() (atomic read)
+                        {
+                            CriticalSection cs;
+                            target_duty_cycle = status_.duty_cycle;
+                        }
+                    }
                 } else {
                     // No valid measurement yet, keep previous duty cycle
                     target_duty_cycle = status_.duty_cycle;
                 }
                 break;
 
-            case ControlMode::CURRENT_CONTROL:
-                // Cascaded control: outer loop (speed → current) runs here at 100Hz
-                // Inner loop (current → duty) runs in pwmInterruptHandler() at 20kHz
-                if (!std::isnan(measured_speed) && current_controller_) {
-                    // Calculate time difference
-                    uint32_t current_time_us = time_us();
-                    float dt;
-
-                    if (last_pid_update_time_us_ == 0) {
-                        dt = 1.0f / params_.control_frequency;
-                    } else {
-                        uint32_t dt_us = current_time_us - last_pid_update_time_us_;
-                        dt = static_cast<float>(dt_us) / 1000000.0f;
-                    }
-
-                    last_pid_update_time_us_ = current_time_us;
-
-                    // Apply acceleration limiting
-                    float limited_target = applyAccelerationLimit(
-                        status_.target_speed_rpm,
-                        status_.current_speed_rpm,
-                        dt
-                    );
-
-                    // Speed PID outputs target current (not duty cycle)
-                    float target_current = pid_controller_.update(
-                        limited_target,
-                        status_.current_speed_rpm,
-                        dt
-                    );
-
-                    // Store target current for inner loop (atomic write)
-                    {
-                        CriticalSection cs;
-                        status_.target_current = target_current;
-                    }
-
-                    // Enable current controller for inner loop execution
-                    current_controller_->setEnabled(true);
-
-                    //printf("s:%f,i:%f\n", status_.current_speed_rpm, target_current);
-                } else {
-                    // No valid measurement or no current controller
-                    {
-                        CriticalSection cs;
-                        status_.target_current = 0.0f;
-                    }
-                    if (current_controller_) {
-                        current_controller_->setEnabled(false);
-                    }
-                }
-                // duty_cycle is updated by pwmInterruptHandler(), not here (atomic read)
-                {
-                    CriticalSection cs;
+            case ControlMode::CLOSED_LOOP_TORQUE:
+                // Torque control: fixed duty cycle or current + Hall sensor commutation
+                // No speed PID - user sets fixed torque/current command
+                if (status_.electric_mode == ElectricMode::VOLTAGE_MODE) {
+                    // Fixed duty cycle with Hall sensor commutation
                     target_duty_cycle = status_.duty_cycle;
+                } else {
+                    // Fixed current target with Hall sensor commutation
+                    // Current control runs in pwmInterruptHandler() at 20kHz
+                    // duty_cycle is updated by pwmInterruptHandler() (atomic read)
+                    {
+                        CriticalSection cs;
+                        target_duty_cycle = status_.duty_cycle;
+                    }
                 }
                 break;
         }
     }
 
-    // Update commutation based on control mode
-    // Protect duty_cycle write (can race with pwmInterruptHandler in CURRENT_CONTROL mode)
+    // Update commutation based on control mode and electric mode
+    // Protect duty_cycle write (can race with pwmInterruptHandler in CURRENT_MODE)
     {
         CriticalSection cs;
         status_.duty_cycle = target_duty_cycle;
     }
 
-    if (status_.mode == ControlMode::OPEN_LOOP) {
-        // Use target speed for open-loop control
+    // Commutation strategy based on control mode
+    if (status_.control_mode == ControlMode::OPEN_LOOP) {
+        // Open-loop: timing-based commutation (no sensors)
         commutation_controller_.updateOpenLoop(target_duty_cycle, status_.target_speed_rpm, direction_);
-    } else if (status_.mode == ControlMode::CLOSED_LOOP) {
-        // Use Hall sensor feedback for closed-loop speed control
+    } else if (status_.electric_mode == ElectricMode::VOLTAGE_MODE) {
+        // VOLTAGE_MODE: Hall sensor commutation runs here at 5kHz
         commutation_controller_.update(target_duty_cycle, direction_);
     }
-    // Note: CURRENT_CONTROL mode updates commutation in pwmInterruptHandler() at 20kHz
+    // CURRENT_MODE: Commutation runs in pwmInterruptHandler() at 20kHz (after duty calculation)
 }
 
 void BldcController::setTargetSpeed(float speed_rpm)
@@ -257,13 +238,28 @@ void BldcController::setDutyCycle(float duty_cycle)
 void BldcController::setControlMode(ControlMode mode)
 {
     CriticalSection cs;
-    if (status_.mode != mode) {
-        status_.mode = mode;
+    if (status_.control_mode != mode) {
+        status_.control_mode = mode;
 
-        // Reset PID when switching to closed loop
-        if (mode == ControlMode::CLOSED_LOOP) {
+        // Reset PID when switching to velocity control
+        if (mode == ControlMode::CLOSED_LOOP_VELOCITY) {
             pid_controller_.reset();
             last_pid_update_time_us_ = 0;  // Reset timing for fresh start
+        }
+    }
+}
+
+void BldcController::setElectricMode(ElectricMode mode)
+{
+    CriticalSection cs;
+    status_.electric_mode = mode;
+
+    // Enable/disable current controller based on electric mode
+    if (current_controller_) {
+        if (mode == ElectricMode::CURRENT_MODE) {
+            current_controller_->setEnabled(true);
+        } else {
+            current_controller_->setEnabled(false);
         }
     }
 }
@@ -509,18 +505,18 @@ void BldcController::setTargetCurrent(float current_a) {
 
 void BldcController::pwmInterruptHandler() {
     // Read shared data atomically (avoid torn reads from SysTick interrupt)
-    ControlMode mode;
+    ElectricMode electric_mode;
     float target_current;
     RotationDirection dir;
     {
         CriticalSection cs;
-        mode = status_.mode;
+        electric_mode = status_.electric_mode;
         target_current = status_.target_current;
         dir = direction_;
     }
 
-    // Only run current control loop in CURRENT_CONTROL mode
-    if (mode != ControlMode::CURRENT_CONTROL) {
+    // Only run current control loop in CURRENT_MODE
+    if (electric_mode != ElectricMode::CURRENT_MODE) {
         return;
     }
 

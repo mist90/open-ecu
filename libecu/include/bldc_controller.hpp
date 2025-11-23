@@ -20,12 +20,20 @@
 namespace libecu {
 
 /**
- * @brief Motor control mode
+ * @brief Motor control mode (mechanical/commutation strategy)
  */
 enum class ControlMode : uint8_t {
-    OPEN_LOOP = 0,      ///< Open loop control (direct duty cycle)
-    CLOSED_LOOP = 1,    ///< Closed loop speed control with PID
-    CURRENT_CONTROL = 2 ///< Cascaded current control (speed → current → duty)
+    OPEN_LOOP = 0,              ///< Open loop control (timing-based, no sensors)
+    CLOSED_LOOP_VELOCITY = 1,   ///< Closed loop velocity control with PID + Hall sensors
+    CLOSED_LOOP_TORQUE = 2      ///< Closed loop torque control (fixed duty/current + Hall sensors)
+};
+
+/**
+ * @brief Electric drive mode (electrical control strategy)
+ */
+enum class ElectricMode : uint8_t {
+    VOLTAGE_MODE = 0,  ///< Direct voltage/duty cycle control
+    CURRENT_MODE = 1   ///< Current control with PI inner loop (20kHz)
 };
 
 /**
@@ -50,7 +58,8 @@ struct MotorStatus {
     MotorPosition position;   ///< Current motor position
     SafetyFault active_fault; ///< Active safety fault
     bool is_running;          ///< Motor running status
-    ControlMode mode;         ///< Current control mode
+    ControlMode control_mode;   ///< Current control mode (mechanical)
+    ElectricMode electric_mode; ///< Current electric mode (electrical)
 };
 
 /**
@@ -107,10 +116,16 @@ public:
     void setDutyCycle(float duty_cycle);
 
     /**
-     * @brief Set control mode
+     * @brief Set control mode (mechanical/commutation strategy)
      * @param mode Control mode
      */
     void setControlMode(ControlMode mode);
+
+    /**
+     * @brief Set electric mode (electrical control strategy)
+     * @param mode Electric mode
+     */
+    void setElectricMode(ElectricMode mode);
 
     /**
      * @brief Set motor direction

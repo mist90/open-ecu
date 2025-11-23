@@ -305,10 +305,12 @@ int main(void)
     // (TIM1 base is already started earlier for ADC calibration)
     HAL_TIM_Base_Start_IT(&htim1);
 
-    motor_controller->setControlMode(libecu::ControlMode::CLOSED_LOOP);
+    // Set control mode (mechanical) and electric mode (electrical)
+    motor_controller->setControlMode(libecu::ControlMode::CLOSED_LOOP_VELOCITY);
+    motor_controller->setElectricMode(libecu::ElectricMode::VOLTAGE_MODE);
 
-    // This setting is for libecu::ControlMode::OPEN_LOOP mode only
-    motor_controller->setDutyCycle(0.3);
+    // This setting is for OPEN_LOOP mode only
+    motor_controller->setDutyCycle(0.1);
 
     motor_controller->start();
 
@@ -317,8 +319,8 @@ int main(void)
     // SysTick priority must be lower than TIM1 (higher number = lower priority)
     HAL_NVIC_SetPriority(SysTick_IRQn, 2, 0);
 
-    // This setting is for libecu::ControlMode::CLOSED_LOOP mode only
-    motor_controller->setTargetSpeed(10.0f);
+    // This setting is for CLOSED_LOOP_VELOCITY mode
+    motor_controller->setTargetSpeed(12.0f);
     motor_controller->setDirection(libecu::RotationDirection::CLOCKWISE);
 
     /* USER CODE END 2 */

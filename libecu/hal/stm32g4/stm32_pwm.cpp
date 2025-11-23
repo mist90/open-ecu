@@ -40,7 +40,7 @@ bool Stm32Pwm::initialize(uint32_t frequency, uint16_t dead_time_ns) {
     tim_handle->Init.Period = period_;
     tim_handle->Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
     tim_handle->Init.RepetitionCounter = 0;
-    tim_handle->Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+    tim_handle->Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;  // Enable ARR shadow register
 
     if (HAL_TIM_PWM_Init(tim_handle) != HAL_OK) {
         return false;
@@ -58,6 +58,9 @@ bool Stm32Pwm::initialize(uint32_t frequency, uint16_t dead_time_ns) {
     if (HAL_TIM_OC_ConfigChannel(tim_handle, &sConfigOC4, TIM_CHANNEL_4) != HAL_OK) {
         return false;
     }
+
+    // Enable CCR4 preload (shadow register)
+    __HAL_TIM_ENABLE_OCxPRELOAD(tim_handle, TIM_CHANNEL_4);
 
     // Configure master synchronization
     // TRGO2 = OC4REF triggers ADC at center of PWM period (when low-side is conducting)
@@ -82,12 +85,17 @@ bool Stm32Pwm::initialize(uint32_t frequency, uint16_t dead_time_ns) {
     sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
     sConfigOC.OCIdleState = TIM_OCIDLESTATE_RESET;
     sConfigOC.OCNIdleState = TIM_OCNIDLESTATE_RESET;
-    
+
     if (HAL_TIM_PWM_ConfigChannel(tim_handle, &sConfigOC, TIM_CHANNEL_1) != HAL_OK ||
         HAL_TIM_PWM_ConfigChannel(tim_handle, &sConfigOC, TIM_CHANNEL_2) != HAL_OK ||
         HAL_TIM_PWM_ConfigChannel(tim_handle, &sConfigOC, TIM_CHANNEL_3) != HAL_OK) {
         return false;
     }
+
+    // Enable CCRx preload (shadow registers) for all PWM channels
+    __HAL_TIM_ENABLE_OCxPRELOAD(tim_handle, TIM_CHANNEL_1);
+    __HAL_TIM_ENABLE_OCxPRELOAD(tim_handle, TIM_CHANNEL_2);
+    __HAL_TIM_ENABLE_OCxPRELOAD(tim_handle, TIM_CHANNEL_3);
     
     // Configure dead-time for complementary PWM outputs
     TIM_BreakDeadTimeConfigTypeDef sBreakDeadTimeConfig = {0};
