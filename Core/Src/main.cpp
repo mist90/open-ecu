@@ -72,7 +72,6 @@ static libecu::HallGpioConfig hall_config{A__GPIO_Port, A__Pin, B__Pin, Z__Pin};
 static libecu::Stm32HallSensor hall_sensor(hall_config);
 static libecu::Stm32Adc adc_driver(&hadc1, &hdma_adc1);
 static libecu::CommutationController* commutation_controller = nullptr;
-static libecu::PidController* pid_controller = nullptr;
 static libecu::SafetyMonitor* safety_monitor = nullptr;
 static libecu::CurrentController* current_controller = nullptr;
 static libecu::BldcController* motor_controller = nullptr;
@@ -235,9 +234,14 @@ int main(void)
     }
 
     // Start ADC injected conversions (triggered by TIM1_TRGO2)
-    // In dual-mode simultaneous, only start the master (ADC1)
+    // In dual-mode simultaneous: START SLAVE FIRST, THEN MASTER
+    // ADC2 (slave): Phase V (VOPAMP2) - must be started first
+    if (HAL_ADCEx_InjectedStart(&hadc2) != HAL_OK) {
+        Error_Handler();
+    }
+
     // ADC1 (master): Phase U (VOPAMP1) + Phase W (IN12/OPAMP3)
-    // ADC2 (slave): Phase V (VOPAMP2) - automatically started by master
+    // Starting master will trigger both ADCs simultaneously
     if (HAL_ADCEx_InjectedStart(&hadc1) != HAL_OK) {
         Error_Handler();
     }
@@ -252,21 +256,32 @@ int main(void)
     // Using 8 pole pairs for commutation
     commutation_controller = new libecu::CommutationController(pwm_driver, hall_sensor, 8);
 
-    libecu::PidParameters pid_params;
-    pid_params.kp = 0.01f;
-    pid_params.ki = 0.05f;
-    pid_params.kd = 0.0f;
-    pid_params.max_output = 1.0f;
-    pid_params.min_output = 0.0f;
-    pid_params.max_integral = 20.0f;
-    pid_controller = new libecu::PidController(pid_params);
+    // Speed PID controller parameters for VOLTAGE_MODE (outputs duty cycle 0.0-1.0)
+    libecu::PidParameters pid_params_voltage;
+    pid_params_voltage.kp = 0.01f;
+    pid_params_voltage.ki = 0.05f;
+    pid_params_voltage.kd = 0.0f;
+    pid_params_voltage.max_output = 1.0f;    // Max duty cycle
+    pid_params_voltage.min_output = 0.0f;
+    pid_params_voltage.max_integral = 20.0f;
+
+    // Speed PID controller parameters for CURRENT_MODE (outputs current 0.0-5.4A)
+    libecu::PidParameters pid_params_current;
+    pid_params_current.kp = 0.5f;     // Higher gain for current control
+    pid_params_current.ki = 0.1f;     // Different integral for current
+    pid_params_current.kd = 0.0f;
+    pid_params_current.max_output = 5.4f;    // Max current (A)
+    pid_params_current.min_output = 0.0f;
+    pid_params_current.max_integral = 5.0f;  // Smaller integral limit for current
+
+    // PID controller will be created internally by BldcController
 
     // Create current controller for current control mode
     libecu::CurrentControllerParameters current_params;
     current_params.kp = 0.5f;                  // Current loop proportional gain
     current_params.ki = 50.0f;                 // Current loop integral gain
-    current_params.max_output = 1.0f;          // Max duty cycle
-    current_params.min_output = 0.0f;          // Min duty cycle
+    current_params.max_output = 0.5f;          // Max delta (+0.5 → 100% duty when added to 0.5)
+    current_params.min_output = -0.5f;         // Min delta (-0.5 → 0% duty when added to 0.5)
     current_params.max_integral = 10.0f;       // Anti-windup limit
     current_params.sample_time_s = 1.0f / 20000.0f;  // 20kHz (50μs)
     current_params.max_current = 5.4f;         // 5.4A maximum current
@@ -282,10 +297,12 @@ int main(void)
     motor_params.max_speed_rpm = 150.0f;
     motor_params.acceleration_rate = 1000.0f; // 1000 RPM/s accel
     motor_params.control_frequency = PERIODIC_TIMER_FREQ;
+    motor_params.pid_voltage_mode = pid_params_voltage;
+    motor_params.pid_current_mode = pid_params_current;
 
     motor_controller = new libecu::BldcController(
         pwm_driver, hall_sensor, *commutation_controller,
-        *pid_controller, *safety_monitor, motor_params,
+        *safety_monitor, motor_params,
         &adc_driver, current_controller);
     
     if (!motor_controller->initialize()) {
@@ -310,7 +327,7 @@ int main(void)
     motor_controller->setElectricMode(libecu::ElectricMode::VOLTAGE_MODE);
 
     // This setting is for OPEN_LOOP mode only
-    motor_controller->setDutyCycle(0.1);
+    motor_controller->setDutyCycle(0.3);
 
     motor_controller->start();
 
@@ -320,7 +337,7 @@ int main(void)
     HAL_NVIC_SetPriority(SysTick_IRQn, 2, 0);
 
     // This setting is for CLOSED_LOOP_VELOCITY mode
-    motor_controller->setTargetSpeed(12.0f);
+    motor_controller->setTargetSpeed(10.0f);
     motor_controller->setDirection(libecu::RotationDirection::CLOCKWISE);
 
     /* USER CODE END 2 */

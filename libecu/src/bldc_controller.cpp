@@ -26,7 +26,6 @@ BldcController::BldcController(
     PwmInterface& pwm_interface,
     HallInterface& hall_interface,
     CommutationController& commutation_controller,
-    PidController& pid_controller,
     SafetyMonitor& safety_monitor,
     const MotorControlParams& params,
     AdcInterface* adc_interface,
@@ -34,10 +33,10 @@ BldcController::BldcController(
     : pwm_interface_(pwm_interface)
     , hall_interface_(hall_interface)
     , commutation_controller_(commutation_controller)
-    , pid_controller_(pid_controller)
     , safety_monitor_(safety_monitor)
     , adc_interface_(adc_interface)
     , current_controller_(current_controller)
+    , pid_controller_(params.pid_voltage_mode)
     , params_(params)
     , direction_(RotationDirection::CLOCKWISE)
     , initialized_(false)
@@ -58,6 +57,7 @@ BldcController::BldcController(
     status_.is_running = false;
     status_.control_mode = ControlMode::OPEN_LOOP;
     status_.electric_mode = ElectricMode::VOLTAGE_MODE;
+    // PID controller already initialized with voltage mode parameters in initializer list
 }
 
 bool BldcController::initialize()
@@ -146,31 +146,26 @@ void BldcController::update(const SafetyData& safety_data)
                         dt
                     );
 
-                    // Electric mode determines output of speed PID
-                    if (status_.electric_mode == ElectricMode::VOLTAGE_MODE) {
-                        // Speed PID → duty cycle (direct voltage control)
-                        target_duty_cycle = pid_controller_.update(
-                            limited_target,
-                            status_.current_speed_rpm,
-                            dt
-                        );
-                        target_duty_cycle = std::min(target_duty_cycle, params_.max_duty_cycle);
-                    } else {
-                        // Speed PID → current target (cascaded control)
-                        // Inner current loop runs in pwmInterruptHandler() at 20kHz
-                        float target_current = pid_controller_.update(
-                            limited_target,
-                            status_.current_speed_rpm,
-                            dt
-                        );
+                    // Run speed PID (already configured for correct mode)
+                    float pid_output = pid_controller_.update(
+                        limited_target,
+                        status_.current_speed_rpm,
+                        dt
+                    );
 
-                        // Store target current for inner loop (atomic write)
+                    // Electric mode determines how to use PID output
+                    if (status_.electric_mode == ElectricMode::VOLTAGE_MODE) {
+                        // VOLTAGE_MODE: PID outputs duty cycle directly
+                        target_duty_cycle = pid_output;
+                    } else {
+                        // CURRENT_MODE: PID outputs target current
+                        // Store for inner current loop (runs in pwmInterruptHandler at 20kHz)
                         {
                             CriticalSection cs;
-                            status_.target_current = target_current;
+                            status_.target_current = pid_output;
                         }
 
-                        // duty_cycle is updated by pwmInterruptHandler() (atomic read)
+                        // duty_cycle is calculated by pwmInterruptHandler() (atomic read)
                         {
                             CriticalSection cs;
                             target_duty_cycle = status_.duty_cycle;
@@ -253,6 +248,15 @@ void BldcController::setElectricMode(ElectricMode mode)
 {
     CriticalSection cs;
     status_.electric_mode = mode;
+
+    // Reconfigure PID controller with appropriate parameters for the mode
+    if (mode == ElectricMode::VOLTAGE_MODE) {
+        // VOLTAGE_MODE: PID outputs duty cycle (0.0-1.0)
+        pid_controller_.setParameters(params_.pid_voltage_mode);
+    } else {
+        // CURRENT_MODE: PID outputs current (Amperes)
+        pid_controller_.setParameters(params_.pid_current_mode);
+    }
 
     // Enable/disable current controller based on electric mode
     if (current_controller_) {

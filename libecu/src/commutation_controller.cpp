@@ -161,8 +161,9 @@ void CommutationController::emergencyStop()
 void CommutationController::applyCommutationStep(const CommutationStep& step, float duty_cycle)
 {
     // duty_cycle 0.0-1.0 where:
-    // 0.0 = 0V output (no switching)
-    // 1.0 = maximum voltage output
+    // 0.0 = minimum torque (or maximum negative)
+    // 0.5 = neutral (no net torque/current)
+    // 1.0 = maximum torque (or maximum positive)
     // For UP state: high-side switches at duty_cycle
     // For DOWN state: low-side switches at duty_cycle
     // For OFF state: both switches disabled (high-Z)
@@ -171,10 +172,10 @@ void CommutationController::applyCommutationStep(const CommutationStep& step, fl
     if (duty_cycle < 0.0f) duty_cycle = 0.0f;
     if (duty_cycle > 1.0f) duty_cycle = 1.0f;
 
-    // Convert duty_cycle to 0.5-1.0 range
-    // This is becase duty_cycle==0.5 is current keeping mode,
-    // >0.5 - positive current growing,
-    // <0.5 - negative current growing 
+    // Convert duty_cycle to 0.5-1.0 range around neutral point
+    // duty_cycle==0.5 is neutral (no net voltage/current)
+    // >0.5 - positive torque/current
+    // <0.5 - negative torque/current
     duty_cycle = 0.5f + duty_cycle * 0.5f;
 
     // Apply PWM states with direct duty_cycle control
