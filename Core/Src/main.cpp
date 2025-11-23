@@ -131,6 +131,31 @@ extern "C" void enable_interrupts() {
 }
 
 /**
+ * @brief Read potentiometer and convert to target speed
+ * @param max_speed_rpm Maximum speed corresponding to 3.3V
+ * @return Target speed in RPM (0 to max_speed_rpm)
+ */
+float readPotentiometerSpeed(float max_speed_rpm)
+{
+    // Start ADC regular conversion
+    HAL_ADC_Start(&hadc1);
+
+    // Wait for conversion complete (should be very fast)
+    if (HAL_ADC_PollForConversion(&hadc1, 10) == HAL_OK) {
+        uint32_t adc_value = HAL_ADC_GetValue(&hadc1);
+
+        // Convert ADC value (0-4095) to speed (0-max_speed_rpm)
+        // Linear mapping: speed = (adc_value / 4095.0) * max_speed_rpm
+        float speed_rpm = (static_cast<float>(adc_value) / 4095.0f) * max_speed_rpm;
+
+        return speed_rpm;
+    }
+
+    // If conversion failed, return 0
+    return 0.0f;
+}
+
+/**
  * @brief C-linkage wrapper for Hall sensor interrupt handler
  * This function is called from C code (stm32g4xx_it.c) and delegates to the C++ motor controller
  */
@@ -336,9 +361,9 @@ int main(void)
     // SysTick priority must be lower than TIM1 (higher number = lower priority)
     HAL_NVIC_SetPriority(SysTick_IRQn, 2, 0);
 
-    // This setting is for CLOSED_LOOP_VELOCITY mode
-    motor_controller->setTargetSpeed(10.0f);
+    // Direction is always CLOCKWISE (potentiometer controls speed only)
     motor_controller->setDirection(libecu::RotationDirection::CLOCKWISE);
+    // Target speed will be updated from potentiometer in main loop
 
     /* USER CODE END 2 */
 
@@ -386,6 +411,12 @@ int main(void)
               
               control_counter++;
           }
+      }
+
+      // Read potentiometer and update target speed (runs in main loop, ~100-1000Hz)
+      if (motor_controller) {
+          float target_speed = readPotentiometerSpeed(motor_params.max_speed_rpm);
+          motor_controller->setTargetSpeed(target_speed);
       }
     }
     /* USER CODE END 3 */
@@ -488,11 +519,11 @@ static void MX_ADC1_Init(void)
     Error_Handler();
   }
 
-  /** Configure Regular Channel (for diagnostics - not used in current control)
+  /** Configure Regular Channel for Potentiometer (PB12 = ADC1_IN11)
   */
-  sConfig.Channel = ADC_CHANNEL_VOPAMP1;
+  sConfig.Channel = ADC_CHANNEL_11;  // PB12 potentiometer input
   sConfig.Rank = ADC_REGULAR_RANK_1;
-  sConfig.SamplingTime = ADC_SAMPLETIME_2CYCLES_5;
+  sConfig.SamplingTime = ADC_SAMPLETIME_47CYCLES_5;  // Slower sampling for stable reading
   sConfig.SingleDiff = ADC_SINGLE_ENDED;
   sConfig.OffsetNumber = ADC_OFFSET_NONE;
   sConfig.Offset = 0;
@@ -883,8 +914,8 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : PB0 PB2 */
-  GPIO_InitStruct.Pin = GPIO_PIN_0|GPIO_PIN_2;
+  /*Configure GPIO pins : PB0 PB2 PB12 */
+  GPIO_InitStruct.Pin = GPIO_PIN_0|GPIO_PIN_2|GPIO_PIN_12;
   GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
