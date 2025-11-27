@@ -105,6 +105,8 @@ float Stm32Adc::readPhaseCurrent(PwmChannel channel) {
             // Phase W: ADC1 JDR2 (OPAMP3 via ADC1_IN12)
             adc_raw = HAL_ADCEx_InjectedGetValue(&hadc1, ADC_INJECTED_RANK_2);
             break;
+        default:
+            return 0.0f;
     }
 
     return convertAdcToCurrent(adc_raw, channel);
