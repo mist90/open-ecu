@@ -161,16 +161,16 @@ void CommutationController::emergencyStop()
 void CommutationController::applyCommutationStep(const CommutationStep& step, float duty_cycle)
 {
     // duty_cycle 0.0-1.0 where:
-    // 0.0 = minimum torque (or maximum negative)
+    // 0.0 = minimum torque (or maximum negative) or decreasing current (for current mode only)
     // 0.5 = neutral (no net torque/current)
-    // 1.0 = maximum torque (or maximum positive)
+    // 1.0 = maximum torque (or maximum positive) or increasing current
     // For UP state: high-side switches at duty_cycle
     // For DOWN state: low-side switches at duty_cycle
     // For OFF state: both switches disabled (high-Z)
 
     // Clamp duty_cycle to valid range
-    if (duty_cycle < 0.0f) duty_cycle = 0.0f;
-    if (duty_cycle > 1.0f) duty_cycle = 1.0f;
+    if (duty_cycle < -0.9f) duty_cycle = -0.9f;
+    if (duty_cycle > 0.9f) duty_cycle = 0.9f;
 
     // Convert duty_cycle to 0.5-1.0 range around neutral point
     // duty_cycle==0.5 is neutral (no net voltage/current)

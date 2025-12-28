@@ -283,7 +283,7 @@ int main(void)
 
     // Speed PID controller parameters for VOLTAGE_MODE (outputs duty cycle 0.0-1.0)
     libecu::PidParameters pid_params_voltage;
-    pid_params_voltage.kp = 0.01f;
+    pid_params_voltage.kp = 0.0f;
     pid_params_voltage.ki = 0.05f;
     pid_params_voltage.kd = 0.0f;
     pid_params_voltage.max_output = 1.0f;    // Max duty cycle
@@ -305,8 +305,8 @@ int main(void)
     libecu::CurrentControllerParameters current_params;
     current_params.kp = 0.5f;                  // Current loop proportional gain
     current_params.ki = 50.0f;                 // Current loop integral gain
-    current_params.max_output = 0.5f;          // Max delta (+0.5 → 100% duty when added to 0.5)
-    current_params.min_output = -0.5f;         // Min delta (-0.5 → 0% duty when added to 0.5)
+    current_params.max_output = 1.0f;          // Max delta (+1.0 → max current increasing)
+    current_params.min_output = -1.0f;         // Min delta (-1.0 → max current decreasing)
     current_params.max_integral = 10.0f;       // Anti-windup limit
     current_params.sample_time_s = 1.0f / 20000.0f;  // 20kHz (50μs)
     current_params.max_current = 5.4f;         // 5.4A maximum current
@@ -349,7 +349,7 @@ int main(void)
 
     // Set control mode (mechanical) and electric mode (electrical)
     motor_controller->setControlMode(libecu::ControlMode::CLOSED_LOOP_VELOCITY);
-    motor_controller->setElectricMode(libecu::ElectricMode::CURRENT_MODE);
+    motor_controller->setElectricMode(libecu::ElectricMode::VOLTAGE_MODE);
 
     // This setting is for OPEN_LOOP mode only
     motor_controller->setDutyCycle(0.3);

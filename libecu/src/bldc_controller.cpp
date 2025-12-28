@@ -539,10 +539,7 @@ void BldcController::pwmInterruptHandler() {
 
     // Run current controller: target_current → delta
     // Current controller outputs delta around 0, where 0 = neutral (no current)
-    float delta = current_controller_->update(target_current, measured_current);
-
-    // Convert to duty cycle: 0.5 is neutral, add delta for positive/negative current
-    float duty_cycle = 0.5f + delta;
+    float duty_cycle = current_controller_->update(target_current, std::abs(measured_current));
 
     // Write results atomically (avoid torn writes from SysTick interrupt)
     {
