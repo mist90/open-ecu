@@ -14,7 +14,7 @@ void disable_interrupts();
 void enable_interrupts();
 
 // Speed measurement configuration
-#define SPEED_TIMEOUT_US          1000000  ///< Timeout for speed measurement (1 second)
+#define SPEED_TIMEOUT_US          500000  ///< Timeout for speed measurement (1 second)
 #define BLDC_NUM_PHASES           3        ///< Number of phases in BLDC motor
 
 // Platform specific time function
@@ -152,6 +152,7 @@ void BldcController::update(const SafetyData& safety_data)
                         status_.current_speed_rpm,
                         dt
                     );
+                    printf("%f %f %f\n", limited_target, status_.current_speed_rpm, pid_output);
 
                     // Electric mode determines how to use PID output
                     if (status_.electric_mode == ElectricMode::VOLTAGE_MODE) {

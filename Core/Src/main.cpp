@@ -283,7 +283,7 @@ int main(void)
 
     // Speed PID controller parameters for VOLTAGE_MODE (outputs duty cycle 0.0-1.0)
     libecu::PidParameters pid_params_voltage;
-    pid_params_voltage.kp = 0.0f;
+    pid_params_voltage.kp = 0.01f;
     pid_params_voltage.ki = 0.05f;
     pid_params_voltage.kd = 0.0f;
     pid_params_voltage.max_output = 1.0f;    // Max duty cycle
