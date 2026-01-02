@@ -202,10 +202,12 @@ private:
     bool initialized_;
     
     // Speed measurement state (interrupt-driven)
+    volatile bool speed_measurement_active_; ///< True if speed measurement is active (ROTATING state)
     volatile uint32_t speed_start_time_us_;  ///< Start timestamp for speed measurement
     volatile uint32_t speed_end_time_us_;    ///< End timestamp for speed measurement
     volatile int32_t speed_pulse_count_;     ///< Pulse count (can be negative for reverse)
     volatile uint8_t last_hall_state_;       ///< Last Hall state to detect changes
+    volatile uint32_t last_period_us_;       ///< Last measured period between pulses (for extrapolation)
     
     // Control loop timing
     uint32_t last_pid_update_time_us_;       ///< Timestamp of last successful PID update
