@@ -677,28 +677,30 @@ float BldcController::getCurrentFromActivePhase() {
 }
 
 #ifdef DEBUG_PWM_ISR
-void BldcController::processDebugOutput() {
+bool BldcController::processDebugOutput() {
     // Check if buffer is ready for reading
     if (!debug_buffer_ready_) {
-        return;
+        return false;
     }
 
-    // Print entire buffer at once
-    for (size_t i = 0; i < DEBUG_BUFFER_SIZE; i++) {
-        const auto& sample = debug_buffer_[debug_read_buffer_][i];
+    // Print one sample
+    if (debug_read_index_ < DEBUG_BUFFER_SIZE) {
+        const auto& sample = debug_buffer_[debug_read_buffer_][debug_read_index_];
         printf("%.4f,%.4f,%.4f,%u\n",
                sample.duty_cycle,
                sample.target_current,
                sample.measured_current,
                sample.current_position);
+        debug_read_index_++;
+        return true; // More data to output
     }
 
     // Buffer finished - print extra newline
     printf("\n");
-
-    // Toggle to other buffer and mark as consumed
-    debug_read_buffer_ = 1 - debug_read_buffer_;
+    debug_read_index_ = 0;
+    debug_read_buffer_ = 1 - debug_read_buffer_; // Toggle to other buffer
     debug_buffer_ready_ = false;
+    return false; // Done
 }
 #endif
 

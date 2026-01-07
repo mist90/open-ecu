@@ -75,6 +75,7 @@ static libecu::CommutationController* commutation_controller = nullptr;
 static libecu::SafetyMonitor* safety_monitor = nullptr;
 static libecu::CurrentController* current_controller = nullptr;
 static libecu::BldcController* motor_controller = nullptr;
+static volatile bool control_tick = false;
 static uint32_t control_counter = 0;
 /* USER CODE END PV */
 
@@ -377,8 +378,44 @@ int main(void)
 
       /* USER CODE BEGIN 3 */
 
+      // motor control loop
+      if (control_tick) {
+          control_tick = false;
+
+          if (motor_controller && safety_monitor) {
+              // Collect safety data
+              libecu::SafetyData safety_data = {0};
+
+              // Read actual phase currents from ADC
+              adc_driver.readAllCurrents(
+                  safety_data.phase_u_current,
+                  safety_data.phase_v_current,
+                  safety_data.phase_w_current
+              );
+
+              safety_data.temperature = 25.0f;     // TODO: Read from temp sensor
+              safety_data.bus_voltage = 24.0f;     // TODO: Read from voltage sensor
+              safety_data.emergency_stop = false;  // TODO: Read from E-stop button
+              safety_data.hall_fault = false;      // TODO: Check hall sensors
+
+              // Update motor controller with safety data
+              motor_controller->update(safety_data);
+
+              // Basic safety check every 10 control cycles
+              if ((control_counter % 10) == 0) {
+                  libecu::MotorStatus status = motor_controller->getStatus();
+                  if (status.active_fault != libecu::SafetyFault::NONE) {
+                      motor_controller->emergencyStop();
+                      // Could add fault handling here
+                  }
+              }
+
+              control_counter++;
+          }
+      }
+
 #ifdef DEBUG_PWM_ISR
-      // Process debug buffer output (entire buffer at once - 1000 samples)
+      // Process debug buffer output (one sample per loop iteration)
       if (motor_controller) {
           motor_controller->processDebugOutput();
       }
@@ -925,41 +962,11 @@ static void MX_DMA_Init(void)
 
 #ifdef STM32G4
 /**
- * @brief SysTick interrupt handler - motor control loop runs here
+ * @brief SysTick interrupt handler - sets control tick flag
  * Frequency: PERIODIC_TIMER_FREQ (5000 Hz configured in main)
  */
 void HAL_SYSTICK_Callback(void) {
-    // Motor control loop
-    if (motor_controller && safety_monitor) {
-        // Collect safety data
-        libecu::SafetyData safety_data = {0};
-
-        // Read actual phase currents from ADC
-        adc_driver.readAllCurrents(
-            safety_data.phase_u_current,
-            safety_data.phase_v_current,
-            safety_data.phase_w_current
-        );
-
-        safety_data.temperature = 25.0f;     // TODO: Read from temp sensor
-        safety_data.bus_voltage = 24.0f;     // TODO: Read from voltage sensor
-        safety_data.emergency_stop = false;  // TODO: Read from E-stop button
-        safety_data.hall_fault = false;      // TODO: Check hall sensors
-
-        // Update motor controller with safety data
-        motor_controller->update(safety_data);
-
-        // Basic safety check every 10 control cycles
-        if ((control_counter % 10) == 0) {
-            libecu::MotorStatus status = motor_controller->getStatus();
-            if (status.active_fault != libecu::SafetyFault::NONE) {
-                motor_controller->emergencyStop();
-                // Could add fault handling here
-            }
-        }
-
-        control_counter++;
-    }
+    control_tick = true;
 }
 #endif
 

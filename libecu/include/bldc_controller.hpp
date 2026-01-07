@@ -184,10 +184,10 @@ public:
 #ifdef DEBUG_PWM_ISR
     /**
      * @brief Process debug buffer output (call from main loop)
-     * Outputs entire buffer at once (1000 samples)
-     * Non-blocking: returns immediately if no data ready
+     * Outputs one sample per call to avoid blocking
+     * @return true if output in progress, false if done
      */
-    void processDebugOutput();
+    bool processDebugOutput();
 #endif
 
 private:
