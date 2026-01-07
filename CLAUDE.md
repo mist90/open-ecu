@@ -87,11 +87,11 @@ Located in `libecu/hal/stm32g4/`:
 These implement the platform-independent interfaces for STM32G4.
 
 #### Application Layer
-`Core/Src/main.cpp`: Instantiates HAL implementations, creates libecu controllers, and runs the 100Hz control loop via TIM2 interrupt.
+`Core/Src/main.cpp`: Instantiates HAL implementations, creates libecu controllers, and runs the control loop via SysTick interrupt (5kHz).
 
 ### Control Flow
 
-1. **100Hz Control Loop** (TIM2 interrupt):
+1. **5kHz Control Loop** (SysTick interrupt):
    - Read Hall sensor states
    - Update commutation sequence
    - Calculate motor speed from position history

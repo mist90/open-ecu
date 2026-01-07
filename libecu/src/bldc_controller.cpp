@@ -47,6 +47,13 @@ BldcController::BldcController(
     , last_hall_state_(0xFF)
     , last_period_us_(0)
     , last_pid_update_time_us_(0)
+#ifdef DEBUG_PWM_ISR
+    , debug_write_index_(0)
+    , debug_write_buffer_(0)
+    , debug_buffer_ready_(false)
+    , debug_read_index_(0)
+    , debug_read_buffer_(1)
+#endif
 {
     // Initialize status
     status_.current_speed_rpm = 0.0f;
@@ -608,6 +615,25 @@ void BldcController::pwmInterruptHandler() {
     if (position != 0xFF) {
         commutation_controller_.update(duty_cycle, dir);
     }
+
+#ifdef DEBUG_PWM_ISR
+    // Capture debug data for analysis
+    if (debug_write_index_ < DEBUG_BUFFER_SIZE && !debug_buffer_ready_) {
+        auto& sample = debug_buffer_[debug_write_buffer_][debug_write_index_];
+        sample.duty_cycle = duty_cycle;
+        sample.target_current = target_current;
+        sample.measured_current = measured_current;
+        sample.current_position = position;
+        debug_write_index_++;
+
+        // Buffer full - swap buffers
+        if (debug_write_index_ >= DEBUG_BUFFER_SIZE) {
+            debug_write_index_ = 0;
+            debug_write_buffer_ = 1 - debug_write_buffer_; // Toggle 0<->1
+            debug_buffer_ready_ = true;
+        }
+    }
+#endif
 }
 
 float BldcController::getCurrentFromActivePhase() {
@@ -649,5 +675,31 @@ float BldcController::getCurrentFromActivePhase() {
             return (i_u + i_v + i_w) / 3.0f;
     }
 }
+
+#ifdef DEBUG_PWM_ISR
+void BldcController::processDebugOutput() {
+    // Check if buffer is ready for reading
+    if (!debug_buffer_ready_) {
+        return;
+    }
+
+    // Print entire buffer at once
+    for (size_t i = 0; i < DEBUG_BUFFER_SIZE; i++) {
+        const auto& sample = debug_buffer_[debug_read_buffer_][i];
+        printf("%.4f,%.4f,%.4f,%u\n",
+               sample.duty_cycle,
+               sample.target_current,
+               sample.measured_current,
+               sample.current_position);
+    }
+
+    // Buffer finished - print extra newline
+    printf("\n");
+
+    // Toggle to other buffer and mark as consumed
+    debug_read_buffer_ = 1 - debug_read_buffer_;
+    debug_buffer_ready_ = false;
+}
+#endif
 
 } // namespace libecu

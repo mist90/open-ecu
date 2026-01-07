@@ -181,6 +181,15 @@ public:
      */
     void pwmInterruptHandler();
 
+#ifdef DEBUG_PWM_ISR
+    /**
+     * @brief Process debug buffer output (call from main loop)
+     * Outputs entire buffer at once (1000 samples)
+     * Non-blocking: returns immediately if no data ready
+     */
+    void processDebugOutput();
+#endif
+
 private:
     // Component references
     PwmInterface& pwm_interface_;
@@ -211,6 +220,24 @@ private:
     
     // Control loop timing
     uint32_t last_pid_update_time_us_;       ///< Timestamp of last successful PID update
+
+#ifdef DEBUG_PWM_ISR
+    // Debug data capture (double buffering)
+    struct PwmDebugSample {
+        float duty_cycle;
+        float target_current;
+        float measured_current;
+        uint8_t current_position;
+    };
+
+    static constexpr size_t DEBUG_BUFFER_SIZE = 1000;
+    PwmDebugSample debug_buffer_[2][DEBUG_BUFFER_SIZE]; ///< Double buffer for debug data
+    volatile size_t debug_write_index_;       ///< Current write index in active buffer
+    volatile size_t debug_write_buffer_;      ///< Active write buffer index (0 or 1)
+    volatile bool debug_buffer_ready_;        ///< True when a buffer is ready for reading
+    size_t debug_read_index_;                 ///< Current read index in read buffer
+    size_t debug_read_buffer_;                ///< Active read buffer index (0 or 1)
+#endif
 
     /**
      * @brief Calculate motor speed from Hall sensor transitions

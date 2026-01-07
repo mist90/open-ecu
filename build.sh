@@ -38,6 +38,7 @@ echo
 BUILD_TYPE="Debug"
 CLEAN_BUILD=false
 VERBOSE=false
+DEBUG_PWM_ISR=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -53,12 +54,17 @@ while [[ $# -gt 0 ]]; do
             VERBOSE=true
             shift
             ;;
+        --debug-pwm)
+            DEBUG_PWM_ISR=true
+            shift
+            ;;
         -h|--help)
             echo "Usage: $0 [options]"
             echo "Options:"
             echo "  -r, --release    Build in Release mode (default: Debug)"
             echo "  -c, --clean      Clean build directory before building"
             echo "  -v, --verbose    Verbose build output"
+            echo "  --debug-pwm      Enable PWM ISR debug capture (~16KB RAM)"
             echo "  -h, --help       Show this help message"
             exit 0
             ;;
@@ -79,6 +85,7 @@ echo -e "${GREEN}Build Configuration:${NC}"
 echo "  Build Type: $BUILD_TYPE"
 echo "  Build Directory: $BUILD_DIR"
 echo "  Clean Build: $CLEAN_BUILD"
+echo "  PWM ISR Debug: $DEBUG_PWM_ISR"
 echo
 
 # Clean build directory if requested
@@ -96,6 +103,9 @@ echo -e "${YELLOW}Configuring with CMake...${NC}"
 CMAKE_ARGS="-DCMAKE_BUILD_TYPE=$BUILD_TYPE"
 if [[ $VERBOSE == true ]]; then
     CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_VERBOSE_MAKEFILE=ON"
+fi
+if [[ $DEBUG_PWM_ISR == true ]]; then
+    CMAKE_ARGS="$CMAKE_ARGS -DENABLE_DEBUG_PWM_ISR=ON"
 fi
 
 cmake .. $CMAKE_ARGS

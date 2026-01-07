@@ -13,6 +13,9 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Debug)
 endif()
 
+# Debug options
+option(ENABLE_DEBUG_PWM_ISR "Enable PWM ISR debug data capture (uses ~16KB RAM)" OFF)
+
 # MCU and target configuration
 set(MCU_FAMILY STM32G4xx)
 set(MCU_MODEL STM32G431xx)
@@ -30,6 +33,12 @@ add_compile_definitions(
     USE_HAL_DRIVER
     $<$<CONFIG:Debug>:DEBUG>
 )
+
+# Optional debug features
+if(ENABLE_DEBUG_PWM_ISR)
+    add_compile_definitions(DEBUG_PWM_ISR)
+    message(STATUS "PWM ISR debug capture enabled (uses ~16KB RAM)")
+endif()
 
 # Include directories
 include_directories(
