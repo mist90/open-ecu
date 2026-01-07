@@ -64,7 +64,7 @@ while [[ $# -gt 0 ]]; do
             echo "  -r, --release    Build in Release mode (default: Debug)"
             echo "  -c, --clean      Clean build directory before building"
             echo "  -v, --verbose    Verbose build output"
-            echo "  --debug-pwm      Enable PWM ISR debug capture (~16KB RAM)"
+            echo "  --debug-pwm      Enable PWM ISR debug capture (~8KB RAM)"
             echo "  -h, --help       Show this help message"
             exit 0
             ;;

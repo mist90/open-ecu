@@ -48,11 +48,10 @@ BldcController::BldcController(
     , last_period_us_(0)
     , last_pid_update_time_us_(0)
 #ifdef DEBUG_PWM_ISR
+    , debug_buffer_{}
     , debug_write_index_(0)
-    , debug_write_buffer_(0)
     , debug_buffer_ready_(false)
     , debug_read_index_(0)
-    , debug_read_buffer_(1)
 #endif
 {
     // Initialize status
@@ -617,19 +616,17 @@ void BldcController::pwmInterruptHandler() {
     }
 
 #ifdef DEBUG_PWM_ISR
-    // Capture debug data for analysis
-    if (debug_write_index_ < DEBUG_BUFFER_SIZE && !debug_buffer_ready_) {
-        auto& sample = debug_buffer_[debug_write_buffer_][debug_write_index_];
+    // Capture debug data for analysis (single buffer)
+    if (!debug_buffer_ready_ && debug_write_index_ < DEBUG_BUFFER_SIZE) {
+        auto& sample = debug_buffer_[debug_write_index_];
         sample.duty_cycle = duty_cycle;
         sample.target_current = target_current;
         sample.measured_current = measured_current;
         sample.current_position = position;
         debug_write_index_++;
 
-        // Buffer full - swap buffers
+        // Buffer full - mark as ready for output
         if (debug_write_index_ >= DEBUG_BUFFER_SIZE) {
-            debug_write_index_ = 0;
-            debug_write_buffer_ = 1 - debug_write_buffer_; // Toggle 0<->1
             debug_buffer_ready_ = true;
         }
     }
@@ -685,7 +682,7 @@ bool BldcController::processDebugOutput() {
 
     // Print one sample
     if (debug_read_index_ < DEBUG_BUFFER_SIZE) {
-        const auto& sample = debug_buffer_[debug_read_buffer_][debug_read_index_];
+        const auto& sample = debug_buffer_[debug_read_index_];
         printf("%.4f,%.4f,%.4f,%u\n",
                sample.duty_cycle,
                sample.target_current,
@@ -695,11 +692,16 @@ bool BldcController::processDebugOutput() {
         return true; // More data to output
     }
 
-    // Buffer finished - print extra newline
+    // Buffer finished - print extra newline and clear buffer
     printf("\n");
+
+    // Clear buffer under disabled interrupts
+    disable_interrupts();
     debug_read_index_ = 0;
-    debug_read_buffer_ = 1 - debug_read_buffer_; // Toggle to other buffer
+    debug_write_index_ = 0;
     debug_buffer_ready_ = false;
+    enable_interrupts();
+
     return false; // Done
 }
 #endif
