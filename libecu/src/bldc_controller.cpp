@@ -208,11 +208,11 @@ void BldcController::update()
             // Open-loop: timing-based commutation (no sensors)
             commutation_controller_.updateOpenLoop(target_duty_cycle, status_.target_speed_rpm, direction_);
         } else if (status_.electric_mode == ElectricMode::VOLTAGE_MODE) {
-            // VOLTAGE_MODE: Hall sensor commutation runs here and in IRQ
+            // VOLTAGE_MODE: Hall sensor commutation runs here and in hallSensorInterruptHandler
+            // In hallSensorInterruptHandler is for precise switching, here is for starting at beginning rotation
             commutation_controller_.update(target_duty_cycle, direction_);
-        }
+        } // CURRENT_MODE: Commutation runs in pwmInterruptHandler() at PWM frequency (after duty calculation)
     }
-    // CURRENT_MODE: Commutation runs in pwmInterruptHandler() at 20kHz (after duty calculation)
     printf("%.2f %.2f %.2f\n", status_.target_speed_rpm, status_.current_speed_rpm, status_.duty_cycle);
 }
 
