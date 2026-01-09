@@ -85,7 +85,7 @@ bool BldcController::initialize()
     return true;
 }
 
-void BldcController::update(const SafetyData& safety_data)
+void BldcController::monitor(const SafetyData& safety_data)
 {
     if (!initialized_) {
         return;
@@ -100,7 +100,10 @@ void BldcController::update(const SafetyData& safety_data)
         handleSafetyFault(fault);
         return;
     }
-    
+}
+
+void BldcController::update()
+{
     // Calculate current motor speed (always returns numeric value, never NAN)
     status_.current_speed_rpm = calculateSpeed();
     
@@ -154,7 +157,6 @@ void BldcController::update(const SafetyData& safety_data)
                         status_.current_speed_rpm,
                         dt
                     );
-                    printf("%f %f %f\n", limited_target, status_.current_speed_rpm, pid_output);
 
                     // Electric mode determines how to use PID output
                     if (status_.electric_mode == ElectricMode::VOLTAGE_MODE) {
@@ -201,17 +203,17 @@ void BldcController::update(const SafetyData& safety_data)
     {
         CriticalSection cs;
         status_.duty_cycle = target_duty_cycle;
-    }
-
-    // Commutation strategy based on control mode
-    if (status_.control_mode == ControlMode::OPEN_LOOP) {
-        // Open-loop: timing-based commutation (no sensors)
-        commutation_controller_.updateOpenLoop(target_duty_cycle, status_.target_speed_rpm, direction_);
-    } else if (status_.electric_mode == ElectricMode::VOLTAGE_MODE) {
-        // VOLTAGE_MODE: Hall sensor commutation runs here at 5kHz
-        commutation_controller_.update(target_duty_cycle, direction_);
+        // Commutation strategy based on control mode
+        if (status_.control_mode == ControlMode::OPEN_LOOP) {
+            // Open-loop: timing-based commutation (no sensors)
+            commutation_controller_.updateOpenLoop(target_duty_cycle, status_.target_speed_rpm, direction_);
+        } else if (status_.electric_mode == ElectricMode::VOLTAGE_MODE) {
+            // VOLTAGE_MODE: Hall sensor commutation runs here and in IRQ
+            commutation_controller_.update(target_duty_cycle, direction_);
+        }
     }
     // CURRENT_MODE: Commutation runs in pwmInterruptHandler() at 20kHz (after duty calculation)
+    printf("%.2f %.2f %.2f\n", status_.target_speed_rpm, status_.current_speed_rpm, status_.duty_cycle);
 }
 
 void BldcController::setTargetSpeed(float speed_rpm)
@@ -560,6 +562,11 @@ void BldcController::hallSensorInterruptHandler()
     // Update end timestamp and pulse counter
     speed_end_time_us_ = timestamp_us;
     speed_pulse_count_ += delta;
+
+    if (status_.electric_mode == ElectricMode::VOLTAGE_MODE) {
+        // VOLTAGE_MODE: Hall sensor commutation runs here at 5kHz
+        commutation_controller_.update(status_.duty_cycle, direction_);
+    }
 }
 
 void BldcController::setTargetCurrent(float current_a) {

@@ -43,7 +43,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define PERIODIC_TIMER_FREQ 5000
+#define PERIODIC_TIMER_FREQ 1000
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -378,40 +378,41 @@ int main(void)
 
       /* USER CODE BEGIN 3 */
 
-      // motor control loop
-      if (control_tick) {
-          control_tick = false;
+        // motor control loop
+        if (control_tick) {
+            control_tick = false;
 
-          if (motor_controller && safety_monitor) {
-              // Collect safety data
-              libecu::SafetyData safety_data = {0};
+            if (motor_controller) {
+                // Update motor controller
+                motor_controller->update(); 
+            }
+            /*if (safety_monitor) {
+                // Basic safety check every 10 control cycles
+                if ((control_counter % 10) == 0) {
+                    // Collect safety data
+                    libecu::SafetyData safety_data = {0};
 
-              // Read actual phase currents from ADC
-              adc_driver.readAllCurrents(
-                  safety_data.phase_u_current,
-                  safety_data.phase_v_current,
-                  safety_data.phase_w_current
-              );
+                    // Read actual phase currents from ADC
+                    adc_driver.readAllCurrents(
+                        safety_data.phase_u_current,
+                        safety_data.phase_v_current,
+                        safety_data.phase_w_current
+                    );
 
-              safety_data.temperature = 25.0f;     // TODO: Read from temp sensor
-              safety_data.bus_voltage = 24.0f;     // TODO: Read from voltage sensor
-              safety_data.emergency_stop = false;  // TODO: Read from E-stop button
-              safety_data.hall_fault = false;      // TODO: Check hall sensors
+                    safety_data.temperature = 25.0f;     // TODO: Read from temp sensor
+                    safety_data.bus_voltage = 24.0f;     // TODO: Read from voltage sensor
+                    safety_data.emergency_stop = false;  // TODO: Read from E-stop button
+                    safety_data.hall_fault = false;      // TODO: Check hall sensors
+                    motor_controller->monitor(safety_data);
+                    libecu::MotorStatus status = motor_controller->getStatus();
+                    if (status.active_fault != libecu::SafetyFault::NONE) {
+                        motor_controller->emergencyStop();
+                        // Could add fault handling here
+                    }
+                }
 
-              // Update motor controller with safety data
-              motor_controller->update(safety_data);
-
-              // Basic safety check every 10 control cycles
-              if ((control_counter % 10) == 0) {
-                  libecu::MotorStatus status = motor_controller->getStatus();
-                  if (status.active_fault != libecu::SafetyFault::NONE) {
-                      motor_controller->emergencyStop();
-                      // Could add fault handling here
-                  }
-              }
-
-              control_counter++;
-          }
+                control_counter++;
+            }*/
       }
 
 #ifdef DEBUG_PWM_ISR

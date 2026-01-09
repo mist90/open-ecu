@@ -96,11 +96,17 @@ public:
      */
     bool initialize();
 
+
     /**
-     * @brief Update motor control (call at control frequency)
+     * @brief Update monitor 
      * @param safety_data Current safety monitoring data
      */
-    void update(const SafetyData& safety_data);
+    void monitor(const SafetyData& safety_data);
+
+    /**
+     * @brief Update motor control (call at control frequency)
+     */
+    void update();
 
     /**
      * @brief Set target speed for closed-loop control
