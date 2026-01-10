@@ -651,27 +651,27 @@ float BldcController::getCurrentFromActivePhase() {
     // In 6-step commutation, one phase is always actively switching (UP or DOWN)
     // We want to read current from the phase that is conducting (typically the DOWN phase)
 
-    uint8_t step = commutation_controller_.getCurrentStep();
+    uint8_t step = commutation_controller_.getCurrentPosition();
 
     // Based on COMMUTATION_TABLE_CCW in commutation_controller.cpp:
-    // Step 0: U=OFF,  V=DOWN, W=UP   → Read V
-    // Step 1: U=UP,   V=DOWN, W=OFF  → Read V
-    // Step 2: U=UP,   V=OFF,  W=DOWN → Read W
-    // Step 3: U=OFF,  V=UP,   W=DOWN → Read W
-    // Step 4: U=DOWN, V=UP,   W=OFF  → Read U
-    // Step 5: U=DOWN, V=OFF,  W=UP   → Read U
+    // Step 0: U=UP,   V=DOWN, W=OFF   → Read V
+    // Step 1: U=UP,   V=OFF,  W=DOWN  → Read W
+    // Step 2: U=OFF,  V=UP,   W=DOWN  → Read W
+    // Step 3: U=DOWN, V=UP,   W=OFF   → Read U
+    // Step 4: U=DOWN, V=OFF,  W=UP    → Read U
+    // Step 5: U=OFF,  V=DOWN, W=UP   → Read V
 
     switch (step) {
         case 0:
-        case 1:
+        case 5:
             // V is conducting (DOWN)
             return adc_interface_->readPhaseCurrent(PwmChannel::PHASE_V);
+        case 1:
         case 2:
-        case 3:
             // W is conducting (DOWN)
             return adc_interface_->readPhaseCurrent(PwmChannel::PHASE_W);
+        case 3:
         case 4:
-        case 5:
             // U is conducting (DOWN)
             return adc_interface_->readPhaseCurrent(PwmChannel::PHASE_U);
         default:

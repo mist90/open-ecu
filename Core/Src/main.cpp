@@ -303,11 +303,11 @@ int main(void)
 
     // Create current controller for current control mode
     libecu::CurrentControllerParameters current_params;
-    current_params.kp = 2.0f;                  // Current loop proportional gain
-    current_params.ki = 100.0f;                 // Current loop integral gain
+    current_params.kp = 5.0f;                  // Current loop proportional gain
+    current_params.ki = 0.0f;                 // Current loop integral gain
     current_params.max_output = 1.0f;          // Max delta (+1.0 → max current increasing)
     current_params.min_output = -1.0f;         // Min delta (-1.0 → max current decreasing)
-    current_params.max_integral = 100.0f;       // Anti-windup limit
+    current_params.max_integral = 0.0f;       // Anti-windup limit
     current_params.sample_time_s = 1.0f / 20000.0f;  // 20kHz (50μs)
     current_params.max_current = 5.4f;         // 5.4A maximum current
     current_controller = new libecu::CurrentController(current_params);
