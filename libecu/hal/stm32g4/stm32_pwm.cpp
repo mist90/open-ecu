@@ -46,11 +46,14 @@ bool Stm32Pwm::initialize(uint32_t frequency, uint16_t dead_time_ns) {
         return false;
     }
 
-    // Configure OC4 channel for ADC trigger timing (at center of PWM period)
-    // In center-aligned mode, OC4 match at ARR/2 occurs at the center (bottom of triangle)
+    // Configure OC4 channel for ADC trigger timing (near bottom of PWM period)
+    // In center-aligned mode, trigger near underflow (CNT ≈ 0) for DOWN state current measurement
+    // For DOWN state (inverted polarity), low-side is ON when CNT < CCRx
+    // At CNT ≈ 5% of ARR, low-side is guaranteed ON for all duty cycles > 5%
+    // Small offset from 0 allows time for register updates after underflow and current stabilization
     TIM_OC_InitTypeDef sConfigOC4 = {0};
     sConfigOC4.OCMode = TIM_OCMODE_PWM1;
-    sConfigOC4.Pulse = period_ / 2;  // 50% duty = center of period
+    sConfigOC4.Pulse = static_cast<uint32_t>(period_ * 0.05f);  // ~5% of ARR, near bottom of triangle
     sConfigOC4.OCPolarity = TIM_OCPOLARITY_HIGH;
     sConfigOC4.OCFastMode = TIM_OCFAST_DISABLE;
     sConfigOC4.OCIdleState = TIM_OCIDLESTATE_RESET;
