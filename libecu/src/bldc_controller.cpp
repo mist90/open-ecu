@@ -653,27 +653,27 @@ float BldcController::getCurrentFromActivePhase() {
 
     uint8_t step = commutation_controller_.getCurrentStep();
 
-    // Based on commutation tables in commutation_controller.cpp:
-    // Step 0: U=UP,   V=OFF,  W=DOWN → Read W
-    // Step 1: U=OFF,  V=UP,   W=DOWN → Read W
-    // Step 2: U=DOWN, V=UP,   W=OFF  → Read U
-    // Step 3: U=DOWN, V=OFF,  W=UP   → Read U
-    // Step 4: U=OFF,  V=DOWN, W=UP   → Read V
-    // Step 5: U=UP,   V=DOWN, W=OFF  → Read V
+    // Based on COMMUTATION_TABLE_CCW in commutation_controller.cpp:
+    // Step 0: U=OFF,  V=DOWN, W=UP   → Read V
+    // Step 1: U=UP,   V=DOWN, W=OFF  → Read V
+    // Step 2: U=UP,   V=OFF,  W=DOWN → Read W
+    // Step 3: U=OFF,  V=UP,   W=DOWN → Read W
+    // Step 4: U=DOWN, V=UP,   W=OFF  → Read U
+    // Step 5: U=DOWN, V=OFF,  W=UP   → Read U
 
     switch (step) {
         case 0:
         case 1:
-            // W is conducting (DOWN)
-            return adc_interface_->readPhaseCurrent(PwmChannel::PHASE_W);
-        case 2:
-        case 3:
-            // U is conducting (DOWN)
-            return adc_interface_->readPhaseCurrent(PwmChannel::PHASE_U);
-        case 4:
-        case 5:
             // V is conducting (DOWN)
             return adc_interface_->readPhaseCurrent(PwmChannel::PHASE_V);
+        case 2:
+        case 3:
+            // W is conducting (DOWN)
+            return adc_interface_->readPhaseCurrent(PwmChannel::PHASE_W);
+        case 4:
+        case 5:
+            // U is conducting (DOWN)
+            return adc_interface_->readPhaseCurrent(PwmChannel::PHASE_U);
         default:
             // Invalid step, return average of all phases
             float i_u, i_v, i_w;
