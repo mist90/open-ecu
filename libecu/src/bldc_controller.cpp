@@ -244,6 +244,12 @@ void BldcController::setDutyCycle(float duty_cycle)
     status_.duty_cycle = std::max(0.0f, std::min(duty_cycle, params_.max_duty_cycle));
 }
 
+void BldcController::setCurrent(float current_a)
+{
+    CriticalSection cs;
+    status_.target_current = std::max(0.0f, std::min(current_a, params_.max_current));
+}
+
 void BldcController::setControlMode(ControlMode mode)
 {
     CriticalSection cs;

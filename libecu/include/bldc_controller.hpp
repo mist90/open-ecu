@@ -42,6 +42,7 @@ enum class ElectricMode : uint8_t {
  */
 struct MotorControlParams {
     float max_duty_cycle;     ///< Maximum duty cycle (0.0 to 1.0)
+    float max_current;        ///< Maximum motor current (A)
     float max_speed_rpm;      ///< Maximum speed in RPM
     float acceleration_rate;  ///< Acceleration rate (RPM/s)
     uint32_t control_frequency; ///< Control loop frequency (Hz)
@@ -121,6 +122,13 @@ public:
      *                   1.0 = maximum voltage output (full torque)
      */
     void setDutyCycle(float duty_cycle);
+
+    /**
+     * @brief Set target current for torque control
+     * @param current_a Target current in Amperes (0.0 to max_current)
+     *                  Clamped to [0, max_current] range
+     */
+    void setCurrent(float current_a);
 
     /**
      * @brief Set control mode (mechanical/commutation strategy)
