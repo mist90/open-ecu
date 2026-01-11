@@ -703,7 +703,7 @@ bool BldcController::processDebugOutput() {
     // Print one sample
     if (debug_read_index_ < DEBUG_BUFFER_SIZE) {
         const auto& sample = debug_buffer_[debug_read_index_];
-        printf("%.4f,%.4f,%.4f,%u\n",
+        printf("%.2f,%.2f,%.2f,%u\n",
                sample.duty_cycle,
                sample.target_current,
                sample.measured_current,
