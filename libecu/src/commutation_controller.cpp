@@ -178,6 +178,11 @@ void CommutationController::applyCommutationStep(const CommutationStep& step, fl
     // <0.5 - negative torque/current
     duty_cycle = 0.5f + duty_cycle * 0.5f;
 
+    // Cache phase states for fast access
+    cached_phase_u_state_ = step.phase_u;
+    cached_phase_v_state_ = step.phase_v;
+    cached_phase_w_state_ = step.phase_w;
+
     // Apply PWM states with direct duty_cycle control
     pwm_interface_.setChannelState(PwmChannel::PHASE_U, step.phase_u, duty_cycle);
     pwm_interface_.setChannelState(PwmChannel::PHASE_V, step.phase_v, duty_cycle);
@@ -202,6 +207,38 @@ uint32_t CommutationController::getCurrentTimeUs()
     // Note: This provides 1ms resolution which is adequate for motor control
     // For higher precision, a dedicated timer would be used in production
     return time_us();
+}
+
+void CommutationController::updateDutyCycle(float duty_cycle)
+{
+    // Update duty cycle without changing phase states
+    // Uses cached phase states from last commutation update
+
+    // Clamp duty_cycle to valid range
+    if (duty_cycle < -0.9f) duty_cycle = -0.9f;
+    if (duty_cycle > 0.9f) duty_cycle = 0.9f;
+
+    // Convert duty_cycle to 0.5-1.0 range around neutral point
+    duty_cycle = 0.5f + duty_cycle * 0.5f;
+
+    // Apply duty cycle to existing phase states (no state change)
+    pwm_interface_.setChannelState(PwmChannel::PHASE_U, cached_phase_u_state_, duty_cycle);
+    pwm_interface_.setChannelState(PwmChannel::PHASE_V, cached_phase_v_state_, duty_cycle);
+    pwm_interface_.setChannelState(PwmChannel::PHASE_W, cached_phase_w_state_, duty_cycle);
+}
+
+PwmState CommutationController::getCachedPhaseState(PwmChannel channel) const
+{
+    switch (channel) {
+        case PwmChannel::PHASE_U:
+            return cached_phase_u_state_;
+        case PwmChannel::PHASE_V:
+            return cached_phase_v_state_;
+        case PwmChannel::PHASE_W:
+            return cached_phase_w_state_;
+        default:
+            return PwmState::OFF;
+    }
 }
 
 } // namespace libecu

@@ -16,8 +16,7 @@ namespace libecu {
 enum class PwmChannel : uint8_t {
     PHASE_U = 0,
     PHASE_V = 1,
-    PHASE_W = 2,
-    CHANNEL_COUNT = 3
+    PHASE_W = 2
 };
 
 /**

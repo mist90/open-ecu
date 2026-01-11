@@ -80,10 +80,17 @@ public:
     uint8_t getCurrentPosition();
 
     /**
-     * @brief Get current commutation step
-     * @return Current commutation step
+     * @brief Update duty cycle without changing commutation step
+     * @param duty_cycle Motor duty cycle (0.0 to 1.0)
      */
-    uint8_t getCurrentStep() const { return current_step_; }
+    void updateDutyCycle(float duty_cycle);
+
+    /**
+     * @brief Get cached phase state for a given channel
+     * @param channel PWM channel
+     * @return Cached phase state
+     */
+    PwmState getCachedPhaseState(PwmChannel channel) const;
 
     /**
      * @brief Check if motor is running
@@ -100,12 +107,17 @@ public:
 private:
     PwmInterface& pwm_interface_;
     HallInterface& hall_interface_;
-    
+
     MotorPosition current_position_;
     uint8_t current_step_;
     bool is_running_;
     uint8_t num_poles_;  ///< Number of motor pole pairs
-    
+
+    // Cached phase states for fast access (updated in update()/updateOpenLoop())
+    PwmState cached_phase_u_state_;
+    PwmState cached_phase_v_state_;
+    PwmState cached_phase_w_state_;
+
     // Open-loop timing control
     uint32_t last_step_time_us_;
     uint32_t step_interval_us_;

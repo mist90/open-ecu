@@ -46,6 +46,7 @@ BldcController::BldcController(
     , speed_pulse_count_(0)
     , last_hall_state_(0xFF)
     , last_period_us_(0)
+    , prev_position_(0xFF)
     , last_pid_update_time_us_(0)
 #ifdef DEBUG_PWM_ISR
     , debug_buffer_{}
@@ -211,7 +212,18 @@ void BldcController::update()
             // VOLTAGE_MODE: Hall sensor commutation runs here and in hallSensorInterruptHandler
             // In hallSensorInterruptHandler is for precise switching, here is for starting at beginning rotation
             commutation_controller_.update(target_duty_cycle, direction_);
-        } // CURRENT_MODE: Commutation runs in pwmInterruptHandler() at PWM frequency (after duty calculation)
+        } else if (status_.electric_mode == ElectricMode::CURRENT_MODE) {
+            // CURRENT_MODE: Only update commutation on rotor position change
+            if (current_position != prev_position_ && prev_position_ != 0xFF) {
+                // Position changed - reset commutation and current controller
+                commutation_controller_.update(0.0f, direction_);
+                if (current_controller_) {
+                    current_controller_->reset();
+                }
+            }
+            // Update previous position
+            prev_position_ = current_position;
+        }
     }
     printf("%.2f %.2f %.2f\n", status_.target_speed_rpm, status_.current_speed_rpm, status_.duty_cycle);
 }
@@ -566,6 +578,18 @@ void BldcController::hallSensorInterruptHandler()
     if (status_.electric_mode == ElectricMode::VOLTAGE_MODE) {
         // VOLTAGE_MODE: Hall sensor commutation runs here at 5kHz
         commutation_controller_.update(status_.duty_cycle, direction_);
+    } else if (status_.electric_mode == ElectricMode::CURRENT_MODE) {
+        // CURRENT_MODE: Only update commutation on rotor position change
+        // Check if position has changed (0xFF means uninitialized)
+        if (hall_state != prev_position_ && prev_position_ != 0xFF) {
+            // Position changed - reset commutation and current controller
+            commutation_controller_.update(0.0f, direction_);
+            if (current_controller_) {
+                current_controller_->reset();
+            }
+        }
+        // Update previous position
+        prev_position_ = hall_state;
     }
 }
 
@@ -578,12 +602,10 @@ void BldcController::pwmInterruptHandler() {
     // Read shared data atomically (avoid torn reads from SysTick interrupt)
     ElectricMode electric_mode;
     float target_current;
-    RotationDirection dir;
     {
         CriticalSection cs;
         electric_mode = status_.electric_mode;
         target_current = status_.target_current;
-        dir = direction_;
     }
 
     // Only run current control loop in CURRENT_MODE
@@ -617,12 +639,9 @@ void BldcController::pwmInterruptHandler() {
         status_.duty_cycle = duty_cycle;
     }
 
-    // Apply duty cycle via commutation controller
-    // Get current commutation step and apply the calculated duty cycle
-    uint8_t position = commutation_controller_.getCurrentPosition();
-    if (position != 0xFF) {
-        commutation_controller_.update(duty_cycle, dir);
-    }
+    // Apply duty cycle without changing commutation step
+    // Phase switching is handled in hallSensorInterruptHandler
+    commutation_controller_.updateDutyCycle(duty_cycle);
 
 #ifdef DEBUG_PWM_ISR
     // Capture debug data for analysis (single buffer)
@@ -631,7 +650,7 @@ void BldcController::pwmInterruptHandler() {
         sample.duty_cycle = duty_cycle;
         sample.target_current = target_current;
         sample.measured_current = measured_current;
-        sample.current_position = position;
+        sample.current_position = commutation_controller_.getCurrentPosition();
         debug_write_index_++;
 
         // Buffer full - mark as ready for output
@@ -647,38 +666,24 @@ float BldcController::getCurrentFromActivePhase() {
         return 0.0f;
     }
 
-    // Determine which phase is actively conducting based on commutation step
-    // In 6-step commutation, one phase is always actively switching (UP or DOWN)
-    // We want to read current from the phase that is conducting (typically the DOWN phase)
+    // Determine which phase is actively conducting based on cached phase states
+    // In 6-step commutation, we want to read current from the DOWN phase (low-side conducting)
 
-    uint8_t step = commutation_controller_.getCurrentPosition();
+    // Get cached phase states from CommutationController
+    PwmState state_u = commutation_controller_.getCachedPhaseState(PwmChannel::PHASE_U);
+    PwmState state_v = commutation_controller_.getCachedPhaseState(PwmChannel::PHASE_V);
+    PwmState state_w = commutation_controller_.getCachedPhaseState(PwmChannel::PHASE_W);
 
-    // Based on COMMUTATION_TABLE_CCW in commutation_controller.cpp:
-    // Step 0: U=UP,   V=DOWN, W=OFF   → Read V
-    // Step 1: U=UP,   V=OFF,  W=DOWN  → Read W
-    // Step 2: U=OFF,  V=UP,   W=DOWN  → Read W
-    // Step 3: U=DOWN, V=UP,   W=OFF   → Read U
-    // Step 4: U=DOWN, V=OFF,  W=UP    → Read U
-    // Step 5: U=OFF,  V=DOWN, W=UP   → Read V
-
-    switch (step) {
-        case 0:
-        case 5:
-            // V is conducting (DOWN)
-            return adc_interface_->readPhaseCurrent(PwmChannel::PHASE_V);
-        case 1:
-        case 2:
-            // W is conducting (DOWN)
-            return adc_interface_->readPhaseCurrent(PwmChannel::PHASE_W);
-        case 3:
-        case 4:
-            // U is conducting (DOWN)
-            return adc_interface_->readPhaseCurrent(PwmChannel::PHASE_U);
-        default:
-            // Invalid step, return average of all phases
-            float i_u, i_v, i_w;
-            adc_interface_->readAllCurrents(i_u, i_v, i_w);
-            return (i_u + i_v + i_w) / 3.0f;
+    // Find the DOWN phase (low-side conducting)
+    if (state_u == PwmState::DOWN) {
+        return adc_interface_->readPhaseCurrent(PwmChannel::PHASE_U);
+    } else if (state_v == PwmState::DOWN) {
+        return adc_interface_->readPhaseCurrent(PwmChannel::PHASE_V);
+    } else if (state_w == PwmState::DOWN) {
+        return adc_interface_->readPhaseCurrent(PwmChannel::PHASE_W);
+    } else {
+        // No DOWN phase found (e.g., all phases OFF), return 0
+        return 0.0f;
     }
 }
 

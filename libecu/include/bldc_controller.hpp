@@ -224,6 +224,9 @@ private:
     volatile int32_t speed_pulse_count_;     ///< Pulse count (can be negative for reverse)
     volatile uint8_t last_hall_state_;       ///< Last Hall state to detect changes
     volatile uint32_t last_period_us_;       ///< Last measured period between pulses (for extrapolation)
+
+    // Position tracking for CURRENT_MODE (to detect commutation events)
+    volatile uint8_t prev_position_;         ///< Previous rotor position for change detection
     
     // Control loop timing
     uint32_t last_pid_update_time_us_;       ///< Timestamp of last successful PID update
