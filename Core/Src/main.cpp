@@ -70,13 +70,13 @@ DMA_HandleTypeDef hdma_adc1;
 static libecu::Stm32Pwm pwm_driver(&htim1);
 static libecu::HallGpioConfig hall_config{A__GPIO_Port, A__Pin, B__Pin, Z__Pin};
 static libecu::Stm32HallSensor hall_sensor(hall_config);
-static libecu::Stm32Adc adc_driver(&hadc1, &hdma_adc1);
+static libecu::Stm32Adc adc_driver;
 static libecu::CommutationController* commutation_controller = nullptr;
 static libecu::SafetyMonitor* safety_monitor = nullptr;
 static libecu::CurrentController* current_controller = nullptr;
 static libecu::BldcController* motor_controller = nullptr;
 static volatile bool control_tick = false;
-static uint32_t control_counter = 0;
+//static uint32_t control_counter = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -247,7 +247,6 @@ int main(void)
     adc_calibration.opamp_gain = 16.0f;              // PGA gain
     adc_calibration.adc_reference_voltage = 3.3f;    // 3.3V ADC reference
     adc_calibration.adc_resolution_bits = 12;        // 12-bit ADC
-    adc_calibration.offset_voltage = 1.65f;          // Mid-supply offset (will be calibrated)
 
     if (!adc_driver.initialize(adc_calibration)) {
         Error_Handler();
@@ -271,11 +270,17 @@ int main(void)
         Error_Handler();
     }
 
+    // Wait for stable readings
+    HAL_Delay(100);
+
     // Calibrate zero-current offset (motor must be stationary)
     // Must be AFTER ADC is started and TIM1 is generating triggers
     if (!adc_driver.calibrateZeroOffset()) {
         Error_Handler();
     }
+    printf("zero offsets: %f %f %f\n",  adc_driver.getCalibration().offset_voltage_u,
+                                        adc_driver.getCalibration().offset_voltage_v,
+                                        adc_driver.getCalibration().offset_voltage_w);
 
     // Create component instances
     // Using 8 pole pairs for commutation
@@ -388,7 +393,10 @@ int main(void)
 
             if (motor_controller) {
                 // Update motor controller
-                motor_controller->update(); 
+                motor_controller->update();
+                printf("%.2f %.2f %.2f\n",  motor_controller->getStatus().target_speed_rpm,
+                                            motor_controller->getStatus().current_speed_rpm,
+                                            motor_controller->getStatus().duty_cycle);
             }
             /*if (safety_monitor) {
                 // Basic safety check every 10 control cycles

@@ -225,7 +225,6 @@ void BldcController::update()
             prev_position_ = current_position;
         }
     }
-    printf("%.2f %.2f %.2f\n", status_.target_speed_rpm, status_.current_speed_rpm, status_.duty_cycle);
 }
 
 void BldcController::setTargetSpeed(float speed_rpm)
