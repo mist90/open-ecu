@@ -3,8 +3,8 @@
  * @brief STM32G4 ADC implementation for 3-phase current sensing
  * @note Uses ADC injected channels triggered by TIM1_TRGO2 for PWM-synchronized sampling
  *       ADC1 JDR1: Phase U (OPAMP1_OUT via VOPAMP1)
- *       ADC1 JDR2: Phase W (OPAMP3_OUT via ADC1_IN12)
  *       ADC2 JDR1: Phase V (OPAMP2_OUT via VOPAMP2)
+ *       ADC2 JDR2: Phase W (OPAMP3_OUT via VOPAMP3_ADC2)
  */
 
 #include "stm32_adc.hpp"
@@ -26,7 +26,7 @@ uint32_t Stm32Adc::getRawAdcValue(PwmChannel channel) {
         case PwmChannel::PHASE_V:
             return HAL_ADCEx_InjectedGetValue(&hadc2, ADC_INJECTED_RANK_1);
         case PwmChannel::PHASE_W:
-            return HAL_ADCEx_InjectedGetValue(&hadc1, ADC_INJECTED_RANK_2);
+            return HAL_ADCEx_InjectedGetValue(&hadc2, ADC_INJECTED_RANK_2);
         default:
             return 0;
     }

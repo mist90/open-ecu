@@ -706,7 +706,7 @@ bool BldcController::processDebugOutput() {
                sample.duty_cycle,
                sample.target_current,
                sample.measured_current,
-               sample.current_position);
+               (unsigned int)sample.current_position);
         debug_read_index_++;
         return true; // More data to output
     }
