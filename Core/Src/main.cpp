@@ -297,8 +297,8 @@ int main(void)
 
     // Speed PID controller parameters for CURRENT_MODE (outputs current 0.0-5.4A)
     libecu::PidParameters pid_params_current;
-    pid_params_current.kp = 0.5f;     // Higher gain for current control
-    pid_params_current.ki = 0.1f;     // Different integral for current
+    pid_params_current.kp = 0.01f;     // Higher gain for current control
+    pid_params_current.ki = 0.05f;     // Different integral for current
     pid_params_current.kd = 0.0f;
     pid_params_current.max_output = 5.4f;    // Max current (A)
     pid_params_current.min_output = 0.0f;
@@ -308,8 +308,8 @@ int main(void)
 
     // Create current controller for current control mode
     libecu::CurrentControllerParameters current_params;
-    current_params.kp = 5.0f;                  // Current loop proportional gain
-    current_params.ki = 0.0f;                 // Current loop integral gain
+    current_params.kp = 1.0f;                  // Current loop proportional gain
+    current_params.ki = 0.1f;                 // Current loop integral gain
     current_params.max_output = 1.0f;          // Max delta (+1.0 → max current increasing)
     current_params.min_output = -1.0f;         // Min delta (-1.0 → max current decreasing)
     current_params.max_integral = 0.0f;       // Anti-windup limit
@@ -355,13 +355,13 @@ int main(void)
 
     // Set control mode (mechanical) and electric mode (electrical)
     motor_controller->setControlMode(libecu::ControlMode::CLOSED_LOOP_VELOCITY);
-    motor_controller->setElectricMode(libecu::ElectricMode::VOLTAGE_MODE);
+    motor_controller->setElectricMode(libecu::ElectricMode::CURRENT_MODE);
 
     // This setting is for CLOSED_LOOP_TORQUE and VOLTAGE_MODE mode only
     motor_controller->setDutyCycle(0.3f);
 
     // This setting is for CLOSED_LOOP_TORQUE and CURRENT_MODE mode only
-    motor_controller->setCurrent(1.0f);
+    motor_controller->setCurrent(0.5f);
 
     motor_controller->start();
 

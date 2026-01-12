@@ -95,10 +95,12 @@ bool Stm32Pwm::initialize(uint32_t frequency, uint16_t dead_time_ns) {
         return false;
     }
 
-    // Enable CCRx preload (shadow registers) for all PWM channels
-    __HAL_TIM_ENABLE_OCxPRELOAD(tim_handle, TIM_CHANNEL_1);
-    __HAL_TIM_ENABLE_OCxPRELOAD(tim_handle, TIM_CHANNEL_2);
-    __HAL_TIM_ENABLE_OCxPRELOAD(tim_handle, TIM_CHANNEL_3);
+    // Disable CCRx preload for immediate update in current control loop
+    // This allows CCRx changes to take effect immediately without waiting for Update event
+    // Safe because updates happen in synchronized interrupt at consistent timing
+    __HAL_TIM_DISABLE_OCxPRELOAD(tim_handle, TIM_CHANNEL_1);
+    __HAL_TIM_DISABLE_OCxPRELOAD(tim_handle, TIM_CHANNEL_2);
+    __HAL_TIM_DISABLE_OCxPRELOAD(tim_handle, TIM_CHANNEL_3);
     
     // Configure dead-time for complementary PWM outputs
     TIM_BreakDeadTimeConfigTypeDef sBreakDeadTimeConfig = {0};
