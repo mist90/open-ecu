@@ -292,8 +292,15 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
   {
     /* USER CODE BEGIN TIM1_PWM_Interrupt */
 #ifdef STM32G4
-    // Call motor controller's PWM interrupt handler for current control loop
-    motor_controller_pwm_interrupt_handler();
+    // In center-aligned mode, update event fires twice per PWM period:
+    // 1. At CNT=ARR (overflow, counting down) - ADC conversion is complete
+    // 2. At CNT=0 (underflow, counting up) - ADC conversion not yet triggered
+    // Process only when counting DOWN (after overflow) to read fresh ADC values
+    // Check DIR bit in CR1: 0=upcounting, 1=downcounting
+    if (htim->Instance->CR1 & TIM_CR1_DIR) {
+        // Call motor controller's PWM interrupt handler for current control loop
+        motor_controller_pwm_interrupt_handler();
+    }
 #endif
     /* USER CODE END TIM1_PWM_Interrupt */
   }
