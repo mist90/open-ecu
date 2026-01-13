@@ -8,14 +8,41 @@ BLDC ECU firmware for the b-g431b-esc1 board (STM32G431CBU). Implements 6-step t
 
 **Target Hardware:** STM32G431CBU (Cortex-M4, 128KB Flash, 32KB RAM)
 
+## Project Structure
+
+The project is organized to support multiple hardware platforms:
+
+```
+open-ecu/
+├── libecu/              # Platform-independent motor control library
+│   ├── include/         # Public headers (algorithms, interfaces)
+│   ├── src/             # Core algorithm implementations
+│   ├── hal/             # Platform-specific HAL implementations
+│   │   └── stm32g4/     # STM32G4-specific drivers
+│   └── tests/           # Unit tests (host platform)
+├── STM32G431/           # STM32G431 platform-specific files
+│   ├── Core/            # Application code (main.cpp, HAL config)
+│   ├── Drivers/         # STM32 HAL/CMSIS drivers
+│   ├── CMakeLists.txt   # Platform build configuration
+│   ├── build.sh         # Platform build script
+│   ├── flash.sh         # Platform flash script
+│   └── STM32G431CBUX_FLASH.ld  # Linker script
+├── cmake/               # Shared CMake toolchain files
+│   ├── arm-none-eabi-gcc.cmake
+│   └── stm32g4-config.cmake
+├── build.sh             # Multi-platform build wrapper
+└── flash.sh             # Multi-platform flash wrapper
+```
+
 ## Build System
 
-This project supports two build methods:
-
-### CMake Build (Recommended for CLI)
+### Multi-Platform Build (Recommended)
 ```bash
-# Debug build
+# Build for default platform (STM32G431)
 ./build.sh
+
+# Build for specific platform
+./build.sh --platform STM32G431
 
 # Release build (optimized for size)
 ./build.sh --release
@@ -25,27 +52,48 @@ This project supports two build methods:
 
 # Verbose output
 ./build.sh --verbose
+
+# Enable PWM ISR debug capture
+./build.sh --debug-pwm
 ```
 
-Build outputs: `build/open-ecu.elf`, `build/open-ecu.hex`, `build/open-ecu.bin`
+Build outputs: `STM32G431/build/open-ecu.elf`, `STM32G431/build/open-ecu.hex`, `STM32G431/build/open-ecu.bin`
+
+### Platform-Specific Build
+```bash
+# Build directly from platform directory
+cd STM32G431
+./build.sh --release
+```
 
 ### STM32CubeIDE
-Standard Eclipse-based build for Debug/Release configurations.
+Open the STM32G431 project in STM32CubeIDE for Eclipse-based development.
 
 ## Flash Commands
 
+### Multi-Platform Flash
 ```bash
-# Flash debug build (uses OpenOCD by default)
+# Flash default platform (STM32G431) debug build
 ./flash.sh
+
+# Flash specific platform
+./flash.sh --platform STM32G431
 
 # Flash release build
 ./flash.sh --release
 
-# Flash using ST-Link
+# Flash using ST-Link (default is OpenOCD)
 ./flash.sh --method stlink
 
 # Flash with verification
 ./flash.sh --verify
+```
+
+### Platform-Specific Flash
+```bash
+# Flash directly from platform directory
+cd STM32G431
+./flash.sh --method openocd --verify
 ```
 
 ## Testing
@@ -87,7 +135,7 @@ Located in `libecu/hal/stm32g4/`:
 These implement the platform-independent interfaces for STM32G4.
 
 #### Application Layer
-`Core/Src/main.cpp`: Instantiates HAL implementations, creates libecu controllers, and runs the control loop via SysTick interrupt (5kHz).
+`STM32G431/Core/Src/main.cpp`: Instantiates HAL implementations, creates libecu controllers, and runs the control loop via SysTick interrupt (5kHz).
 
 ### Control Flow
 
@@ -154,16 +202,37 @@ All shunts are low-side current sensors between ground and low-side MOSFETs.
 
 ## Porting to Other MCUs
 
-To port libecu to a different microcontroller:
+To port libecu to a different microcontroller/platform:
 
-1. **Implement HAL interfaces** in `libecu/hal/<your_mcu>/`:
+1. **Create platform directory**: Create a new directory (e.g., `STM32F4xx/`, `ESP32/`, etc.) at project root
+
+2. **Implement HAL interfaces** in `libecu/hal/<your_mcu>/`:
    - Implement `PwmInterface` for your timer/PWM peripheral
    - Implement `HallInterface` for GPIO or capture inputs
-2. **Update build system**: Add new HAL sources to CMakeLists.txt or your build tool
-3. **Adapt main loop**: Initialize HAL implementations and libecu controllers in main()
-4. **Test with unit tests**: Run `libecu/tests/` on host to verify algorithm correctness before hardware testing
 
-The libecu algorithms (CommutationController, PidController, SafetyMonitor) require NO changes.
+3. **Add platform files**:
+   - Create `<platform>/Core/` directory with your application code
+   - Add `<platform>/Drivers/` or equivalent HAL/SDK files
+   - Create `<platform>/CMakeLists.txt` based on STM32G431 example:
+     - Set toolchain file path: `../cmake/<your-toolchain>.cmake`
+     - Add platform-specific include directories (local paths)
+     - Add platform-specific source files (local paths)
+     - Reference libecu with: `../libecu/include`, `../libecu/src`, `../libecu/hal/<your_mcu>`
+     - Configure MCU-specific compile and linker flags
+   - Create `<platform>/build.sh` script that:
+     - Changes to build directory
+     - Runs `cmake ..` (points to platform CMakeLists.txt)
+     - Builds with `make`
+   - Create `<platform>/flash.sh` script for programming
+   - Add linker script for your target
+
+4. **Create toolchain file** (if needed):
+   - Add `cmake/<your-toolchain>.cmake` with compiler paths and flags
+   - Add `cmake/<your-platform>-config.cmake` for platform-specific configuration (optional)
+
+5. **Test with unit tests**: Run `libecu/tests/` on host to verify algorithm correctness before hardware testing
+
+The libecu algorithms (CommutationController, PidController, SafetyMonitor) require NO changes. Only HAL implementations and application layer need platform-specific code.
 
 ## Troubleshooting Build Issues
 

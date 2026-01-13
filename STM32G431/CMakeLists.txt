@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 
 # Set toolchain before project declaration
-set(CMAKE_TOOLCHAIN_FILE ${CMAKE_CURRENT_SOURCE_DIR}/cmake/arm-none-eabi-gcc.cmake)
+set(CMAKE_TOOLCHAIN_FILE ${CMAKE_CURRENT_SOURCE_DIR}/../cmake/arm-none-eabi-gcc.cmake)
 
 # Project configuration
 project(open-ecu C CXX ASM)
@@ -47,10 +47,10 @@ include_directories(
     Drivers/STM32G4xx_HAL_Driver/Inc/Legacy
     Drivers/CMSIS/Device/ST/STM32G4xx/Include
     Drivers/CMSIS/Include
-    libecu/include
-    libecu/include/interfaces
-    libecu/include/algorithms
-    libecu/include/hal/stm32g4
+    ../libecu/include
+    ../libecu/include/interfaces
+    ../libecu/include/algorithms
+    ../libecu/include/hal/stm32g4
 )
 
 # Convert CPU_PARAMETERS list to string
@@ -81,7 +81,7 @@ file(GLOB_RECURSE CORE_SOURCES
 )
 
 # Include STM32G4 specific configuration
-include(cmake/stm32g4-config.cmake)
+include(${CMAKE_CURRENT_SOURCE_DIR}/../cmake/stm32g4-config.cmake)
 
 # STM32 HAL Driver sources
 file(GLOB HAL_SOURCES
@@ -101,15 +101,15 @@ file(GLOB STARTUP_FILE
 
 # libecu library sources (using platform-specific hal directory)
 file(GLOB LIBECU_CORE_SOURCES
-    "libecu/src/bldc_controller.cpp"
-    "libecu/src/commutation_controller.cpp"
-    "libecu/src/pid_controller.cpp"
-    "libecu/src/current_controller.cpp"
-    "libecu/src/safety_monitor.cpp"
+    "../libecu/src/bldc_controller.cpp"
+    "../libecu/src/commutation_controller.cpp"
+    "../libecu/src/pid_controller.cpp"
+    "../libecu/src/current_controller.cpp"
+    "../libecu/src/safety_monitor.cpp"
 )
 
 file(GLOB LIBECU_HAL_SOURCES
-    "libecu/hal/stm32g4/*.cpp"
+    "../libecu/hal/stm32g4/*.cpp"
 )
 
 set(LIBECU_SOURCES ${LIBECU_CORE_SOURCES} ${LIBECU_HAL_SOURCES})
