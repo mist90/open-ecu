@@ -30,6 +30,7 @@
 #include "../../libecu/include/algorithms/pid_controller.hpp"
 #include "../../libecu/include/algorithms/current_controller.hpp"
 #include "../../libecu/include/safety/safety_monitor.hpp"
+#include "../../libecu/include/platform/critical_section.hpp"
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
@@ -343,8 +344,8 @@ int main(void)
     /* Configure interrupt priorities for real-time control
      * Lower preempt priority number = higher priority (can preempt higher numbers)
      * Priority 0: TIM1 (20kHz current loop) - highest priority, time-critical
-     * Priority 2: SysTick (5kHz control loop) - medium priority
-     * Priority 5: Hall sensors (EXTI9_5) - lowest priority, already configured in MX_GPIO_Init
+     * Priority 1: Hall sensors (EXTI9_5) - medium priority, already configured in MX_GPIO_Init
+     * Priority 2: SysTick (control loop) - lowest priority
      */
     HAL_NVIC_SetPriority(TIM1_UP_TIM16_IRQn, 0, 0);
     HAL_NVIC_EnableIRQ(TIM1_UP_TIM16_IRQn);
@@ -355,7 +356,7 @@ int main(void)
 
     // Set control mode (mechanical) and electric mode (electrical)
     motor_controller->setControlMode(libecu::ControlMode::CLOSED_LOOP_VELOCITY);
-    motor_controller->setElectricMode(libecu::ElectricMode::CURRENT_MODE);
+    motor_controller->setElectricMode(libecu::ElectricMode::VOLTAGE_MODE);
 
     // This setting is for CLOSED_LOOP_TORQUE and VOLTAGE_MODE mode only
     motor_controller->setDutyCycle(0.3f);
@@ -393,10 +394,15 @@ int main(void)
 
             if (motor_controller) {
                 // Update motor controller
-                motor_controller->update();
-                printf("%.2f %.2f %.2f\n",  motor_controller->getStatus().target_speed_rpm,
-                                            motor_controller->getStatus().current_speed_rpm,
-                                            motor_controller->getStatus().duty_cycle);
+                
+                libecu::MotorStatus status;
+                {
+                  libecu::CriticalSection cs;
+                  status = motor_controller->getStatus();
+                }
+                printf("%.2f %.2f %.2f\n",  status.target_speed_rpm,
+                                            status.current_speed_rpm,
+                                            status.duty_cycle);
             }
             /*if (safety_monitor) {
                 // Basic safety check every 10 control cycles
@@ -935,7 +941,7 @@ static void MX_GPIO_Init(void)
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
   /* Enable EXTI interrupts for Hall sensor pins */
-  HAL_NVIC_SetPriority(EXTI9_5_IRQn, 5, 0);
+  HAL_NVIC_SetPriority(EXTI9_5_IRQn, 1, 0);
   HAL_NVIC_EnableIRQ(EXTI9_5_IRQn);
   /* USER CODE END MX_GPIO_Init_2 */
 }
@@ -962,10 +968,14 @@ static void MX_DMA_Init(void)
 #ifdef STM32G4
 /**
  * @brief SysTick interrupt handler - sets control tick flag
- * Frequency: PERIODIC_TIMER_FREQ (5000 Hz configured in main)
+ * Frequency: PERIODIC_TIMER_FREQ
  */
 void HAL_SYSTICK_Callback(void) {
     control_tick = true;
+    if (motor_controller) {
+      // Update motor controller
+      motor_controller->update();
+    }
 }
 #endif
 
