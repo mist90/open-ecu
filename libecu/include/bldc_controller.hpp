@@ -200,9 +200,8 @@ public:
     /**
      * @brief Process debug buffer output (call from main loop)
      * Outputs one sample per call to avoid blocking
-     * @return true if output in progress, false if done
      */
-    bool processDebugOutput();
+    void processDebugOutput();
 #endif
 
 private:
@@ -252,7 +251,6 @@ private:
     std::array<PwmDebugSample, DEBUG_BUFFER_SIZE> debug_buffer_; ///< Single buffer for debug data
     volatile size_t debug_write_index_;       ///< Current write index
     volatile bool debug_buffer_ready_;        ///< True when buffer is full and ready for reading
-    size_t debug_read_index_;                 ///< Current read index for output
 #endif
 
     /**

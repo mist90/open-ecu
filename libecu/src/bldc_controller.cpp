@@ -52,7 +52,6 @@ BldcController::BldcController(
     , debug_buffer_{}
     , debug_write_index_(0)
     , debug_buffer_ready_(false)
-    , debug_read_index_(0)
 #endif
 {
     // Initialize status
@@ -214,15 +213,15 @@ void BldcController::update()
             commutation_controller_.update(target_duty_cycle, direction_);
         } else if (status_.electric_mode == ElectricMode::CURRENT_MODE) {
             // CURRENT_MODE: Only update commutation on rotor position change
-            if (current_position != prev_position_ && prev_position_ != 0xFF) {
+            if (current_position != prev_position_) {
                 // Position changed - reset commutation and current controller
                 commutation_controller_.update(0.0f, direction_);
                 if (current_controller_) {
                     current_controller_->reset();
                 }
+                // Update previous position
+                prev_position_ = current_position;
             }
-            // Update previous position
-            prev_position_ = current_position;
         }
     }
 }
@@ -318,7 +317,10 @@ void BldcController::stop()
 {
     status_.is_running = false;
     status_.duty_cycle = 0.0f;
-    commutation_controller_.update(0.0f, direction_);
+    {
+        CriticalSection cs;
+        commutation_controller_.update(0.0f, direction_);
+    }
     
     // Reset speed measurement on motor stop
     disable_interrupts();
@@ -581,20 +583,22 @@ void BldcController::hallSensorInterruptHandler()
     speed_pulse_count_ += delta;
 
     if (status_.electric_mode == ElectricMode::VOLTAGE_MODE) {
+        CriticalSection cs;
         // VOLTAGE_MODE: Hall sensor commutation runs here at 5kHz
         commutation_controller_.update(status_.duty_cycle, direction_);
     } else if (status_.electric_mode == ElectricMode::CURRENT_MODE) {
         // CURRENT_MODE: Only update commutation on rotor position change
         // Check if position has changed (0xFF means uninitialized)
-        if (hall_state != prev_position_ && prev_position_ != 0xFF) {
+        if (hall_state != prev_position_) {
+            CriticalSection cs;
             // Position changed - reset commutation and current controller
             commutation_controller_.update(0.0f, direction_);
             if (current_controller_) {
                 current_controller_->reset();
             }
+            // Update previous position
+            prev_position_ = hall_state;
         }
-        // Update previous position
-        prev_position_ = hall_state;
     }
 }
 
@@ -642,11 +646,10 @@ void BldcController::pwmInterruptHandler() {
         CriticalSection cs;
         status_.measured_current = measured_current;
         status_.duty_cycle = duty_cycle;
+        // Apply duty cycle without changing commutation step
+        // Phase switching is handled in hallSensorInterruptHandler
+        commutation_controller_.updateDutyCycle(duty_cycle);
     }
-
-    // Apply duty cycle without changing commutation step
-    // Phase switching is handled in hallSensorInterruptHandler
-    commutation_controller_.updateDutyCycle(duty_cycle);
 
 #ifdef DEBUG_PWM_ISR
     // Capture debug data for analysis (single buffer)
@@ -693,22 +696,20 @@ float BldcController::getCurrentFromActivePhase() {
 }
 
 #ifdef DEBUG_PWM_ISR
-bool BldcController::processDebugOutput() {
+void BldcController::processDebugOutput() {
     // Check if buffer is ready for reading
     if (!debug_buffer_ready_) {
-        return false;
+        return;
     }
 
     // Print one sample
-    if (debug_read_index_ < DEBUG_BUFFER_SIZE) {
+    for (size_t debug_read_index_ = 0; debug_read_index_ < DEBUG_BUFFER_SIZE; debug_read_index_++) {
         const auto& sample = debug_buffer_[debug_read_index_];
         printf("%.2f,%.2f,%.2f,%u\n",
                sample.duty_cycle,
                sample.target_current,
                sample.measured_current,
                (unsigned int)sample.current_position);
-        debug_read_index_++;
-        return true; // More data to output
     }
 
     // Buffer finished - print extra newline and clear buffer
@@ -716,12 +717,9 @@ bool BldcController::processDebugOutput() {
 
     // Clear buffer under disabled interrupts
     disable_interrupts();
-    debug_read_index_ = 0;
     debug_write_index_ = 0;
     debug_buffer_ready_ = false;
     enable_interrupts();
-
-    return false; // Done
 }
 #endif
 

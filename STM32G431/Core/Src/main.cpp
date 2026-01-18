@@ -290,20 +290,20 @@ int main(void)
     // Speed PID controller parameters for VOLTAGE_MODE (outputs duty cycle 0.0-1.0)
     libecu::PidParameters pid_params_voltage;
     pid_params_voltage.kp = 0.01f;
-    pid_params_voltage.ki = 0.05f;
+    pid_params_voltage.ki = 0.1f;
     pid_params_voltage.kd = 0.0f;
     pid_params_voltage.max_output = 1.0f;    // Max duty cycle
     pid_params_voltage.min_output = 0.0f;
-    pid_params_voltage.max_integral = 20.0f;
+    pid_params_voltage.max_integral = 10.0f;
 
     // Speed PID controller parameters for CURRENT_MODE (outputs current 0.0-5.4A)
     libecu::PidParameters pid_params_current;
-    pid_params_current.kp = 0.01f;     // Higher gain for current control
-    pid_params_current.ki = 0.05f;     // Different integral for current
+    pid_params_current.kp = 0.05f;     // Higher gain for current control
+    pid_params_current.ki = 1.0f;     // Different integral for current
     pid_params_current.kd = 0.0f;
     pid_params_current.max_output = 5.4f;    // Max current (A)
     pid_params_current.min_output = 0.0f;
-    pid_params_current.max_integral = 5.0f;  // Smaller integral limit for current
+    pid_params_current.max_integral = 5.4f;  // Smaller integral limit for current
 
     // PID controller will be created internally by BldcController
 
@@ -356,7 +356,7 @@ int main(void)
 
     // Set control mode (mechanical) and electric mode (electrical)
     motor_controller->setControlMode(libecu::ControlMode::CLOSED_LOOP_VELOCITY);
-    motor_controller->setElectricMode(libecu::ElectricMode::VOLTAGE_MODE);
+    motor_controller->setElectricMode(libecu::ElectricMode::CURRENT_MODE);
 
     // This setting is for CLOSED_LOOP_TORQUE and VOLTAGE_MODE mode only
     motor_controller->setDutyCycle(0.3f);
@@ -400,9 +400,10 @@ int main(void)
                   libecu::CriticalSection cs;
                   status = motor_controller->getStatus();
                 }
-                printf("%.2f %.2f %.2f\n",  status.target_speed_rpm,
+                printf("%.2f %.2f %.2f %.2f\n",  status.target_speed_rpm,
                                             status.current_speed_rpm,
-                                            status.duty_cycle);
+                                            status.duty_cycle,
+                                            status.measured_current);
             }
             /*if (safety_monitor) {
                 // Basic safety check every 10 control cycles
