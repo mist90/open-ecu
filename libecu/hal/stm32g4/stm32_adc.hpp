@@ -64,9 +64,6 @@ private:
      * @brief Initialize OPAMP3 peripheral (Phase W current amplifier)
      */
     void initOPAMP3();
-
-    // DMA buffer for 3-channel ADC readings (Phase U, V, W)
-    volatile uint32_t adc_buffer_[3];
 };
 
 } // namespace libecu

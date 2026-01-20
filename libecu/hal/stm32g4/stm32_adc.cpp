@@ -19,8 +19,7 @@ extern OPAMP_HandleTypeDef hopamp3;
 
 namespace libecu {
 
-Stm32Adc::Stm32Adc() : adc_buffer_{0, 0, 0}
-{
+Stm32Adc::Stm32Adc() {
 }
 
 bool Stm32Adc::initializeHardware() {

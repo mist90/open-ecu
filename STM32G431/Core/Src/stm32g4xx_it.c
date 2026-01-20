@@ -103,14 +103,6 @@ void SysTick_Handler(void)
 /******************************************************************************/
 
 /**
-  * @brief This function handles DMA1 channel1 global interrupt.
-  */
-void DMA1_Channel1_IRQHandler(void)
-{
-    HAL_DMA_IRQHandler(&hdma_adc1);
-}
-
-/**
   * @brief This function handles EXTI line[9:5] interrupts.
   *        Handles Hall sensor GPIO interrupts (PB6, PB7, PB8)
   */
