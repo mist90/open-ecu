@@ -46,12 +46,7 @@ void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_DMA_Init(void);
 static void MX_USART2_UART_Init(void);
-static void MX_OPAMP1_Init(void);
-static void MX_OPAMP2_Init(void);
-static void MX_OPAMP3_Init(void);
 static void MX_TIM2_Init(void);
-static void MX_ADC1_Init(void);
-static void MX_ADC2_Init(void);
 
 extern "C" {
 int __io_putchar(int ch)
@@ -153,16 +148,6 @@ int main(void)
     /* TIM1 is used as PWM timer in pwm_driver */
     MX_TIM2_Init();
     MX_USART2_UART_Init();
-    MX_OPAMP1_Init();
-    MX_OPAMP2_Init();
-    MX_OPAMP3_Init();
-    MX_ADC1_Init();
-    MX_ADC2_Init();
-
-    /* Start OPAMPs for current sensing */
-    HAL_OPAMP_Start(&hopamp1);
-    HAL_OPAMP_Start(&hopamp2);
-    HAL_OPAMP_Start(&hopamp3);
 
     // Initialize motor control components
     if (!pwm_driver.initialize(20000, 100)) {  // 20kHz PWM, 100ns dead-time
@@ -170,14 +155,6 @@ int main(void)
     }
 
     if (!hall_sensor.initialize()) {
-        Error_Handler();
-    }
-
-    // Calibrate ADCs (must be done before starting conversions)
-    if (HAL_ADCEx_Calibration_Start(&hadc1, ADC_SINGLE_ENDED) != HAL_OK) {
-        Error_Handler();
-    }
-    if (HAL_ADCEx_Calibration_Start(&hadc2, ADC_SINGLE_ENDED) != HAL_OK) {
         Error_Handler();
     }
 
@@ -192,25 +169,17 @@ int main(void)
         Error_Handler();
     }
 
+    // Initialize ADC and OPAMP hardware (including calibration and starting conversions)
+    if (!adc_driver.initializeHardware()) {
+        Error_Handler();
+    }
+
     // Start TIM1 to generate TRGO2 triggers for ADC (must be before ADC start)
     if (HAL_TIM_Base_Start(&htim1) != HAL_OK) {
-        Error_Handler();
+        return false;
     }
 
-    // Start ADC injected conversions (triggered by TIM1_TRGO2)
-    // In dual-mode simultaneous: START SLAVE FIRST, THEN MASTER
-    // ADC2 (slave): Phase V (VOPAMP2) - must be started first
-    if (HAL_ADCEx_InjectedStart(&hadc2) != HAL_OK) {
-        Error_Handler();
-    }
-
-    // ADC1 (master): Phase U (VOPAMP1) + Phase W (IN12/OPAMP3)
-    // Starting master will trigger both ADCs simultaneously
-    if (HAL_ADCEx_InjectedStart(&hadc1) != HAL_OK) {
-        Error_Handler();
-    }
-
-    // Wait for stable readings
+    // Wait for stable ADC readings
     HAL_Delay(100);
 
     // Calibrate zero-current offset (motor must be stationary)
@@ -417,228 +386,6 @@ void SystemClock_Config(void)
     RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
 
     if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_4) != HAL_OK)
-    {
-        Error_Handler();
-    }
-}
-
-/**
-  * @brief ADC1 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_ADC1_Init(void)
-{
-    ADC_MultiModeTypeDef multimode = {0};
-    ADC_ChannelConfTypeDef sConfig = {0};
-
-    /** Common config
-     */
-    hadc1.Instance = ADC1;
-    hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
-    hadc1.Init.Resolution = ADC_RESOLUTION_12B;
-    hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
-    hadc1.Init.GainCompensation = 0;
-    hadc1.Init.ScanConvMode = ADC_SCAN_DISABLE;
-    hadc1.Init.EOCSelection = ADC_EOC_SEQ_CONV;  // EOC after sequence
-    hadc1.Init.LowPowerAutoWait = DISABLE;
-    hadc1.Init.ContinuousConvMode = DISABLE;
-    hadc1.Init.NbrOfConversion = 1;
-    hadc1.Init.DiscontinuousConvMode = DISABLE;
-    hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
-    hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
-    hadc1.Init.DMAContinuousRequests = DISABLE;
-    hadc1.Init.Overrun = ADC_OVR_DATA_PRESERVED;
-    hadc1.Init.OversamplingMode = DISABLE;
-    if (HAL_ADC_Init(&hadc1) != HAL_OK)
-    {
-        Error_Handler();
-    }
-
-    /** Configure the ADC multi-mode for simultaneous injected conversions
-     */
-    multimode.Mode = ADC_DUALMODE_INJECSIMULT;  // Simultaneous injected mode
-    multimode.DMAAccessMode = ADC_DMAACCESSMODE_DISABLED;
-    multimode.TwoSamplingDelay = ADC_TWOSAMPLINGDELAY_1CYCLE;
-    if (HAL_ADCEx_MultiModeConfigChannel(&hadc1, &multimode) != HAL_OK)
-    {
-        Error_Handler();
-    }
-
-    /** Configure Regular Channel for Potentiometer (PB12 = ADC1_IN11)
-     */
-    sConfig.Channel = ADC_CHANNEL_11;  // PB12 potentiometer input
-    sConfig.Rank = ADC_REGULAR_RANK_1;
-    sConfig.SamplingTime = ADC_SAMPLETIME_47CYCLES_5;  // Slower sampling for stable reading
-    sConfig.SingleDiff = ADC_SINGLE_ENDED;
-    sConfig.OffsetNumber = ADC_OFFSET_NONE;
-    sConfig.Offset = 0;
-    if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
-    {
-        Error_Handler();
-    }
-
-    /** Configure Injected Channel 1: Phase U current (OPAMP1)
-     */
-    ADC_InjectionConfTypeDef sConfigInjected = {0};
-    sConfigInjected.InjectedChannel = ADC_CHANNEL_VOPAMP1;
-    sConfigInjected.InjectedRank = ADC_INJECTED_RANK_1;
-    sConfigInjected.InjectedSamplingTime = ADC_SAMPLETIME_47CYCLES_5;  // Fast sampling for 20kHz
-    sConfigInjected.InjectedSingleDiff = ADC_SINGLE_ENDED;
-    sConfigInjected.InjectedOffsetNumber = ADC_OFFSET_NONE;
-    sConfigInjected.InjectedOffset = 0;
-    sConfigInjected.InjectedNbrOfConversion = 1;  // 1 injected channel on ADC1 (OPAMP1 only)
-    sConfigInjected.InjectedDiscontinuousConvMode = DISABLE;
-    sConfigInjected.AutoInjectedConv = DISABLE;
-    sConfigInjected.QueueInjectedContext = DISABLE;
-    sConfigInjected.ExternalTrigInjecConv = ADC_EXTERNALTRIGINJEC_T1_TRGO2;  // TIM1 TRGO2 trigger
-    sConfigInjected.ExternalTrigInjecConvEdge = ADC_EXTERNALTRIGINJECCONV_EDGE_RISING;
-    sConfigInjected.InjecOversamplingMode = DISABLE;
-
-    if (HAL_ADCEx_InjectedConfigChannel(&hadc1, &sConfigInjected) != HAL_OK)
-    {
-        Error_Handler();
-    }
-}
-
-/**
-  * @brief ADC2 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_ADC2_Init(void)
-{
-    /** Common config
-     */
-    hadc2.Instance = ADC2;
-    hadc2.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
-    hadc2.Init.Resolution = ADC_RESOLUTION_12B;
-    hadc2.Init.DataAlign = ADC_DATAALIGN_RIGHT;
-    hadc2.Init.GainCompensation = 0;
-    hadc2.Init.ScanConvMode = ADC_SCAN_ENABLE;  // Enable scan for 2 injected channels (OPAMP2 + OPAMP3)
-    hadc2.Init.EOCSelection = ADC_EOC_SEQ_CONV;
-    hadc2.Init.LowPowerAutoWait = DISABLE;
-    hadc2.Init.ContinuousConvMode = DISABLE;
-    hadc2.Init.NbrOfConversion = 1;
-    hadc2.Init.DiscontinuousConvMode = DISABLE;
-    hadc2.Init.ExternalTrigConv = ADC_SOFTWARE_START;
-    hadc2.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
-    hadc2.Init.DMAContinuousRequests = DISABLE;
-    hadc2.Init.Overrun = ADC_OVR_DATA_PRESERVED;
-    hadc2.Init.OversamplingMode = DISABLE;
-    if (HAL_ADC_Init(&hadc2) != HAL_OK)
-    {
-        Error_Handler();
-    }
-
-    /** Configure Injected Channel 1: Phase V current (OPAMP2)
-     */
-    ADC_InjectionConfTypeDef sConfigInjected = {0};
-    sConfigInjected.InjectedChannel = ADC_CHANNEL_VOPAMP2;  // OPAMP2_OUT internally connected
-    sConfigInjected.InjectedRank = ADC_INJECTED_RANK_1;
-    sConfigInjected.InjectedSamplingTime = ADC_SAMPLETIME_47CYCLES_5;  // Match ADC1 timing
-    sConfigInjected.InjectedSingleDiff = ADC_SINGLE_ENDED;
-    sConfigInjected.InjectedOffsetNumber = ADC_OFFSET_NONE;
-    sConfigInjected.InjectedOffset = 0;
-    sConfigInjected.InjectedNbrOfConversion = 2;  // 2 injected channels on ADC2 (OPAMP2 + OPAMP3)
-    sConfigInjected.InjectedDiscontinuousConvMode = DISABLE;
-    sConfigInjected.AutoInjectedConv = DISABLE;
-    sConfigInjected.QueueInjectedContext = DISABLE;
-    sConfigInjected.ExternalTrigInjecConv = ADC_EXTERNALTRIGINJEC_T1_TRGO2;  // TIM1 TRGO2 trigger
-    sConfigInjected.ExternalTrigInjecConvEdge = ADC_EXTERNALTRIGINJECCONV_EDGE_RISING;
-    sConfigInjected.InjecOversamplingMode = DISABLE;
-
-    if (HAL_ADCEx_InjectedConfigChannel(&hadc2, &sConfigInjected) != HAL_OK)
-    {
-        Error_Handler();
-    }
-
-    /** Configure Injected Channel 2: Phase W current (OPAMP3)
-     */
-    sConfigInjected.InjectedChannel = ADC_CHANNEL_VOPAMP3_ADC2;  // OPAMP3_OUT internally connected
-    sConfigInjected.InjectedRank = ADC_INJECTED_RANK_2;
-    if (HAL_ADCEx_InjectedConfigChannel(&hadc2, &sConfigInjected) != HAL_OK)
-    {
-        Error_Handler();
-    }
-}
-
-/**
-  * @brief OPAMP1 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_OPAMP1_Init(void)
-{
-    hopamp1.Instance = OPAMP1;
-    hopamp1.Init.PowerMode = OPAMP_POWERMODE_NORMALSPEED;
-    hopamp1.Init.Mode = OPAMP_PGA_MODE;
-    hopamp1.Init.NonInvertingInput = OPAMP_NONINVERTINGINPUT_IO0;
-    hopamp1.Init.InvertingInput = OPAMP_INVERTINGINPUT_IO0;  // Not used in PGA mode
-    hopamp1.Init.PgaGain = OPAMP_PGA_GAIN_16_OR_MINUS_15;
-    hopamp1.Init.PgaConnect = OPAMP_PGA_CONNECT_INVERTINGINPUT_NO;
-    hopamp1.Init.InternalOutput = ENABLE;
-    hopamp1.Init.TimerControlledMuxmode = OPAMP_TIMERCONTROLLEDMUXMODE_DISABLE;
-    hopamp1.Init.InvertingInputSecondary = OPAMP_SEC_INVERTINGINPUT_IO0;
-    hopamp1.Init.NonInvertingInputSecondary = OPAMP_SEC_NONINVERTINGINPUT_IO0;
-    hopamp1.Init.UserTrimming = OPAMP_TRIMMING_FACTORY;
-    hopamp1.Init.TrimmingValueP = 0;
-    hopamp1.Init.TrimmingValueN = 0;
-    if (HAL_OPAMP_Init(&hopamp1) != HAL_OK)
-    {
-        Error_Handler();
-    }
-}
-
-/**
-  * @brief OPAMP2 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_OPAMP2_Init(void)
-{
-    hopamp2.Instance = OPAMP2;
-    hopamp2.Init.PowerMode = OPAMP_POWERMODE_NORMALSPEED;
-    hopamp2.Init.Mode = OPAMP_PGA_MODE;
-    hopamp2.Init.NonInvertingInput = OPAMP_NONINVERTINGINPUT_IO0;
-    hopamp2.Init.InvertingInput = OPAMP_INVERTINGINPUT_IO0;  // Not used in PGA mode
-    hopamp2.Init.PgaGain = OPAMP_PGA_GAIN_16_OR_MINUS_15;
-    hopamp2.Init.PgaConnect = OPAMP_PGA_CONNECT_INVERTINGINPUT_NO;
-    hopamp2.Init.InternalOutput = ENABLE;
-    hopamp2.Init.TimerControlledMuxmode = OPAMP_TIMERCONTROLLEDMUXMODE_DISABLE;
-    hopamp2.Init.InvertingInputSecondary = OPAMP_SEC_INVERTINGINPUT_IO0;
-    hopamp2.Init.NonInvertingInputSecondary = OPAMP_SEC_NONINVERTINGINPUT_IO0;
-    hopamp2.Init.UserTrimming = OPAMP_TRIMMING_FACTORY;
-    hopamp2.Init.TrimmingValueP = 0;
-    hopamp2.Init.TrimmingValueN = 0;
-    if (HAL_OPAMP_Init(&hopamp2) != HAL_OK)
-    {
-        Error_Handler();
-    }
-}
-
-/**
-  * @brief OPAMP3 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_OPAMP3_Init(void)
-{
-    hopamp3.Instance = OPAMP3;
-    hopamp3.Init.PowerMode = OPAMP_POWERMODE_NORMALSPEED;
-    hopamp3.Init.Mode = OPAMP_PGA_MODE;
-    hopamp3.Init.NonInvertingInput = OPAMP_NONINVERTINGINPUT_IO0;
-    hopamp3.Init.InvertingInput = OPAMP_INVERTINGINPUT_IO0;  // Not used in PGA mode
-    hopamp3.Init.PgaGain = OPAMP_PGA_GAIN_16_OR_MINUS_15;
-    hopamp3.Init.PgaConnect = OPAMP_PGA_CONNECT_INVERTINGINPUT_NO;
-    hopamp3.Init.InternalOutput = ENABLE;
-    hopamp3.Init.TimerControlledMuxmode = OPAMP_TIMERCONTROLLEDMUXMODE_DISABLE;
-    hopamp3.Init.InvertingInputSecondary = OPAMP_SEC_INVERTINGINPUT_IO0;
-    hopamp3.Init.NonInvertingInputSecondary = OPAMP_SEC_NONINVERTINGINPUT_IO0;
-    hopamp3.Init.UserTrimming = OPAMP_TRIMMING_FACTORY;
-    hopamp3.Init.TrimmingValueP = 0;
-    hopamp3.Init.TrimmingValueN = 0;
-    if (HAL_OPAMP_Init(&hopamp3) != HAL_OK)
     {
         Error_Handler();
     }

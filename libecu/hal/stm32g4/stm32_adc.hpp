@@ -23,10 +23,48 @@ public:
      */
     explicit Stm32Adc();
 
+    /**
+     * @brief Initialize ADC and OPAMP hardware
+     *
+     * Initializes ADC1, ADC2 in dual simultaneous injected mode and all 3 OPAMPs (PGA mode).
+     * Configures ADC to be triggered by TIM1_TRGO2 for PWM-synchronized current sampling.
+     *
+     * @return true if initialization successful, false otherwise
+     */
+    bool initializeHardware();
+
     // AdcInterface implementation
     uint32_t getRawAdcValue(PwmChannel channel) override;
 
 private:
+    /**
+     * @brief Initialize ADC1 peripheral
+     * Configures ADC1 with injected channel for Phase U (OPAMP1)
+     * and regular channel for potentiometer
+     */
+    void initADC1();
+
+    /**
+     * @brief Initialize ADC2 peripheral
+     * Configures ADC2 with injected channels for Phase V (OPAMP2) and Phase W (OPAMP3)
+     */
+    void initADC2();
+
+    /**
+     * @brief Initialize OPAMP1 peripheral (Phase U current amplifier)
+     */
+    void initOPAMP1();
+
+    /**
+     * @brief Initialize OPAMP2 peripheral (Phase V current amplifier)
+     */
+    void initOPAMP2();
+
+    /**
+     * @brief Initialize OPAMP3 peripheral (Phase W current amplifier)
+     */
+    void initOPAMP3();
+
     // DMA buffer for 3-channel ADC readings (Phase U, V, W)
     volatile uint32_t adc_buffer_[3];
 };
