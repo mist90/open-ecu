@@ -71,6 +71,7 @@ bool Stm32Adc::initializeHardware() {
 void Stm32Adc::initADC1() {
     ADC_MultiModeTypeDef multimode = {0};
     ADC_ChannelConfTypeDef sConfig = {0};
+    ADC_InjOversamplingTypeDef sConfigOversampling = {.Ratio = ADC_OVERSAMPLING_RATIO_2, .RightBitShift = ADC_RIGHTBITSHIFT_1};
 
     /** Common config
      */
@@ -123,7 +124,7 @@ void Stm32Adc::initADC1() {
     ADC_InjectionConfTypeDef sConfigInjected = {0};
     sConfigInjected.InjectedChannel = ADC_CHANNEL_VOPAMP1;
     sConfigInjected.InjectedRank = ADC_INJECTED_RANK_1;
-    sConfigInjected.InjectedSamplingTime = ADC_SAMPLETIME_47CYCLES_5;  // Fast sampling for 20kHz
+    sConfigInjected.InjectedSamplingTime = ADC_SAMPLETIME_6CYCLES_5;  // Fast sampling for PWM frequency
     sConfigInjected.InjectedSingleDiff = ADC_SINGLE_ENDED;
     sConfigInjected.InjectedOffsetNumber = ADC_OFFSET_NONE;
     sConfigInjected.InjectedOffset = 0;
@@ -133,7 +134,8 @@ void Stm32Adc::initADC1() {
     sConfigInjected.QueueInjectedContext = DISABLE;
     sConfigInjected.ExternalTrigInjecConv = ADC_EXTERNALTRIGINJEC_T1_TRGO2;  // TIM1 TRGO2 trigger
     sConfigInjected.ExternalTrigInjecConvEdge = ADC_EXTERNALTRIGINJECCONV_EDGE_RISING;
-    sConfigInjected.InjecOversamplingMode = DISABLE;
+    sConfigInjected.InjecOversamplingMode = ENABLE;
+    sConfigInjected.InjecOversampling = sConfigOversampling;
 
     if (HAL_ADCEx_InjectedConfigChannel(&hadc1, &sConfigInjected) != HAL_OK)
     {
@@ -168,9 +170,10 @@ void Stm32Adc::initADC2() {
     /** Configure Injected Channel 1: Phase V current (OPAMP2)
      */
     ADC_InjectionConfTypeDef sConfigInjected = {0};
+    ADC_InjOversamplingTypeDef sConfigOversampling = {.Ratio = ADC_OVERSAMPLING_RATIO_2, .RightBitShift = ADC_RIGHTBITSHIFT_1};
     sConfigInjected.InjectedChannel = ADC_CHANNEL_VOPAMP2;  // OPAMP2_OUT internally connected
     sConfigInjected.InjectedRank = ADC_INJECTED_RANK_1;
-    sConfigInjected.InjectedSamplingTime = ADC_SAMPLETIME_47CYCLES_5;  // Match ADC1 timing
+    sConfigInjected.InjectedSamplingTime = ADC_SAMPLETIME_6CYCLES_5;  // Match ADC1 timing
     sConfigInjected.InjectedSingleDiff = ADC_SINGLE_ENDED;
     sConfigInjected.InjectedOffsetNumber = ADC_OFFSET_NONE;
     sConfigInjected.InjectedOffset = 0;
@@ -180,7 +183,8 @@ void Stm32Adc::initADC2() {
     sConfigInjected.QueueInjectedContext = DISABLE;
     sConfigInjected.ExternalTrigInjecConv = ADC_EXTERNALTRIGINJEC_T1_TRGO2;  // TIM1 TRGO2 trigger
     sConfigInjected.ExternalTrigInjecConvEdge = ADC_EXTERNALTRIGINJECCONV_EDGE_RISING;
-    sConfigInjected.InjecOversamplingMode = DISABLE;
+    sConfigInjected.InjecOversamplingMode = ENABLE;
+    sConfigInjected.InjecOversampling = sConfigOversampling;
 
     if (HAL_ADCEx_InjectedConfigChannel(&hadc2, &sConfigInjected) != HAL_OK)
     {
