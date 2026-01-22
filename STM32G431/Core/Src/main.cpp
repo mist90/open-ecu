@@ -16,6 +16,7 @@
 #include <stdio.h>
 
 #define PERIODIC_TIMER_FREQ 1000
+#define PWM_TIMER_FREQ 40000
 
 ADC_HandleTypeDef hadc1;
 ADC_HandleTypeDef hadc2;
@@ -146,7 +147,7 @@ int main(void)
     MX_USART2_UART_Init();
 
     // Initialize motor control components
-    if (!pwm_driver.initialize(20000, 100)) {  // 20kHz PWM, 100ns dead-time
+    if (!pwm_driver.initialize(PWM_TIMER_FREQ, 100)) {  // 20kHz PWM, 100ns dead-time
         Error_Handler();
     }
 
@@ -218,7 +219,7 @@ int main(void)
     current_params.max_output = 1.0f;          // Max delta (+1.0 → max current increasing)
     current_params.min_output = -1.0f;         // Min delta (-1.0 → max current decreasing)
     current_params.max_integral = 0.0f;       // Anti-windup limit
-    current_params.sample_time_s = 1.0f / 20000.0f;  // 20kHz (50μs)
+    current_params.sample_time_s = 1.0f / PWM_TIMER_FREQ;
     current_params.max_current = 5.4f;         // 5.4A maximum current
     current_controller = new libecu::CurrentController(current_params);
 
