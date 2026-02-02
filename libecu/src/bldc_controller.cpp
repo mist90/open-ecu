@@ -28,15 +28,14 @@ BldcController::BldcController(
     CommutationController& commutation_controller,
     SafetyMonitor& safety_monitor,
     const MotorControlParams& params,
-    AdcInterface* adc_interface,
-    CurrentController* current_controller)
+    AdcInterface* adc_interface)
     : pwm_interface_(pwm_interface)
     , hall_interface_(hall_interface)
     , commutation_controller_(commutation_controller)
     , safety_monitor_(safety_monitor)
     , adc_interface_(adc_interface)
-    , current_controller_(current_controller)
     , pid_controller_(params.pid_voltage_mode)
+    , current_controller_(params.pid_current_regulator)
     , params_(params)
     , direction_(RotationDirection::CLOCKWISE)
     , initialized_(false)
@@ -216,9 +215,7 @@ void BldcController::update()
             if (current_position != prev_position_) {
                 // Position changed - reset commutation and current controller
                 commutation_controller_.update(0.0f, direction_);
-                if (current_controller_) {
-                    current_controller_->reset();
-                }
+                current_controller_.reset();
                 // Update previous position
                 prev_position_ = current_position;
             }
@@ -274,15 +271,6 @@ void BldcController::setElectricMode(ElectricMode mode)
     } else {
         // CURRENT_MODE: PID outputs current (Amperes)
         pid_controller_.setParameters(params_.pid_current_mode);
-    }
-
-    // Enable/disable current controller based on electric mode
-    if (current_controller_) {
-        if (mode == ElectricMode::CURRENT_MODE) {
-            current_controller_->setEnabled(true);
-        } else {
-            current_controller_->setEnabled(false);
-        }
     }
 }
 
@@ -593,9 +581,7 @@ void BldcController::hallSensorInterruptHandler()
             CriticalSection cs;
             // Position changed - reset commutation and current controller
             commutation_controller_.update(0.0f, direction_);
-            if (current_controller_) {
-                current_controller_->reset();
-            }
+            current_controller_.reset();
             // Update previous position
             prev_position_ = hall_state;
         }
@@ -623,12 +609,7 @@ void BldcController::pwmInterruptHandler() {
     }
 
     // Check if current controller and ADC are available
-    if (!current_controller_ || !adc_interface_) {
-        return;
-    }
-
-    // Check if current controller is enabled
-    if (!current_controller_->isEnabled()) {
+    if (!adc_interface_) {
         return;
     }
 
@@ -637,7 +618,7 @@ void BldcController::pwmInterruptHandler() {
 
     // Run current controller: target_current → delta
     // Current controller outputs delta around 0, where 0 = neutral (no current)
-    float duty_cycle = current_controller_->update(target_current, measured_current);
+    float duty_cycle = current_controller_.update(target_current, measured_current);
 
     // Write results atomically (avoid torn writes from SysTick interrupt)
     {

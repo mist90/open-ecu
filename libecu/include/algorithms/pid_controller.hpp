@@ -19,7 +19,7 @@ struct PidParameters {
     float kd;           ///< Derivative gain
     float max_output;   ///< Maximum output value
     float min_output;   ///< Minimum output value
-    float max_integral; ///< Maximum integral term (anti-windup)
+    float sample_time_s; ///< Fixed sample time in seconds (for update(setpoint, feedback) overload)
 };
 
 /**
@@ -46,6 +46,16 @@ public:
      * @return Control output
      */
     float update(float setpoint, float feedback, float dt);
+
+    /**
+     * @brief Update PID controller with fixed sample time
+     * @param setpoint Desired value
+     * @param feedback Current value
+     * @return Control output (returns 0 if disabled)
+     * 
+     * Uses sample_time_s from parameters. Suitable for fixed-frequency loops.
+     */
+    float update(float setpoint, float feedback);
 
     /**
      * @brief Set PID parameters
@@ -86,13 +96,11 @@ public:
 private:
     PidParameters params_;
     
-    float error_;           ///< Current error
-    float previous_error_;  ///< Previous error for derivative calculation
-    float integral_;        ///< Integral term
-    float derivative_;      ///< Derivative term
-    float output_;          ///< Controller output
-    
-    bool first_run_;        ///< Flag for first execution
+    float error_;
+    float previous_error_;
+    float integral_;
+    float derivative_;
+    float output_;
     
     /**
      * @brief Clamp value between min and max

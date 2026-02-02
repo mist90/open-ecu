@@ -15,7 +15,6 @@ PidController::PidController(const PidParameters& params)
     , integral_(0.0f)
     , derivative_(0.0f)
     , output_(0.0f)
-    , first_run_(true)
 {
 }
 
@@ -26,58 +25,37 @@ void PidController::reset()
     integral_ = 0.0f;
     derivative_ = 0.0f;
     output_ = 0.0f;
-    first_run_ = true;
 }
-
-#include <stdio.h>
 
 float PidController::update(float setpoint, float feedback, float dt)
 {
-    // Calculate error
     error_ = setpoint - feedback;
     
-    // Proportional term
     float proportional = params_.kp * error_;
     
-    // Integral term with anti-windup
-    integral_ += error_ * dt;
-    integral_ = clamp(integral_, -params_.max_integral, params_.max_integral);
-    float integral_term = params_.ki * integral_;
+    integral_ += params_.ki * (error_ + previous_error_) * 0.5f * dt;
+    integral_ = clamp(integral_, params_.min_output, params_.max_output);
     
-    // Derivative term (avoid derivative kick on setpoint changes)
-    if (first_run_) {
-        derivative_ = 0.0f;
-        first_run_ = false;
-    } else {
-        derivative_ = (error_ - previous_error_) / dt;
-    }
-    float derivative_term = params_.kd * derivative_;
+    derivative_ = (dt > 0.0f) ? params_.kd * (error_ - previous_error_) / dt : 0.0f;
     
-    // Calculate output
-    output_ = proportional + integral_term + derivative_term;
-    
-    // Clamp output to limits
+    output_ = proportional + integral_ + derivative_;
     output_ = clamp(output_, params_.min_output, params_.max_output);
     
-    // Anti-windup: if output is saturated, prevent integral windup
-    if ((output_ >= params_.max_output && error_ > 0.0f) ||
-        (output_ <= params_.min_output && error_ < 0.0f)) {
-        // Don't accumulate integral when saturated
-        integral_ -= error_ * dt;
-    }
-    
-    // Store error for next iteration
     previous_error_ = error_;
     
     return output_;
+}
+
+float PidController::update(float setpoint, float feedback)
+{
+    return update(setpoint, feedback, params_.sample_time_s);
 }
 
 void PidController::setParameters(const PidParameters& params)
 {
     params_ = params;
     
-    // Clamp existing integral to new limits
-    integral_ = clamp(integral_, -params_.max_integral, params_.max_integral);
+    integral_ = clamp(integral_, params_.min_output, params_.max_output);
 }
 
 float PidController::clamp(float value, float min_val, float max_val)

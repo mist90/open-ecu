@@ -43,7 +43,6 @@ Located in `libecu/src/` and `libecu/include/`:
 - **PidController**: Digital PID controller with anti-windup and derivative filtering
 - **SafetyMonitor**: Real-time fault detection (overcurrent, overtemperature, undervoltage)
 - **BldcController**: High-level motor controller integrating all subsystems
-- **CurrentController**: Phase current regulation
 
 **Hardware Interfaces (abstract):**
 - **PwmInterface**: 3-phase PWM abstraction
@@ -180,7 +179,6 @@ open-ecu/
 │   │   ├── bldc_controller.cpp
 │   │   ├── commutation_controller.cpp
 │   │   ├── pid_controller.cpp
-│   │   ├── current_controller.cpp
 │   │   └── safety_monitor.cpp
 │   ├── hal/                   # Platform-specific HAL implementations
 │   │   └── stm32g4/           # STM32G4 drivers

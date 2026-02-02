@@ -7,7 +7,6 @@
 #include "../../libecu/hal/stm32g4/stm32_adc.hpp"
 #include "../../libecu/include/algorithms/commutation_controller.hpp"
 #include "../../libecu/include/algorithms/pid_controller.hpp"
-#include "../../libecu/include/algorithms/current_controller.hpp"
 #include "../../libecu/include/safety/safety_monitor.hpp"
 #include "../../libecu/include/platform/critical_section.hpp"
 #include <stdint.h>
@@ -36,7 +35,6 @@ static libecu::Stm32HallSensor hall_sensor(hall_config);
 static libecu::Stm32Adc adc_driver;
 static libecu::CommutationController* commutation_controller = nullptr;
 static libecu::SafetyMonitor* safety_monitor = nullptr;
-static libecu::CurrentController* current_controller = nullptr;
 static libecu::BldcController* motor_controller = nullptr;
 static volatile bool control_tick = false;
 //static uint32_t control_counter = 0;
@@ -193,35 +191,29 @@ int main(void)
     commutation_controller = new libecu::CommutationController(pwm_driver, hall_sensor, 8);
 
     // Speed PID controller parameters for VOLTAGE_MODE (outputs duty cycle 0.0-1.0)
-    libecu::PidParameters pid_params_voltage;
-    pid_params_voltage.kp = 0.01f;
-    pid_params_voltage.ki = 0.1f;
-    pid_params_voltage.kd = 0.0f;
-    pid_params_voltage.max_output = 1.0f;    // Max duty cycle
-    pid_params_voltage.min_output = 0.0f;
-    pid_params_voltage.max_integral = 10.0f;
+    libecu::PidParameters speed_pid_params_voltage;
+    speed_pid_params_voltage.kp = 0.01f;
+    speed_pid_params_voltage.ki = 0.1f;
+    speed_pid_params_voltage.kd = 0.0f;
+    speed_pid_params_voltage.max_output = 1.0f;    // Max duty cycle
+    speed_pid_params_voltage.min_output = 0.0f;
 
     // Speed PID controller parameters for CURRENT_MODE (outputs current 0.0-5.4A)
-    libecu::PidParameters pid_params_current;
-    pid_params_current.kp = 0.05f;     // Higher gain for current control
-    pid_params_current.ki = 1.0f;     // Different integral for current
-    pid_params_current.kd = 0.0f;
-    pid_params_current.max_output = 5.4f;    // Max current (A)
-    pid_params_current.min_output = 0.0f;
-    pid_params_current.max_integral = 5.4f;  // Smaller integral limit for current
+    libecu::PidParameters speed_pid_params_current;
+    speed_pid_params_current.kp = 0.05f;     // Higher gain for current control
+    speed_pid_params_current.ki = 1.0f;     // Different integral for current
+    speed_pid_params_current.kd = 0.0f;
+    speed_pid_params_current.max_output = 5.4f;    // Max current (A)
+    speed_pid_params_current.min_output = 0.0f;
 
-    // PID controller will be created internally by BldcController
-
-    // Create current controller for current control mode
-    libecu::CurrentControllerParameters current_params;
-    current_params.kp = 1.0f;                  // Current loop proportional gain
-    current_params.ki = 0.1f;                 // Current loop integral gain
-    current_params.max_output = 1.0f;          // Max delta (+1.0 → max current increasing)
-    current_params.min_output = -1.0f;         // Min delta (-1.0 → max current decreasing)
-    current_params.max_integral = 0.0f;       // Anti-windup limit
-    current_params.sample_time_s = 1.0f / PWM_TIMER_FREQ;
-    current_params.max_current = 5.4f;         // 5.4A maximum current
-    current_controller = new libecu::CurrentController(current_params);
+    // Current PID controller parameters for CURRENT_MODE (outputs duty cycle -1.0..1.0)
+    libecu::PidParameters current_pid_params;
+    current_pid_params.kp = 1.0f;
+    current_pid_params.ki = 0.1f;
+    current_pid_params.kd = 0.0f;
+    current_pid_params.max_output = 1.0f;
+    current_pid_params.min_output = -1.0f;
+    current_pid_params.sample_time_s = 1.0f / PWM_TIMER_FREQ;
 
     libecu::SafetyLimits safety_limits;
     safety_limits.max_current =  6.0f;      // 6A max current
@@ -234,13 +226,14 @@ int main(void)
     motor_params.max_speed_rpm = 150.0f;
     motor_params.acceleration_rate = 1000.0f; // 1000 RPM/s accel
     motor_params.control_frequency = PERIODIC_TIMER_FREQ;
-    motor_params.pid_voltage_mode = pid_params_voltage;
-    motor_params.pid_current_mode = pid_params_current;
+    motor_params.pid_voltage_mode = speed_pid_params_voltage;
+    motor_params.pid_current_mode = speed_pid_params_current;
+    motor_params.pid_current_regulator = current_pid_params;
 
     motor_controller = new libecu::BldcController(
         pwm_driver, hall_sensor, *commutation_controller,
         *safety_monitor, motor_params,
-        &adc_driver, current_controller);
+        &adc_driver);
     
     if (!motor_controller->initialize()) {
         Error_Handler();

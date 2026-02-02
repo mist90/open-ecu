@@ -15,7 +15,6 @@
 #include "interfaces/adc_interface.hpp"
 #include "algorithms/commutation_controller.hpp"
 #include "algorithms/pid_controller.hpp"
-#include "algorithms/current_controller.hpp"
 #include "safety/safety_monitor.hpp"
 
 namespace libecu {
@@ -46,8 +45,9 @@ struct MotorControlParams {
     float max_speed_rpm;      ///< Maximum speed in RPM
     float acceleration_rate;  ///< Acceleration rate (RPM/s)
     uint32_t control_frequency; ///< Control loop frequency (Hz)
-    PidParameters pid_voltage_mode; ///< PID parameters for voltage mode (outputs duty cycle)
-    PidParameters pid_current_mode; ///< PID parameters for current mode (outputs current)
+    PidParameters pid_voltage_mode; ///< Velocity PID parameters for voltage mode (outputs duty cycle)
+    PidParameters pid_current_mode; ///< Velocity PID parameters for current mode (outputs current)
+    PidParameters pid_current_regulator; ///< Current PID parameters for current mode (outputs duty cycle)
 };
 
 /**
@@ -79,7 +79,6 @@ public:
      * @param safety_monitor Safety monitor
      * @param params Motor control parameters (includes PID parameters for both modes)
      * @param adc_interface ADC interface for current sensing (optional, nullptr for voltage mode only)
-     * @param current_controller Current PI controller (optional, nullptr for voltage mode only)
      */
     BldcController(
         PwmInterface& pwm_interface,
@@ -87,8 +86,7 @@ public:
         CommutationController& commutation_controller,
         SafetyMonitor& safety_monitor,
         const MotorControlParams& params,
-        AdcInterface* adc_interface = nullptr,
-        CurrentController* current_controller = nullptr
+        AdcInterface* adc_interface = nullptr
     );
 
     /**
@@ -210,11 +208,11 @@ private:
     HallInterface& hall_interface_;
     CommutationController& commutation_controller_;
     SafetyMonitor& safety_monitor_;
-    AdcInterface* adc_interface_;            // Optional: for current sensing
-    CurrentController* current_controller_;   // Optional: for current control
+    AdcInterface* adc_interface_;
 
     // Owned components
     PidController pid_controller_;           // Speed controller (outer loop)
+    PidController current_controller_;       // Current controller (inner loop)
 
     // Configuration
     MotorControlParams params_;
