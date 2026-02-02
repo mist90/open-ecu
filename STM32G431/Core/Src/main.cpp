@@ -225,7 +225,7 @@ int main(void)
     motor_params.max_current = 6.0f;          // 6A max current (matches safety limit)
     motor_params.max_speed_rpm = 150.0f;
     motor_params.acceleration_rate = 100.0f;  // RPM/s
-    motor_params.target_speed_lpf_alpha = 0.5f;  // LPF smoothing for noisy potentiometer input
+    motor_params.target_speed_lpf_alpha = 0.1f;  // LPF smoothing for noisy potentiometer input
     motor_params.control_frequency = PERIODIC_TIMER_FREQ;
     motor_params.pid_voltage_mode = speed_pid_params_voltage;
     motor_params.pid_current_mode = speed_pid_params_current;
