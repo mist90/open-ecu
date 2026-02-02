@@ -224,7 +224,7 @@ int main(void)
     motor_params.max_duty_cycle = 0.85f;
     motor_params.max_current = 6.0f;          // 6A max current (matches safety limit)
     motor_params.max_speed_rpm = 150.0f;
-    motor_params.acceleration_rate = 1000.0f; // 1000 RPM/s accel
+    motor_params.acceleration_rate = 0.0f; // 1000 RPM/s accel
     motor_params.control_frequency = PERIODIC_TIMER_FREQ;
     motor_params.pid_voltage_mode = speed_pid_params_voltage;
     motor_params.pid_current_mode = speed_pid_params_current;

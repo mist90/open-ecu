@@ -474,6 +474,10 @@ float BldcController::calculateSpeed()
 
 float BldcController::applyAccelerationLimit(float target_speed, float current_speed, float dt)
 {
+    if (params_.acceleration_rate == 0.0f) {
+        return target_speed;
+    }
+    
     float speed_diff = target_speed - current_speed;
     float max_change = params_.acceleration_rate * dt;
     
