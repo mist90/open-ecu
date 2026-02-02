@@ -362,10 +362,10 @@ float BldcController::calculateSpeed()
      * - Transitions back to STOPPED after 5 second timeout
      */
 
-    uint32_t current_time_us = time_us();
-
-    // Atomically copy volatile variables (disable interrupts during copy)
+    // Atomically copy volatile variables AND current time together
+    // (prevents race where ISR updates end_time after we read current_time)
     disable_interrupts();
+    uint32_t current_time_us = time_us();
     bool is_active = speed_measurement_active_;
     uint32_t start_time = speed_start_time_us_;
     uint32_t end_time = speed_end_time_us_;
@@ -403,7 +403,7 @@ float BldcController::calculateSpeed()
 
         // Avoid division by zero
         if (period_us == 0) {
-                return 0.0f;
+            return 0.0f;
         }
 
         // Calculate speed in RPM
