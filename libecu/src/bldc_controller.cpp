@@ -47,6 +47,8 @@ BldcController::BldcController(
     , last_period_us_(0)
     , prev_position_(0xFF)
     , last_pid_update_time_us_(0)
+    , filtered_target_speed_(0.0f)
+    , limited_target_speed_(0.0f)
 #ifdef DEBUG_PWM_ISR
     , debug_buffer_{}
     , debug_write_index_(0)
@@ -143,10 +145,9 @@ void BldcController::update()
                     // Update timestamp for next iteration
                     last_pid_update_time_us_ = current_time_us;
 
-                    // Apply acceleration limiting
+                    // Apply acceleration limiting (slew rate limiter on target_speed)
                     float limited_target = applyAccelerationLimit(
                         status_.target_speed_rpm,
-                        status_.current_speed_rpm,
                         dt
                     );
 
@@ -296,8 +297,10 @@ void BldcController::start()
         last_period_us_ = 0;
         enable_interrupts();
         
-        // Reset PID timing
+        // Reset PID timing and target speed filters
         last_pid_update_time_us_ = 0;
+        filtered_target_speed_ = 0.0f;
+        limited_target_speed_ = 0.0f;
     }
 }
 
@@ -400,7 +403,7 @@ float BldcController::calculateSpeed()
 
         // Avoid division by zero
         if (period_us == 0) {
-            return 0.0f;
+                return 0.0f;
         }
 
         // Calculate speed in RPM
@@ -472,24 +475,34 @@ float BldcController::calculateSpeed()
     return 0.0f;
 }
 
-float BldcController::applyAccelerationLimit(float target_speed, float current_speed, float dt)
+float BldcController::applyAccelerationLimit(float target_speed, float dt)
 {
-    if (params_.acceleration_rate == 0.0f) {
-        return target_speed;
+    // Stage 1: LPF to smooth noisy analog input
+    float alpha = params_.target_speed_lpf_alpha;
+    if (alpha > 0.0f && alpha < 1.0f) {
+        filtered_target_speed_ = alpha * target_speed + (1.0f - alpha) * filtered_target_speed_;
+    } else {
+        filtered_target_speed_ = target_speed;
     }
     
-    float speed_diff = target_speed - current_speed;
+    // Stage 2: Slew rate limiter
+    if (params_.acceleration_rate == 0.0f) {
+        limited_target_speed_ = filtered_target_speed_;
+        return limited_target_speed_;
+    }
+    
+    float speed_diff = filtered_target_speed_ - limited_target_speed_;
     float max_change = params_.acceleration_rate * dt;
     
     if (std::abs(speed_diff) <= max_change) {
-        return target_speed;
+        limited_target_speed_ = filtered_target_speed_;
+    } else if (speed_diff > 0.0f) {
+        limited_target_speed_ += max_change;
+    } else {
+        limited_target_speed_ -= max_change;
     }
     
-    if (speed_diff > 0.0f) {
-        return current_speed + max_change;
-    } else {
-        return current_speed - max_change;
-    }
+    return limited_target_speed_;
 }
 
 void BldcController::handleSafetyFault(SafetyFault fault)

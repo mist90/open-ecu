@@ -43,7 +43,8 @@ struct MotorControlParams {
     float max_duty_cycle;     ///< Maximum duty cycle (0.0 to 1.0)
     float max_current;        ///< Maximum motor current (A)
     float max_speed_rpm;      ///< Maximum speed in RPM
-    float acceleration_rate;  ///< Acceleration rate (RPM/s)
+    float acceleration_rate;  ///< Acceleration rate (RPM/s), 0 = disabled
+    float target_speed_lpf_alpha; ///< LPF alpha for target speed (0.0-1.0), 0 = disabled, 1.0 = no filtering
     uint32_t control_frequency; ///< Control loop frequency (Hz)
     PidParameters pid_voltage_mode; ///< Velocity PID parameters for voltage mode (outputs duty cycle)
     PidParameters pid_current_mode; ///< Velocity PID parameters for current mode (outputs current)
@@ -235,6 +236,10 @@ private:
     
     // Control loop timing
     uint32_t last_pid_update_time_us_;       ///< Timestamp of last successful PID update
+    
+    // Target speed filtering state (LPF → slew rate limiter cascade)
+    float filtered_target_speed_;            ///< LPF-filtered target speed
+    float limited_target_speed_;             ///< Rate-limited target speed (after LPF)
 
 #ifdef DEBUG_PWM_ISR
     // Debug data capture (single buffer)
@@ -258,13 +263,16 @@ private:
     float calculateSpeed();
 
     /**
-     * @brief Apply acceleration/deceleration limits
-     * @param target_speed Target speed
-     * @param current_speed Current speed
-     * @param dt Time step
-     * @return Limited speed
+     * @brief Apply acceleration/deceleration limits to target speed
+     * 
+     * Implements a slew rate limiter that restricts how fast target_speed can change.
+     * Stores previous limited value internally - does NOT use measured speed.
+     * 
+     * @param target_speed Desired target speed
+     * @param dt Time step in seconds
+     * @return Rate-limited target speed
      */
-    float applyAccelerationLimit(float target_speed, float current_speed, float dt);
+    float applyAccelerationLimit(float target_speed, float dt);
 
     /**
      * @brief Handle safety faults
