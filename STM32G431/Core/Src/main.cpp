@@ -78,11 +78,11 @@ extern "C" void enable_interrupts() {
 }
 
 /**
- * @brief Read potentiometer and convert to target speed
- * @param max_speed_rpm Maximum speed corresponding to 3.3V
- * @return Target speed in RPM (0 to max_speed_rpm)
+ * @brief Read potentiometer and convert to output
+ * @param max_value Maximum speed corresponding to 3.3V
+ * @return output (0 to max_value)
  */
-float readPotentiometerSpeed(float max_speed_rpm)
+float readPotentiometer(float max_value)
 {
     // Start ADC regular conversion
     HAL_ADC_Start(&hadc1);
@@ -91,9 +91,9 @@ float readPotentiometerSpeed(float max_speed_rpm)
     if (HAL_ADC_PollForConversion(&hadc1, 10) == HAL_OK) {
         uint32_t adc_value = HAL_ADC_GetValue(&hadc1);
 
-        // Convert ADC value (0-4095) to speed (0-max_speed_rpm)
-        // Linear mapping: speed = (adc_value / 4095.0) * max_speed_rpm
-        float speed_rpm = (static_cast<float>(adc_value) / 4095.0f) * max_speed_rpm;
+        // Convert ADC value (0-4095) to (0-max_value)
+        // Linear mapping: output = (adc_value / 4095.0) * max_value
+        float speed_rpm = (static_cast<float>(adc_value) / 4095.0f) * max_value;
 
         return speed_rpm;
     }
@@ -254,14 +254,14 @@ int main(void)
     HAL_TIM_Base_Start_IT(&htim1);
 
     // Set control mode (mechanical) and electric mode (electrical)
-    motor_controller->setControlMode(libecu::ControlMode::CLOSED_LOOP_VELOCITY);
+    motor_controller->setControlMode(libecu::ControlMode::CLOSED_LOOP_TORQUE);
     motor_controller->setElectricMode(libecu::ElectricMode::CURRENT_MODE);
 
-    // This setting is for CLOSED_LOOP_TORQUE and VOLTAGE_MODE mode only
-    motor_controller->setDutyCycle(0.3f);
+    // This setting is for (CLOSED_LOOP_TORQUE or OPEN_LOOP) and VOLTAGE_MODE mode only
+    motor_controller->setDutyCycle(0.0f);
 
-    // This setting is for CLOSED_LOOP_TORQUE and CURRENT_MODE mode only
-    motor_controller->setCurrent(0.5f);
+    // This setting is for (CLOSED_LOOP_TORQUE or OPEN_LOOP) and CURRENT_MODE mode only
+    motor_controller->setCurrent(0.0f);
 
     motor_controller->start();
 
@@ -270,9 +270,7 @@ int main(void)
     // SysTick priority must be lower than TIM1 (higher number = lower priority)
     HAL_NVIC_SetPriority(SysTick_IRQn, 2, 0);
 
-    // Direction is always CLOCKWISE (potentiometer controls speed only)
     motor_controller->setDirection(libecu::RotationDirection::CLOCKWISE);
-    // Target speed will be updated from potentiometer in main loop
 
     printf("ECU started\n");
     while (1) {
@@ -285,8 +283,22 @@ int main(void)
                 
                 libecu::MotorStatus status;
                 {
-                  libecu::CriticalSection cs;
-                  status = motor_controller->getStatus();
+                    libecu::CriticalSection cs;
+                    status = motor_controller->getStatus();
+                }
+                // Read potentiometer and update target speed (runs in main loop)
+                if (status.control_mode == libecu::ControlMode::CLOSED_LOOP_VELOCITY ||
+                        status.control_mode == libecu::ControlMode::OPEN_LOOP) {
+                    float target_speed = readPotentiometer(motor_params.max_speed_rpm);
+                    motor_controller->setTargetSpeed(target_speed);
+                } else if (status.control_mode == libecu::ControlMode::CLOSED_LOOP_TORQUE) {
+                    if (status.electric_mode == libecu::ElectricMode::CURRENT_MODE) {
+                        float target_current = readPotentiometer(motor_params.max_current);
+                        motor_controller->setCurrent(target_current);
+                    } else if (status.electric_mode == libecu::ElectricMode::VOLTAGE_MODE) {
+                        float target_duty_cycle = readPotentiometer(1.0f);
+                        motor_controller->setDutyCycle(target_duty_cycle);
+                    }
                 }
                 printf("%.2f %.2f %.2f %.2f\n",  status.target_speed_rpm,
                                             status.current_speed_rpm,
@@ -328,12 +340,6 @@ int main(void)
             motor_controller->processDebugOutput();
         }
 #endif
-
-        // Read potentiometer and update target speed (runs in main loop)
-        if (motor_controller) {
-            float target_speed = readPotentiometerSpeed(motor_params.max_speed_rpm);
-            motor_controller->setTargetSpeed(target_speed);
-        }
     }
 }
 
@@ -362,8 +368,7 @@ void SystemClock_Config(void)
     RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
     RCC_OscInitStruct.PLL.PLLQ = RCC_PLLQ_DIV2;
     RCC_OscInitStruct.PLL.PLLR = RCC_PLLR_DIV2;
-    if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
-    {
+    if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) {
         Error_Handler();
     }
 
@@ -376,8 +381,7 @@ void SystemClock_Config(void)
     RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
     RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
 
-    if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_4) != HAL_OK)
-    {
+    if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_4) != HAL_OK) {
         Error_Handler();
     }
 }
@@ -398,22 +402,19 @@ static void MX_TIM2_Init(void)
     htim2.Init.Period = 4294967295;
     htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
     htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-    if (HAL_TIM_OC_Init(&htim2) != HAL_OK)
-    {
+    if (HAL_TIM_OC_Init(&htim2) != HAL_OK) {
         Error_Handler();
     }
     sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
     sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
-    if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK)
-    {
+    if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK) {
         Error_Handler();
     }
     sConfigOC.OCMode = TIM_OCMODE_TIMING;
     sConfigOC.Pulse = 0;
     sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
     sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
-    if (HAL_TIM_OC_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
-    {
+    if (HAL_TIM_OC_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_1) != HAL_OK) {
         Error_Handler();
     }
 
@@ -438,20 +439,16 @@ static void MX_USART2_UART_Init(void)
     huart2.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
     huart2.Init.ClockPrescaler = UART_PRESCALER_DIV1;
     huart2.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
-    if (HAL_UART_Init(&huart2) != HAL_OK)
-    {
+    if (HAL_UART_Init(&huart2) != HAL_OK) {
         Error_Handler();
     }
-    if (HAL_UARTEx_SetTxFifoThreshold(&huart2, UART_TXFIFO_THRESHOLD_1_8) != HAL_OK)
-    {
+    if (HAL_UARTEx_SetTxFifoThreshold(&huart2, UART_TXFIFO_THRESHOLD_1_8) != HAL_OK) {
         Error_Handler();
     }
-    if (HAL_UARTEx_SetRxFifoThreshold(&huart2, UART_RXFIFO_THRESHOLD_1_8) != HAL_OK)
-    {
+    if (HAL_UARTEx_SetRxFifoThreshold(&huart2, UART_RXFIFO_THRESHOLD_1_8) != HAL_OK) {
         Error_Handler();
     }
-    if (HAL_UARTEx_DisableFifoMode(&huart2) != HAL_OK)
-    {
+    if (HAL_UARTEx_DisableFifoMode(&huart2) != HAL_OK) {
         Error_Handler();
     }
 }
@@ -501,8 +498,8 @@ static void MX_GPIO_Init(void)
 void HAL_SYSTICK_Callback(void) {
     control_tick = true;
     if (motor_controller) {
-      // Update motor controller
-      motor_controller->update();
+        // Update motor controller
+        motor_controller->update();
     }
 }
 
@@ -512,7 +509,7 @@ void HAL_SYSTICK_Callback(void) {
   */
 void Error_Handler(void)
 {
-  /* User can add his own implementation to report the HAL error return state */
+    /* User can add his own implementation to report the HAL error return state */
     __disable_irq();
     while (1) {
     }

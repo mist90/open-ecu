@@ -234,6 +234,11 @@ private:
     // Position tracking for CURRENT_MODE (to detect commutation events)
     volatile uint8_t prev_position_;         ///< Previous rotor position for change detection
     
+    // Open-loop timing control
+    uint8_t open_loop_step_;                 ///< Current step in open-loop mode (0-5)
+    uint32_t open_loop_last_step_time_us_;   ///< Timestamp of last step change
+    bool open_loop_running_;                 ///< Open-loop timing initialized
+    
     // Control loop timing
     uint32_t last_pid_update_time_us_;       ///< Timestamp of last successful PID update
     
@@ -285,6 +290,13 @@ private:
      * @return Measured phase current in Amperes
      */
     float getCurrentFromActivePhase();
+    
+    /**
+     * @brief Calculate step interval from target speed for open-loop control
+     * @param speed_rpm Target speed in RPM
+     * @return Step interval in microseconds
+     */
+    uint32_t calculateOpenLoopStepInterval(float speed_rpm);
 };
 
 } // namespace libecu

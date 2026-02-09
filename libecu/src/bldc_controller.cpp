@@ -46,6 +46,9 @@ BldcController::BldcController(
     , last_hall_state_(0xFF)
     , last_period_us_(0)
     , prev_position_(0xFF)
+    , open_loop_step_(0)
+    , open_loop_last_step_time_us_(0)
+    , open_loop_running_(false)
     , last_pid_update_time_us_(0)
     , filtered_target_speed_(0.0f)
     , limited_target_speed_(0.0f)
@@ -105,79 +108,88 @@ void BldcController::monitor(const SafetyData& safety_data)
 
 void BldcController::update()
 {
-    // Calculate current motor speed (always returns numeric value, never NAN)
     status_.current_speed_rpm = calculateSpeed();
     
-    // Update position status from current Hall sensor reading
-    uint8_t current_position = commutation_controller_.getCurrentPosition();
-    if (current_position <= 5) {
-        status_.position = static_cast<MotorPosition>(current_position + 1);
+    uint8_t commutation_position = commutation_controller_.getCurrentPosition();
+    if (commutation_position <= 5) {
+        status_.position = static_cast<MotorPosition>(commutation_position + 1);
     } else {
         status_.position = MotorPosition::INVALID;
     }
     
-    // Control loop based on control mode and electric mode
     float target_duty_cycle = 0.0f;
 
     if (status_.is_running) {
         switch (status_.control_mode) {
-            case ControlMode::OPEN_LOOP:
-                // Open-loop: always use fixed duty cycle (electric mode ignored)
+            case ControlMode::OPEN_LOOP: {
                 target_duty_cycle = status_.duty_cycle;
+                
+                uint32_t current_time_us = time_us();
+                if (!open_loop_running_) {
+                    open_loop_last_step_time_us_ = current_time_us;
+                    open_loop_running_ = true;
+                } else {
+                    uint32_t step_interval_us = calculateOpenLoopStepInterval(status_.target_speed_rpm);
+                    if (step_interval_us > 0 && (current_time_us - open_loop_last_step_time_us_) >= step_interval_us) {
+                        open_loop_step_ = (open_loop_step_ + 1) % 6;
+                        open_loop_last_step_time_us_ = current_time_us;
+                    }
+                }
+                commutation_position = open_loop_step_;
                 break;
+            }
 
-            case ControlMode::CLOSED_LOOP_VELOCITY:
+            case ControlMode::CLOSED_LOOP_VELOCITY: {
                 // Velocity control with speed PID
                 // Calculate real time difference since last PID update
-                {
-                    uint32_t current_time_us = time_us();
-                    float dt;
+                uint32_t current_time_us = time_us();
+                float dt;
 
-                    if (last_pid_update_time_us_ == 0) {
-                        // First PID update - use nominal period
-                        dt = 1.0f / params_.control_frequency;
-                    } else {
-                        // Calculate actual time difference in seconds
-                        uint32_t dt_us = current_time_us - last_pid_update_time_us_;
-                        dt = static_cast<float>(dt_us) / 1000000.0f;
+                if (last_pid_update_time_us_ == 0) {
+                    // First PID update - use nominal period
+                    dt = 1.0f / params_.control_frequency;
+                } else {
+                    // Calculate actual time difference in seconds
+                    uint32_t dt_us = current_time_us - last_pid_update_time_us_;
+                    dt = static_cast<float>(dt_us) / 1000000.0f;
+                }
+
+                // Update timestamp for next iteration
+                last_pid_update_time_us_ = current_time_us;
+
+                // Apply acceleration limiting (slew rate limiter on target_speed)
+                 float limited_target = applyAccelerationLimit(
+                    status_.target_speed_rpm,
+                    dt
+                );
+
+                // Run speed PID (already configured for correct mode)
+                float pid_output = pid_controller_.update(
+                    limited_target,
+                    status_.current_speed_rpm,
+                    dt
+                );
+
+                // Electric mode determines how to use PID output
+                if (status_.electric_mode == ElectricMode::VOLTAGE_MODE) {
+                    // VOLTAGE_MODE: PID outputs duty cycle directly
+                    target_duty_cycle = pid_output;
+                } else {
+                    // CURRENT_MODE: PID outputs target current
+                    // Store for inner current loop (runs in pwmInterruptHandler at 20kHz)
+                    {
+                        CriticalSection cs;
+                        status_.target_current = pid_output;
                     }
 
-                    // Update timestamp for next iteration
-                    last_pid_update_time_us_ = current_time_us;
-
-                    // Apply acceleration limiting (slew rate limiter on target_speed)
-                    float limited_target = applyAccelerationLimit(
-                        status_.target_speed_rpm,
-                        dt
-                    );
-
-                    // Run speed PID (already configured for correct mode)
-                    float pid_output = pid_controller_.update(
-                        limited_target,
-                        status_.current_speed_rpm,
-                        dt
-                    );
-
-                    // Electric mode determines how to use PID output
-                    if (status_.electric_mode == ElectricMode::VOLTAGE_MODE) {
-                        // VOLTAGE_MODE: PID outputs duty cycle directly
-                        target_duty_cycle = pid_output;
-                    } else {
-                        // CURRENT_MODE: PID outputs target current
-                        // Store for inner current loop (runs in pwmInterruptHandler at 20kHz)
-                        {
-                            CriticalSection cs;
-                            status_.target_current = pid_output;
-                        }
-
-                        // duty_cycle is calculated by pwmInterruptHandler() (atomic read)
-                        {
-                            CriticalSection cs;
-                            target_duty_cycle = status_.duty_cycle;
-                        }
+                    // duty_cycle is calculated by pwmInterruptHandler() (atomic read)
+                    {
+                        CriticalSection cs;
+                        target_duty_cycle = status_.duty_cycle;
                     }
                 }
                 break;
+            }
 
             case ControlMode::CLOSED_LOOP_TORQUE:
                 // Torque control: fixed duty cycle or current + Hall sensor commutation
@@ -196,29 +208,26 @@ void BldcController::update()
                 }
                 break;
         }
+    } else {
+        open_loop_running_ = false;
     }
 
-    // Update commutation based on control mode and electric mode
-    // Protect duty_cycle write (can race with pwmInterruptHandler in CURRENT_MODE)
-    {
+    if (commutation_position != 0xFF){
         CriticalSection cs;
         status_.duty_cycle = target_duty_cycle;
-        // Commutation strategy based on control mode
-        if (status_.control_mode == ControlMode::OPEN_LOOP) {
-            // Open-loop: timing-based commutation (no sensors)
-            commutation_controller_.updateOpenLoop(target_duty_cycle, status_.target_speed_rpm, direction_);
-        } else if (status_.electric_mode == ElectricMode::VOLTAGE_MODE) {
+        
+        if (status_.electric_mode == ElectricMode::VOLTAGE_MODE) {
             // VOLTAGE_MODE: Hall sensor commutation runs here and in hallSensorInterruptHandler
             // In hallSensorInterruptHandler is for precise switching, here is for starting at beginning rotation
-            commutation_controller_.update(target_duty_cycle, direction_);
-        } else if (status_.electric_mode == ElectricMode::CURRENT_MODE) {
+            commutation_controller_.update(commutation_position, target_duty_cycle, direction_);
+        } else {
             // CURRENT_MODE: Only update commutation on rotor position change
-            if (current_position != prev_position_) {
+            if (commutation_position != prev_position_) {
                 // Position changed - reset commutation and current controller
-                commutation_controller_.update(0.0f, direction_);
+                commutation_controller_.update(commutation_position, 0.0f, direction_);
                 current_controller_.reset();
                 // Update previous position
-                prev_position_ = current_position;
+                prev_position_ = commutation_position;
             }
         }
     }
@@ -308,9 +317,11 @@ void BldcController::stop()
 {
     status_.is_running = false;
     status_.duty_cycle = 0.0f;
+    open_loop_running_ = false;
+    open_loop_step_ = 0;
     {
         CriticalSection cs;
-        commutation_controller_.update(0.0f, direction_);
+        commutation_controller_.update(0, 0.0f, direction_);
     }
     
     // Reset speed measurement on motor stop
@@ -505,6 +516,18 @@ float BldcController::applyAccelerationLimit(float target_speed, float dt)
     return limited_target_speed_;
 }
 
+uint32_t BldcController::calculateOpenLoopStepInterval(float speed_rpm)
+{
+    // step_interval_us = 1,000,000 / (speed_rpm / 60 * num_poles * 6)
+    // = 1,000,000 * 60 / (speed_rpm * num_poles * 6)
+    // = 10,000,000 / (speed_rpm * num_poles)
+    if (speed_rpm <= 0.0f) {
+        return 0;
+    }
+    uint8_t num_poles = commutation_controller_.getNumPoles();
+    return static_cast<uint32_t>(10000000.0f / (speed_rpm * num_poles));
+}
+
 void BldcController::handleSafetyFault(SafetyFault fault)
 {
     // Emergency stop for critical faults
@@ -589,17 +612,12 @@ void BldcController::hallSensorInterruptHandler()
 
     if (status_.electric_mode == ElectricMode::VOLTAGE_MODE) {
         CriticalSection cs;
-        // VOLTAGE_MODE: Hall sensor commutation runs here at 5kHz
-        commutation_controller_.update(status_.duty_cycle, direction_);
+        commutation_controller_.update(hall_state, status_.duty_cycle, direction_);
     } else if (status_.electric_mode == ElectricMode::CURRENT_MODE) {
-        // CURRENT_MODE: Only update commutation on rotor position change
-        // Check if position has changed (0xFF means uninitialized)
         if (hall_state != prev_position_) {
             CriticalSection cs;
-            // Position changed - reset commutation and current controller
-            commutation_controller_.update(0.0f, direction_);
+            commutation_controller_.update(hall_state, 0.0f, direction_);
             current_controller_.reset();
-            // Update previous position
             prev_position_ = hall_state;
         }
     }

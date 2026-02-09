@@ -50,23 +50,15 @@ public:
     bool initialize(uint32_t pwm_frequency = 20000);
 
     /**
-     * @brief Update commutation based on Hall sensor state (closed-loop)
+     * @brief Update commutation based on rotor position
+     * @param position Rotor position (0-5 range, corresponding to 6-step commutation)
      * @param duty_cycle Motor duty cycle (0.0 to 1.0)
      *                   0.0 = 0V output (neutral, no torque)
      *                   1.0 = maximum voltage output (full torque)
      * @param direction Rotation direction
-     * @return true if commutation updated successfully
+     * @return true if commutation updated successfully, false if position is invalid
      */
-    bool update(float duty_cycle, RotationDirection direction = RotationDirection::CLOCKWISE);
-
-    /**
-     * @brief Update commutation based on target speed (open-loop)
-     * @param duty_cycle Motor duty cycle (0.0 to 1.0)
-     * @param target_speed_rpm Target motor speed in RPM
-     * @param direction Rotation direction
-     * @return true if commutation updated successfully
-     */
-    bool updateOpenLoop(float duty_cycle, float target_speed_rpm, RotationDirection direction = RotationDirection::CLOCKWISE);
+    bool update(uint8_t position, float duty_cycle, RotationDirection direction = RotationDirection::CLOCKWISE);
 
     /**
      * @brief Emergency stop motor
@@ -113,38 +105,15 @@ private:
     bool is_running_;
     uint8_t num_poles_;  ///< Number of motor pole pairs
 
-    // Cached phase states for fast access (updated in update()/updateOpenLoop())
+    // Cached phase states for fast access (updated in update())
     PwmState cached_phase_u_state_;
     PwmState cached_phase_v_state_;
     PwmState cached_phase_w_state_;
-
-    // Open-loop timing control
-    uint32_t last_step_time_us_;
-    uint32_t step_interval_us_;
     
     static const CommutationStep COMMUTATION_TABLE_CW[6];
     static const CommutationStep COMMUTATION_TABLE_CCW[6];
     
-    /**
-     * @brief Apply commutation step
-     * @param step Commutation step
-     * @param duty_cycle Duty cycle (0.0 to 1.0)
-     *                   0.0 = 0V output, 1.0 = maximum voltage
-     */
     void applyCommutationStep(const CommutationStep& step, float duty_cycle);
-    
-    /**
-     * @brief Calculate step interval from target speed
-     * @param speed_rpm Target speed in RPM
-     * @return Step interval in microseconds
-     */
-    uint32_t calculateStepInterval(float speed_rpm);
-    
-    /**
-     * @brief Get current time in microseconds
-     * @return Current time in microseconds
-     */
-    uint32_t getCurrentTimeUs();
 };
 
 } // namespace libecu
