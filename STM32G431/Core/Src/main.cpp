@@ -254,14 +254,14 @@ int main(void)
     HAL_TIM_Base_Start_IT(&htim1);
 
     // Set control mode (mechanical) and electric mode (electrical)
-    motor_controller->setControlMode(libecu::ControlMode::CLOSED_LOOP_TORQUE);
+    motor_controller->setControlMode(libecu::ControlMode::CLOSED_LOOP_VELOCITY);
     motor_controller->setElectricMode(libecu::ElectricMode::CURRENT_MODE);
 
     // This setting is for (CLOSED_LOOP_TORQUE or OPEN_LOOP) and VOLTAGE_MODE mode only
-    motor_controller->setDutyCycle(0.0f);
+    motor_controller->setDutyCycle(0.3f);
 
     // This setting is for (CLOSED_LOOP_TORQUE or OPEN_LOOP) and CURRENT_MODE mode only
-    motor_controller->setCurrent(0.0f);
+    motor_controller->setCurrent(0.5f);
 
     motor_controller->start();
 

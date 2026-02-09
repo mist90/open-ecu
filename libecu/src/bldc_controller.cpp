@@ -525,7 +525,7 @@ uint32_t BldcController::calculateOpenLoopStepInterval(float speed_rpm)
         return 0;
     }
     uint8_t num_poles = commutation_controller_.getNumPoles();
-    return static_cast<uint32_t>(10000000.0f / (speed_rpm * num_poles));
+    return static_cast<uint32_t>(10000000.0f / (speed_rpm * num_poles * BLDC_NUM_PHASES));
 }
 
 void BldcController::handleSafetyFault(SafetyFault fault)
