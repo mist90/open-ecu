@@ -35,7 +35,7 @@ while [[ $# -gt 0 ]]; do
             echo "Usage: $0 [options]"
             echo "Options:"
             echo "  -r, --release    Use Release build (default: Debug)"
-            echo "  -m, --method     Flash method: stlink, openocd, dfu (default: stlink)"
+            echo "  -m, --method     Flash method: stlink, openocd, dfu (default: openocd)"
             echo "  -v, --verify     Verify flash after programming"
             echo "  -h, --help       Show this help message"
             exit 0

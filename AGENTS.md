@@ -4,7 +4,7 @@
 - **Language**: Mixed C/C++ (C++17 for libecu, C for STM32 HAL)
 - **Target Platform**: STM32G431CBU (Cortex-M4, FPU)
 - **Build System**: CMake 3.16+ with ARM GCC toolchain
-- **Control Loop**: 5kHz (200μs period)
+- **Control Loop**: 1kHz speed control + 40kHz current loop (Hall sensors: async)
 - **Architecture**: Layered (libecu core → HAL → Application)
 
 ## Build Commands
@@ -50,7 +50,9 @@ cd STM32G431
 ./build.sh --debug-pwm
 ```
 
-Build outputs: `STM32G431/build/open-ecu.{elf,hex,bin}`
+Build outputs:
+- Debug: `STM32G431/build/open-ecu.{elf,hex,bin}`
+- Release: `STM32G431/build-release/open-ecu.{elf,hex,bin}`
 
 ### libecu Library Build (Host Platform)
 ```bash
@@ -74,8 +76,8 @@ make info
 # Flash default platform (STM32G431) debug build
 ./flash.sh
 
-# Flash with specific method (openocd, stlink, dfu)
-./flash.sh --method stlink
+# Flash with specific method (default: openocd; also: stlink, dfu)
+./flash.sh --method openocd
 
 # Flash release build
 ./flash.sh --release
@@ -89,9 +91,10 @@ cd STM32G431
 ```
 
 ### Testing
-- **No automated unit tests** - manual hardware testing required
-- Test on b-g431b-esc1 board with BLDC motor
+- **No automated unit tests** - the `libecu/tests/` directory does not exist
+- Manual hardware testing required on b-g431b-esc1 board with BLDC motor
 - Monitor via UART (115200 baud) on PA2 (TX), PA3 (RX)
+- `make test-compile` in `libecu/` validates library builds only (not actual tests)
 
 ## Project Structure
 ```
@@ -269,7 +272,8 @@ if (HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1) != HAL_OK) {
 - Common sections: `Includes`, `Private defines`, `2` (before main loop), `3` (inside main loop)
 
 ### Real-Time Constraints
-- **5kHz control loop**: Keep ISR execution under 200μs
+- **1kHz speed control loop**: Keep periodic timer ISR under 1ms
+- **40kHz current loop**: Keep PWM ISR under 25μs
 - **Avoid blocking**: No polling loops in ISRs
 - **Minimize allocations**: Use static allocation, avoid heap
 - **Critical sections**: Use `disable_interrupts()`/`enable_interrupts()` sparingly

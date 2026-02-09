@@ -63,7 +63,7 @@ Located in `<platform>/Core/`:
 **STM32G431** (`STM32G431/Core/Src/main.cpp`):
 - Initializes STM32 HAL and peripherals
 - Creates libecu controllers with HAL implementations
-- Runs 5kHz control loop via SysTick interrupt
+- Runs 1kHz speed control loop (TIM2 periodic timer) and 40kHz current loop (PWM ISR)
 
 ### Key Features
 - **6-step trapezoidal control** with Hall sensor position feedback
@@ -74,13 +74,18 @@ Located in `<platform>/Core/`:
 
 ### Control Loop
 
-The firmware runs a 5kHz control loop (SysTick interrupt) that:
-1. Reads Hall sensor states
-2. Updates commutation sequence based on rotor position
-3. Calculates motor speed from position history (adaptive time window)
-4. Executes PID speed controller (setpoint → duty cycle)
-5. Monitors safety parameters in real-time
-6. Updates PWM duty cycles for all three phases
+The firmware implements a dual-rate control architecture:
+
+**1kHz Speed Control Loop (TIM2 periodic timer):**
+1. Reads Hall sensor states (async GPIO interrupts)
+2. Calculates motor speed from position history
+3. Executes PID speed controller (setpoint → duty cycle)
+4. Monitors safety parameters in real-time
+
+**40kHz Current Loop (PWM ISR):**
+1. Updates commutation sequence based on rotor position
+2. Applies PWM duty cycles to all three phases
+3. Synchronized with PWM timer for minimal latency
 
 ### Safety Features
 - Overcurrent protection (120% of rated current)
@@ -132,7 +137,9 @@ cd STM32G431
 2. Build Debug or Release configuration
 3. Use built-in debugger for testing
 
-Build outputs: `STM32G431/build/open-ecu.{elf,hex,bin}`
+Build outputs:
+- Debug: `STM32G431/build/open-ecu.{elf,hex,bin}`
+- Release: `STM32G431/build-release/open-ecu.{elf,hex,bin}`
 
 ### Flashing Firmware
 
@@ -159,12 +166,12 @@ cd STM32G431
 
 ### Testing
 
-Unit tests for libecu (platform-independent, runs on host):
-```bash
-cd libecu/tests
-make test
-make clean
-```
+**No automated unit tests** - the `libecu/tests/` directory does not exist.
+
+Manual hardware testing required:
+- Test on b-g431b-esc1 board with BLDC motor
+- Monitor via UART (115200 baud) on PA2 (TX), PA3 (RX)
+- `make test-compile` in `libecu/` validates library builds only (not actual tests)
 
 ## Project Structure
 
@@ -184,7 +191,6 @@ open-ecu/
 │   │   └── stm32g4/           # STM32G4 drivers
 │   │       ├── stm32_pwm.cpp
 │   │       └── stm32_hall_sensor.cpp
-│   └── tests/                 # Unit tests (host platform)
 │
 ├── STM32G431/                 # STM32G431 platform-specific files
 │   ├── Core/                  # Application code
