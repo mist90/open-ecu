@@ -169,12 +169,6 @@ public:
     MotorStatus getStatus() const;
 
     /**
-     * @brief Set target current for current control mode
-     * @param current_a Target current in Amperes
-     */
-    void setTargetCurrent(float current_a);
-
-    /**
      * @brief Clear safety fault
      * @param fault Fault to clear
      */

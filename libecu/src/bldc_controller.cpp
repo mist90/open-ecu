@@ -623,11 +623,6 @@ void BldcController::hallSensorInterruptHandler()
     }
 }
 
-void BldcController::setTargetCurrent(float current_a) {
-    CriticalSection cs;
-    status_.target_current = current_a;
-}
-
 void BldcController::pwmInterruptHandler() {
     // Read shared data atomically (avoid torn reads from SysTick interrupt)
     ElectricMode electric_mode;

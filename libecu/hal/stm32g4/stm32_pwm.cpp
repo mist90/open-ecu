@@ -46,14 +46,10 @@ bool Stm32Pwm::initialize(uint32_t frequency, uint16_t dead_time_ns) {
         return false;
     }
 
-    // Configure OC4 channel for ADC trigger timing (near bottom of PWM period)
-    // In center-aligned mode, trigger near underflow (CNT ≈ 0) for DOWN state current measurement
-    // For DOWN state (inverted polarity), low-side is ON when CNT < CCRx
-    // At CNT ≈ 5% of ARR, low-side is guaranteed ON for all duty cycles > 5%
-    // Small offset from 0 allows time for register updates after underflow and current stabilization
+    // ADC trigger at peak (CNT = ARR) — furthest from UP phase switching (at CNT = CCR)
     TIM_OC_InitTypeDef sConfigOC4 = {0};
     sConfigOC4.OCMode = TIM_OCMODE_PWM1;
-    sConfigOC4.Pulse = static_cast<uint32_t>(period_ * 0.05f);  // ~5% of ARR, near bottom of triangle
+    sConfigOC4.Pulse = period_ - 1;
     sConfigOC4.OCPolarity = TIM_OCPOLARITY_HIGH;
     sConfigOC4.OCFastMode = TIM_OCFAST_DISABLE;
     sConfigOC4.OCIdleState = TIM_OCIDLESTATE_RESET;
@@ -190,12 +186,12 @@ void Stm32Pwm::setChannelState(PwmChannel channel, PwmState state, float duty_cy
             break;
 
         case PwmState::DOWN:
-            // Inverse PWM: Low-side active for duty_cycle, high-side complementary
-            // Set inverted polarity (active low) by setting CCxP and CCxNP bits
-            tim_instance->CCER |= (ccxp_bit | ccxnp_bit);
+            // Low-side always ON, high-side always OFF
+            // CCR=0 with normal polarity: main output always LOW, complementary always HIGH
+            // This ensures low-side MOSFET conducts continuously (no PWM switching)
+            tim_instance->CCER &= ~(ccxp_bit | ccxnp_bit);
 
-            // Set compare value and start outputs
-            __HAL_TIM_SET_COMPARE(tim_handle, tim_channel, compare_value);
+            __HAL_TIM_SET_COMPARE(tim_handle, tim_channel, 0);
             HAL_TIM_PWM_Start(tim_handle, tim_channel);
             HAL_TIMEx_PWMN_Start(tim_handle, tim_channel);
             break;

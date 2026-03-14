@@ -206,13 +206,13 @@ int main(void)
     speed_pid_params_current.max_output = 5.4f;    // Max current (A)
     speed_pid_params_current.min_output = 0.0f;
 
-    // Current PID controller parameters for CURRENT_MODE (outputs duty cycle -1.0..1.0)
+    // Current PID controller parameters for CURRENT_MODE (outputs duty cycle 0..1.0)
     libecu::PidParameters current_pid_params;
     current_pid_params.kp = 1.0f;
     current_pid_params.ki = 0.1f;
     current_pid_params.kd = 0.0f;
     current_pid_params.max_output = 1.0f;
-    current_pid_params.min_output = -1.0f;
+    current_pid_params.min_output = 0.0f;
     current_pid_params.sample_time_s = 1.0f / PWM_TIMER_FREQ;
 
     libecu::SafetyLimits safety_limits;
@@ -300,7 +300,8 @@ int main(void)
                         motor_controller->setDutyCycle(target_duty_cycle);
                     }
                 }
-                printf("%.2f %.2f %.2f %.2f\n",  status.target_speed_rpm,
+                printf("%u: %.2f %.2f %.2f %.2f\n", (unsigned int)status.position - 1,
+                                            status.target_speed_rpm,
                                             status.current_speed_rpm,
                                             status.duty_cycle,
                                             status.measured_current);

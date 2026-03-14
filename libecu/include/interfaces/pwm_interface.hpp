@@ -25,7 +25,7 @@ enum class PwmChannel : uint8_t {
 enum class PwmState : uint8_t {
     OFF = 0,  ///< High impedance - both high and low side switches disabled
     UP = 1,   ///< Non-inverse PWM - high-side active, low-side complementary
-    DOWN = 2  ///< Inverse PWM - low-side active, high-side complementary
+    DOWN = 2  ///< Low-side always ON, high-side always OFF
 };
 
 /**
