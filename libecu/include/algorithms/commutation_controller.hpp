@@ -110,8 +110,7 @@ private:
     PwmState cached_phase_v_state_;
     PwmState cached_phase_w_state_;
     
-    static const CommutationStep COMMUTATION_TABLE_CW[6];
-    static const CommutationStep COMMUTATION_TABLE_CCW[6];
+    static const CommutationStep COMMUTATION_TABLE[6];
     
     void applyCommutationStep(const CommutationStep& step, float duty_cycle);
 };

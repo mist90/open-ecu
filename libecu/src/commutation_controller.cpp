@@ -7,25 +7,14 @@
 
 namespace libecu {
 
-// 6-step commutation table for counter-clockwise rotation
-// UP = high-side active, DOWN = low-side active, OFF = high impedance
-const CommutationStep CommutationController::COMMUTATION_TABLE_CCW[6] = {
-    {PwmState::OFF, PwmState::DOWN, PwmState::UP},   // 0 -> 5
-    {PwmState::UP,  PwmState::DOWN, PwmState::OFF},  // 1 -> 0
-    {PwmState::UP,  PwmState::OFF,  PwmState::DOWN}, // 2 -> 1
-    {PwmState::OFF, PwmState::UP,   PwmState::DOWN}, // 3 -> 2
-    {PwmState::DOWN, PwmState::UP,  PwmState::OFF},  // 4 -> 3
-    {PwmState::DOWN, PwmState::OFF, PwmState::UP},   // 5 -> 4
-};
-
-// 6-step commutation table for clockwise rotation
-const CommutationStep CommutationController::COMMUTATION_TABLE_CW[6] = {
-    {PwmState::UP,  PwmState::OFF,  PwmState::DOWN}, // 0 -> 1
-    {PwmState::OFF, PwmState::UP,   PwmState::DOWN}, // 1 -> 2
-    {PwmState::DOWN, PwmState::UP,  PwmState::OFF},  // 2 -> 3
-    {PwmState::DOWN, PwmState::OFF, PwmState::UP},   // 3 -> 4
-    {PwmState::OFF, PwmState::DOWN, PwmState::UP},   // 4 -> 5
-    {PwmState::UP,  PwmState::DOWN, PwmState::OFF},  // 5 -> 0
+// 6-step commutation table
+const CommutationStep CommutationController::COMMUTATION_TABLE[6] = {
+    {PwmState::UP,  PwmState::DOWN, PwmState::OFF},  // 0
+    {PwmState::UP,  PwmState::OFF,  PwmState::DOWN}, // 1
+    {PwmState::OFF, PwmState::UP,   PwmState::DOWN}, // 2
+    {PwmState::DOWN, PwmState::UP,  PwmState::OFF},  // 3
+    {PwmState::DOWN, PwmState::OFF, PwmState::UP},   // 4
+    {PwmState::OFF, PwmState::DOWN, PwmState::UP},   // 5
 };
 
 CommutationController::CommutationController(PwmInterface& pwm_interface, HallInterface& hall_interface, uint8_t num_poles)
@@ -87,11 +76,10 @@ bool CommutationController::update(uint8_t position, float duty_cycle, RotationD
     if (position > 5) {
         return false;
     }
+
+    uint8_t next_position = (direction == RotationDirection::CLOCKWISE) ? (position + 1) % 6 : (position + 5) % 6;
     
-    const CommutationStep* table = (direction == RotationDirection::CLOCKWISE) ? 
-                                   COMMUTATION_TABLE_CW : COMMUTATION_TABLE_CCW;
-    
-    applyCommutationStep(table[position], duty_cycle);
+    applyCommutationStep(COMMUTATION_TABLE[next_position], duty_cycle);
     
     is_running_ = true;
     return true;
