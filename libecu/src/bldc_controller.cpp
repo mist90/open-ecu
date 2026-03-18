@@ -37,7 +37,7 @@ BldcController::BldcController(
     , pid_controller_(params.pid_voltage_mode)
     , current_controller_(params.pid_current_regulator)
     , params_(params)
-    , direction_(RotationDirection::CLOCKWISE)
+    , dmode_(DriveMode::FORWARD)
     , initialized_(false)
     , speed_measurement_active_(false)
     , speed_start_time_us_(0)
@@ -228,7 +228,7 @@ void BldcController::setTargetSpeed(float speed_rpm)
     status_.target_speed_rpm = std::min(std::abs(speed_rpm), params_.max_speed_rpm);
 
     // Set direction based on sign
-    direction_ = (speed_rpm >= 0.0f) ? RotationDirection::CLOCKWISE : RotationDirection::COUNTER_CLOCKWISE;
+    dmode_ = (speed_rpm >= 0.0f) ? DriveMode::FORWARD : DriveMode::REVERSE;
 }
 
 void BldcController::setDutyCycle(float duty_cycle)
@@ -272,10 +272,10 @@ void BldcController::setElectricMode(ElectricMode mode)
     }
 }
 
-void BldcController::setDirection(RotationDirection direction)
+void BldcController::setDriveMode(DriveMode mode)
 {
     CriticalSection cs;
-    direction_ = direction;
+    dmode_ = mode;
 }
 
 void BldcController::start()
@@ -417,10 +417,10 @@ float BldcController::calculateSpeed()
                          (static_cast<float>(period_us) * steps_per_revolution);
 
         // Account for direction setting
-        // Positive pulse_count with CLOCKWISE = positive speed
-        // Negative pulse_count with CLOCKWISE = negative speed (moving backwards)
-        // Invert sign for COUNTER_CLOCKWISE
-        if (direction_ == RotationDirection::COUNTER_CLOCKWISE) {
+        // Positive pulse_count with FORWARD = positive speed
+        // Negative pulse_count with FORWARD = negative speed (moving backwards)
+        // Invert sign for REVERSE
+        if (dmode_ == DriveMode::REVERSE) {
             speed_rpm = -speed_rpm;
         }
 
@@ -463,7 +463,7 @@ float BldcController::calculateSpeed()
                          (static_cast<float>(extrapolation_time_us) * steps_per_revolution);
 
         // Account for direction
-        if (direction_ == RotationDirection::COUNTER_CLOCKWISE) {
+        if (dmode_ == DriveMode::REVERSE) {
             speed_rpm = -speed_rpm;
         }
 
@@ -604,7 +604,7 @@ void BldcController::hallSensorInterruptHandler()
 void BldcController::moveNextPosition(uint8_t position)
 {
     CriticalSection cs;
-    uint8_t next_position = (direction_ == RotationDirection::CLOCKWISE) ? (position + 1) % 6 : (position + 5) % 6;
+    uint8_t next_position = (dmode_ == DriveMode::FORWARD) ? (position + 1) % 6 : (position + 5) % 6;
     if (status_.electric_mode == ElectricMode::VOLTAGE_MODE) {
         commutation_controller_.update(next_position, status_.duty_cycle);
     } else if (status_.electric_mode == ElectricMode::CURRENT_MODE) {

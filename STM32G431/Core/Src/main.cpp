@@ -270,7 +270,7 @@ int main(void)
     // SysTick priority must be lower than TIM1 (higher number = lower priority)
     HAL_NVIC_SetPriority(SysTick_IRQn, 2, 0);
 
-    motor_controller->setDirection(libecu::RotationDirection::CLOCKWISE);
+    motor_controller->setDriveMode(libecu::DriveMode::FORWARD);
 
     printf("ECU started\n");
     while (1) {

@@ -37,11 +37,14 @@ enum class ElectricMode : uint8_t {
 };
 
 /**
- * @brief Motor rotation direction
+ * @brief Motor rotation mode
  */
-enum class RotationDirection : uint8_t {
-    CLOCKWISE = 0,
-    COUNTER_CLOCKWISE = 1
+enum class DriveMode : uint8_t {
+    FORWARD = 0,
+    REVERSE = 1
+    // NEUTRAL = 2
+    // PARKING = 3
+    // BRAKE = 4
 };
 
 /**
@@ -150,10 +153,10 @@ public:
     void setElectricMode(ElectricMode mode);
 
     /**
-     * @brief Set motor direction
-     * @param direction Rotation direction
+     * @brief Set motor drive mode
+     * @param mode Rotation mode
      */
-    void setDirection(RotationDirection direction);
+    void setDriveMode(DriveMode mode);
 
     /**
      * @brief Start motor
@@ -223,7 +226,7 @@ private:
 
     // State variables
     MotorStatus status_;
-    RotationDirection direction_;
+    DriveMode dmode_;
     bool initialized_;
     
     // Speed measurement state (interrupt-driven)
