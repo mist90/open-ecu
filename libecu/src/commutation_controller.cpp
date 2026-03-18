@@ -71,15 +71,13 @@ uint8_t CommutationController::getCurrentPosition()
     return 0xFF; // Invalid position
 }
 
-bool CommutationController::update(uint8_t position, float duty_cycle, RotationDirection direction)
+bool CommutationController::update(uint8_t position, float duty_cycle)
 {
     if (position > 5) {
         return false;
     }
-
-    uint8_t next_position = (direction == RotationDirection::CLOCKWISE) ? (position + 1) % 6 : (position + 5) % 6;
     
-    applyCommutationStep(COMMUTATION_TABLE[next_position], duty_cycle);
+    applyCommutationStep(COMMUTATION_TABLE[position], duty_cycle);
     
     is_running_ = true;
     return true;

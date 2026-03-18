@@ -13,14 +13,6 @@
 namespace libecu {
 
 /**
- * @brief Motor rotation direction
- */
-enum class RotationDirection : uint8_t {
-    CLOCKWISE = 0,
-    COUNTER_CLOCKWISE = 1
-};
-
-/**
  * @brief Commutation step for 6-step algorithm
  */
 struct CommutationStep {
@@ -58,7 +50,7 @@ public:
      * @param direction Rotation direction
      * @return true if commutation updated successfully, false if position is invalid
      */
-    bool update(uint8_t position, float duty_cycle, RotationDirection direction = RotationDirection::CLOCKWISE);
+    bool update(uint8_t position, float duty_cycle);
 
     /**
      * @brief Emergency stop motor

@@ -212,24 +212,12 @@ void BldcController::update()
         open_loop_running_ = false;
     }
 
-    if (commutation_position != 0xFF){
-        CriticalSection cs;
-        status_.duty_cycle = target_duty_cycle;
-        
-        if (status_.electric_mode == ElectricMode::VOLTAGE_MODE) {
-            // VOLTAGE_MODE: Hall sensor commutation runs here and in hallSensorInterruptHandler
-            // In hallSensorInterruptHandler is for precise switching, here is for starting at beginning rotation
-            commutation_controller_.update(commutation_position, target_duty_cycle, direction_);
-        } else {
-            // CURRENT_MODE: Only update commutation on rotor position change
-            if (commutation_position != prev_position_) {
-                // Position changed - reset commutation and current controller
-                commutation_controller_.update(commutation_position, 0.0f, direction_);
-                current_controller_.reset();
-                // Update previous position
-                prev_position_ = commutation_position;
-            }
+    if (commutation_position != 0xFF) {
+        {
+            CriticalSection cs;
+            status_.duty_cycle = target_duty_cycle;
         }
+        moveNextPosition(commutation_position);
     }
 }
 
@@ -321,7 +309,7 @@ void BldcController::stop()
     open_loop_step_ = 0;
     {
         CriticalSection cs;
-        commutation_controller_.update(0, 0.0f, direction_);
+        commutation_controller_.update(0, 0.0f);
     }
     
     // Reset speed measurement on motor stop
@@ -610,15 +598,20 @@ void BldcController::hallSensorInterruptHandler()
     speed_end_time_us_ = timestamp_us;
     speed_pulse_count_ += delta;
 
+    moveNextPosition(hall_state);
+}
+
+void BldcController::moveNextPosition(uint8_t position)
+{
+    CriticalSection cs;
+    uint8_t next_position = (direction_ == RotationDirection::CLOCKWISE) ? (position + 1) % 6 : (position + 5) % 6;
     if (status_.electric_mode == ElectricMode::VOLTAGE_MODE) {
-        CriticalSection cs;
-        commutation_controller_.update(hall_state, status_.duty_cycle, direction_);
+        commutation_controller_.update(next_position, status_.duty_cycle);
     } else if (status_.electric_mode == ElectricMode::CURRENT_MODE) {
-        if (hall_state != prev_position_) {
-            CriticalSection cs;
-            commutation_controller_.update(hall_state, 0.0f, direction_);
+        if (position != prev_position_) {
+            commutation_controller_.update(next_position, 0.0f);
             current_controller_.reset();
-            prev_position_ = hall_state;
+            prev_position_ = position;
         }
     }
 }

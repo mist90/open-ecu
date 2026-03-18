@@ -37,6 +37,14 @@ enum class ElectricMode : uint8_t {
 };
 
 /**
+ * @brief Motor rotation direction
+ */
+enum class RotationDirection : uint8_t {
+    CLOCKWISE = 0,
+    COUNTER_CLOCKWISE = 1
+};
+
+/**
  * @brief Motor control parameters
  */
 struct MotorControlParams {
@@ -198,6 +206,7 @@ public:
 #endif
 
 private:
+    void moveNextPosition(uint8_t position);
     // Component references
     PwmInterface& pwm_interface_;
     HallInterface& hall_interface_;
