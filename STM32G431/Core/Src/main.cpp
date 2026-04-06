@@ -188,7 +188,7 @@ int main(void)
 
     // Create component instances
     // Using 8 pole pairs for commutation
-    commutation_controller = new libecu::CommutationController(pwm_driver, hall_sensor, 8);
+    commutation_controller = new libecu::CommutationController(pwm_driver, hall_sensor, 40);
 
     // Speed PID controller parameters for VOLTAGE_MODE (outputs duty cycle 0.0-1.0)
     libecu::PidParameters speed_pid_params_voltage;
@@ -208,8 +208,8 @@ int main(void)
 
     // Current PID controller parameters for CURRENT_MODE (outputs duty cycle 0..1.0)
     libecu::PidParameters current_pid_params;
-    current_pid_params.kp = 1.0f;
-    current_pid_params.ki = 0.1f;
+    current_pid_params.kp = 0.1f;
+    current_pid_params.ki = 0.01f;
     current_pid_params.kd = 0.0f;
     current_pid_params.max_output = 1.0f;
     current_pid_params.min_output = 0.0f;
@@ -254,14 +254,14 @@ int main(void)
     HAL_TIM_Base_Start_IT(&htim1);
 
     // Set control mode (mechanical) and electric mode (electrical)
-    motor_controller->setControlMode(libecu::ControlMode::CLOSED_LOOP_VELOCITY);
+    motor_controller->setControlMode(libecu::ControlMode::CLOSED_LOOP_TORQUE);
     motor_controller->setElectricMode(libecu::ElectricMode::CURRENT_MODE);
 
     // This setting is for (CLOSED_LOOP_TORQUE or OPEN_LOOP) and VOLTAGE_MODE mode only
     motor_controller->setDutyCycle(0.3f);
 
     // This setting is for (CLOSED_LOOP_TORQUE or OPEN_LOOP) and CURRENT_MODE mode only
-    motor_controller->setCurrent(0.5f);
+    motor_controller->setCurrent(1.0f);
 
     motor_controller->start();
 
@@ -300,7 +300,7 @@ int main(void)
                         motor_controller->setDutyCycle(target_duty_cycle);
                     }
                 }
-                printf("%u: %.2f %.2f %.2f %.2f\n", (unsigned int)status.position - 1,
+                printf("%u->%u: %.2f %.2f %.2f %.2f\n", status.measured_position, status.target_position,
                                             status.target_speed_rpm,
                                             status.current_speed_rpm,
                                             status.duty_cycle,

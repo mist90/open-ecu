@@ -20,7 +20,6 @@ const CommutationStep CommutationController::COMMUTATION_TABLE[6] = {
 CommutationController::CommutationController(PwmInterface& pwm_interface, HallInterface& hall_interface, uint8_t num_poles)
     : pwm_interface_(pwm_interface)
     , hall_interface_(hall_interface)
-    , current_position_(MotorPosition::INVALID)
     , current_step_(0)
     , is_running_(false)
     , num_poles_(num_poles)
@@ -47,28 +46,7 @@ bool CommutationController::initialize(uint32_t pwm_frequency)
 
 uint8_t CommutationController::getCurrentPosition()
 {
-    // Read current Hall sensor state
-    HallState hall_state = hall_interface_.readState();
-    
-    // Check if Hall state is valid
-    if (!hall_interface_.isValidState(hall_state)) {
-        return 0xFF; // Invalid position
-    }
-    
-    // Get motor position from Hall state
-    libecu::MotorPosition pos = hall_interface_.getPosition(hall_state);
-    if (pos == MotorPosition::INVALID) {
-        return 0xFF; // Invalid position
-    }
-    
-    // Convert MotorPosition to 0-5 range
-    // POSITION_1=1 -> 0, POSITION_2=2 -> 1, ..., POSITION_6=6 -> 5
-    if (pos >= MotorPosition::POSITION_1 && 
-        pos <= MotorPosition::POSITION_6) {
-        return static_cast<uint8_t>(pos) - 1;
-    }
-    
-    return 0xFF; // Invalid position
+    return hall_interface_.getPosition();
 }
 
 bool CommutationController::update(uint8_t position, float duty_cycle)
@@ -88,7 +66,6 @@ void CommutationController::emergencyStop()
     pwm_interface_.emergencyStop();
     is_running_ = false;
     current_step_ = 0;
-    current_position_ = MotorPosition::INVALID;
 }
 
 void CommutationController::applyCommutationStep(const CommutationStep& step, float duty_cycle)

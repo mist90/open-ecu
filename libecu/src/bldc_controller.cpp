@@ -64,7 +64,8 @@ BldcController::BldcController(
     status_.duty_cycle = 0.0f;
     status_.target_current = 0.0f;
     status_.measured_current = 0.0f;
-    status_.position = MotorPosition::INVALID;
+    status_.target_position = 0xFF;
+    status_.measured_position = 0xFF;
     status_.active_fault = SafetyFault::NONE;
     status_.is_running = false;
     status_.control_mode = ControlMode::OPEN_LOOP;
@@ -111,11 +112,7 @@ void BldcController::update()
     status_.current_speed_rpm = calculateSpeed();
     
     uint8_t commutation_position = commutation_controller_.getCurrentPosition();
-    if (commutation_position <= 5) {
-        status_.position = static_cast<MotorPosition>(commutation_position + 1);
-    } else {
-        status_.position = MotorPosition::INVALID;
-    }
+    status_.measured_position = commutation_position;
     
     float target_duty_cycle = 0.0f;
 
@@ -551,6 +548,8 @@ void BldcController::hallSensorInterruptHandler()
      * - Initialize start timestamp on first call
      */
     
+    if (status_.control_mode == ControlMode::OPEN_LOOP)
+        return;
     // Get current timestamp immediately to minimize latency
     uint32_t timestamp_us = time_us();
     
@@ -605,6 +604,7 @@ void BldcController::moveNextPosition(uint8_t position)
 {
     CriticalSection cs;
     uint8_t next_position = (dmode_ == DriveMode::FORWARD) ? (position + 1) % 6 : (position + 5) % 6;
+    status_.target_position = next_position;
     if (status_.electric_mode == ElectricMode::VOLTAGE_MODE) {
         commutation_controller_.update(next_position, status_.duty_cycle);
     } else if (status_.electric_mode == ElectricMode::CURRENT_MODE) {

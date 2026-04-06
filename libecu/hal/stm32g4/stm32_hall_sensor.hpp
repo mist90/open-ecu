@@ -33,23 +33,13 @@ public:
 
     // HallInterface implementation
     bool initialize() override;
-    HallState readState() override;
-    MotorPosition getPosition(const HallState& state) override;
-    bool isValidState(const HallState& state) override;
-
-    /**
-     * @brief Get Hall state change count (for debugging)
-     * @return Number of Hall state changes
-     */
-    uint32_t getStateChangeCount() const { return state_change_count_; }
+    uint8_t getPosition() override;
 
 private:
     HallGpioConfig config_;
-    HallState last_state_;
-    uint32_t state_change_count_;
     
     // Hall state to motor position lookup table
-    static const MotorPosition POSITION_TABLE[8];
+    static const uint8_t POSITION_TABLE[8];
     
     /**
      * @brief Read GPIO pin state

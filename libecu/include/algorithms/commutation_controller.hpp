@@ -92,7 +92,6 @@ private:
     PwmInterface& pwm_interface_;
     HallInterface& hall_interface_;
 
-    MotorPosition current_position_;
     uint8_t current_step_;
     bool is_running_;
     uint8_t num_poles_;  ///< Number of motor pole pairs

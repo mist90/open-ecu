@@ -71,7 +71,8 @@ struct MotorStatus {
     float duty_cycle;         ///< Current duty cycle
     float target_current;     ///< Target motor current (A)
     float measured_current;   ///< Measured motor current (A)
-    MotorPosition position;   ///< Current motor position
+    uint8_t target_position;   ///< Driven motor position
+    uint8_t measured_position;   ///< Measured motor position
     SafetyFault active_fault; ///< Active safety fault
     bool is_running;          ///< Motor running status
     ControlMode control_mode;   ///< Current control mode (mechanical)
