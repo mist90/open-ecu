@@ -209,7 +209,7 @@ int main(void)
     // Current PID controller parameters for CURRENT_MODE (outputs duty cycle 0..1.0)
     libecu::PidParameters current_pid_params;
     current_pid_params.kp = 0.1f;
-    current_pid_params.ki = 0.01f;
+    current_pid_params.ki = 50.0f;
     current_pid_params.kd = 0.0f;
     current_pid_params.max_output = 1.0f;
     current_pid_params.min_output = 0.0f;
