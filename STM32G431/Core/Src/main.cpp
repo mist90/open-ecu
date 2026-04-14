@@ -254,7 +254,7 @@ int main(void)
     HAL_TIM_Base_Start_IT(&htim1);
 
     // Set control mode (mechanical) and electric mode (electrical)
-    motor_controller->setControlMode(libecu::ControlMode::CLOSED_LOOP_TORQUE);
+    motor_controller->setControlMode(libecu::ControlMode::CLOSED_LOOP_VELOCITY);
     motor_controller->setElectricMode(libecu::ElectricMode::CURRENT_MODE);
 
     // This setting is for (CLOSED_LOOP_TORQUE or OPEN_LOOP) and VOLTAGE_MODE mode only
@@ -430,7 +430,7 @@ static void MX_TIM2_Init(void)
 static void MX_USART2_UART_Init(void)
 {
     huart2.Instance = USART2;
-    huart2.Init.BaudRate = 921600;
+    huart2.Init.BaudRate = 115200;
     huart2.Init.WordLength = UART_WORDLENGTH_8B;
     huart2.Init.StopBits = UART_STOPBITS_1;
     huart2.Init.Parity = UART_PARITY_NONE;

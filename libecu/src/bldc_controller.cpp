@@ -51,6 +51,7 @@ BldcController::BldcController(
     , open_loop_running_(false)
     , last_pid_update_time_us_(0)
     , filtered_target_speed_(0.0f)
+    , filtered_measured_speed_(0.0f)
     , limited_target_speed_(0.0f)
 #ifdef DEBUG_PWM_ISR
     , debug_buffer_{}
@@ -109,7 +110,15 @@ void BldcController::monitor(const SafetyData& safety_data)
 
 void BldcController::update()
 {
-    status_.current_speed_rpm = calculateSpeed();
+    float speed_rpm = calculateSpeed();
+
+    float alpha = params_.target_speed_lpf_alpha;
+    if (alpha > 0.0f && alpha < 1.0f) {
+        filtered_measured_speed_ = alpha * speed_rpm + (1.0f - alpha) * filtered_measured_speed_;
+    } else {
+        filtered_measured_speed_ = speed_rpm;
+    }
+    status_.current_speed_rpm = filtered_measured_speed_;
     
     uint8_t commutation_position = commutation_controller_.getCurrentPosition();
     status_.measured_position = commutation_position;
@@ -294,6 +303,7 @@ void BldcController::start()
         // Reset PID timing and target speed filters
         last_pid_update_time_us_ = 0;
         filtered_target_speed_ = 0.0f;
+        filtered_measured_speed_ = 0.0f;
         limited_target_speed_ = 0.0f;
     }
 }

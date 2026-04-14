@@ -251,6 +251,7 @@ private:
     
     // Target speed filtering state (LPF → slew rate limiter cascade)
     float filtered_target_speed_;            ///< LPF-filtered target speed
+    float filtered_measured_speed_;           ///< LPF-filtered measured speed
     float limited_target_speed_;             ///< Rate-limited target speed (after LPF)
 
 #ifdef DEBUG_PWM_ISR
