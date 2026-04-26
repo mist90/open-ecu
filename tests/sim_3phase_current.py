@@ -72,6 +72,10 @@ for i, t in enumerate(time):
     step_index = int(t * f_step) % 6
     if step_index != comm_step:
         comm_step = step_index
+        # If you enable this you see harm of PID reset  
+        #i_integral = 0.0
+        #prev_error = 0.0
+        #duty_cycle = 0.0
 
     states = COMMUTATION_TABLE[comm_step]
     state_A, state_B, state_C = states[0], states[1], states[2]

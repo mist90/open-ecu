@@ -620,7 +620,6 @@ void BldcController::moveNextPosition(uint8_t position)
     } else if (status_.electric_mode == ElectricMode::CURRENT_MODE) {
         if (position != prev_position_) {
             commutation_controller_.update(next_position, 0.0f);
-            current_controller_.reset();
             prev_position_ = position;
         }
     }
