@@ -198,12 +198,12 @@ int main(void)
     speed_pid_params_voltage.max_output = 1.0f;    // Max duty cycle
     speed_pid_params_voltage.min_output = 0.0f;
 
-    // Speed PID controller parameters for CURRENT_MODE (outputs current 0.0-5.4A)
+    // Speed PID controller parameters for CURRENT_MODE
     libecu::PidParameters speed_pid_params_current;
     speed_pid_params_current.kp = 0.05f;     // Higher gain for current control
     speed_pid_params_current.ki = 1.0f;     // Different integral for current
     speed_pid_params_current.kd = 0.0f;
-    speed_pid_params_current.max_output = 5.4f;    // Max current (A)
+    speed_pid_params_current.max_output = 17.5f;    // Max current (A)
     speed_pid_params_current.min_output = 0.0f;
 
     // Current PID controller parameters for CURRENT_MODE (outputs duty cycle 0..1.0)
@@ -216,13 +216,13 @@ int main(void)
     current_pid_params.sample_time_s = 1.0f / PWM_TIMER_FREQ;
 
     libecu::SafetyLimits safety_limits;
-    safety_limits.max_current =  6.0f;      // 6A max current
+    safety_limits.max_current =  20.0f;
     safety_limits.max_temperature = 85.0f;  // 85°C max temp
     safety_monitor = new libecu::SafetyMonitor(safety_limits);
 
     libecu::MotorControlParams motor_params;
-    motor_params.max_duty_cycle = 0.85f;
-    motor_params.max_current = 6.0f;          // 6A max current (matches safety limit)
+    motor_params.max_duty_cycle = 0.9f;
+    motor_params.max_current = 18.0f;
     motor_params.max_speed_rpm = 150.0f;
     motor_params.acceleration_rate = 100.0f;  // RPM/s
     motor_params.target_speed_lpf_alpha = 0.1f;  // LPF smoothing for noisy potentiometer input
