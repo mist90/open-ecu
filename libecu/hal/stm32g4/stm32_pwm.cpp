@@ -11,7 +11,7 @@ extern "C" void HAL_TIM_MspPostInit(TIM_HandleTypeDef* htim);
 
 namespace libecu {
 
-Stm32Pwm::Stm32Pwm(void* htim) 
+Stm32Pwm::Stm32Pwm(void* htim)
     : htim_(htim), frequency_(20000), period_(0), dead_time_ns_(100), enabled_(false) {
 }
 
@@ -97,7 +97,7 @@ bool Stm32Pwm::initialize(uint32_t frequency, uint16_t dead_time_ns) {
     __HAL_TIM_DISABLE_OCxPRELOAD(tim_handle, TIM_CHANNEL_1);
     __HAL_TIM_DISABLE_OCxPRELOAD(tim_handle, TIM_CHANNEL_2);
     __HAL_TIM_DISABLE_OCxPRELOAD(tim_handle, TIM_CHANNEL_3);
-    
+
     // Configure dead-time for complementary PWM outputs
     TIM_BreakDeadTimeConfigTypeDef sBreakDeadTimeConfig = {0};
     sBreakDeadTimeConfig.OffStateRunMode = TIM_OSSR_DISABLE;
@@ -135,11 +135,11 @@ bool Stm32Pwm::initialize(uint32_t frequency, uint16_t dead_time_ns) {
         if (dtg_value > 31) dtg_value = 31;  // Clamp to max (DTG[4:0] is 5 bits)
         sBreakDeadTimeConfig.DeadTime = 0xE0 | dtg_value;
     }
-    
+
     sBreakDeadTimeConfig.BreakState = TIM_BREAK_DISABLE;
     sBreakDeadTimeConfig.BreakPolarity = TIM_BREAKPOLARITY_HIGH;
     sBreakDeadTimeConfig.AutomaticOutput = TIM_AUTOMATICOUTPUT_DISABLE;
-    
+
     if (HAL_TIMEx_ConfigBreakDeadTime(tim_handle, &sBreakDeadTimeConfig) != HAL_OK) {
         return false;
     }
@@ -211,7 +211,7 @@ void Stm32Pwm::enable(bool enable) {
         HAL_TIM_PWM_Start(tim_handle, TIM_CHANNEL_1);
         HAL_TIM_PWM_Start(tim_handle, TIM_CHANNEL_2);
         HAL_TIM_PWM_Start(tim_handle, TIM_CHANNEL_3);
-        
+
         HAL_TIMEx_PWMN_Start(tim_handle, TIM_CHANNEL_1);
         HAL_TIMEx_PWMN_Start(tim_handle, TIM_CHANNEL_2);
         HAL_TIMEx_PWMN_Start(tim_handle, TIM_CHANNEL_3);
@@ -222,16 +222,16 @@ void Stm32Pwm::enable(bool enable) {
 
 void Stm32Pwm::emergencyStop() {
     enabled_ = false;
-    
+
     TIM_HandleTypeDef* tim_handle = static_cast<TIM_HandleTypeDef*>(htim_);
     HAL_TIM_PWM_Stop(tim_handle, TIM_CHANNEL_1);
     HAL_TIM_PWM_Stop(tim_handle, TIM_CHANNEL_2);
     HAL_TIM_PWM_Stop(tim_handle, TIM_CHANNEL_3);
-    
+
     HAL_TIMEx_PWMN_Stop(tim_handle, TIM_CHANNEL_1);
     HAL_TIMEx_PWMN_Stop(tim_handle, TIM_CHANNEL_2);
     HAL_TIMEx_PWMN_Stop(tim_handle, TIM_CHANNEL_3);
-    
+
     __HAL_TIM_SET_COMPARE(tim_handle, TIM_CHANNEL_1, 0);
     __HAL_TIM_SET_COMPARE(tim_handle, TIM_CHANNEL_2, 0);
     __HAL_TIM_SET_COMPARE(tim_handle, TIM_CHANNEL_3, 0);

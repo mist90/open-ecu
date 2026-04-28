@@ -30,19 +30,19 @@ void PidController::reset()
 float PidController::update(float setpoint, float feedback, float dt)
 {
     error_ = setpoint - feedback;
-    
+
     float proportional = params_.kp * error_;
     float potential_integral_ = integral_ + params_.ki * (error_ + previous_error_) * 0.5f * dt;
-    
+
     derivative_ = (dt > 0.0f) ? params_.kd * (error_ - previous_error_) / dt : 0.0f;
-    
+
     output_ = proportional + potential_integral_ + derivative_;
 
     // Anti-windup + update integral
     if (output_ > params_.max_output) {
         output_ = params_.max_output;
         if (error_ < 0.0f)
-            integral_ = potential_integral_; 
+            integral_ = potential_integral_;
     } else if (output_ < params_.min_output) {
         output_ = params_.min_output;
         if (error_ > 0)
@@ -50,9 +50,9 @@ float PidController::update(float setpoint, float feedback, float dt)
     } else {
         integral_ = potential_integral_;
     }
-    
+
     previous_error_ = error_;
-    
+
     return output_;
 }
 
@@ -64,7 +64,7 @@ float PidController::update(float setpoint, float feedback)
 void PidController::setParameters(const PidParameters& params)
 {
     params_ = params;
-    
+
     integral_ = clamp(integral_, params_.min_output, params_.max_output);
 }
 

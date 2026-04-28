@@ -80,13 +80,13 @@ bool BldcController::initialize()
     if (!commutation_controller_.initialize()) {
         return false;
     }
-    
+
     // Reset PID controller
     pid_controller_.reset();
-    
+
     // Reset safety monitor
     safety_monitor_.resetFaultCounters();
-    
+
     initialized_ = true;
     return true;
 }
@@ -96,11 +96,11 @@ void BldcController::monitor(const SafetyData& safety_data)
     if (!initialized_) {
         return;
     }
-    
+
     // Update safety monitoring
     SafetyFault fault = safety_monitor_.update(safety_data);
     status_.active_fault = fault;
-    
+
     // Handle safety faults
     if (fault != SafetyFault::NONE) {
         handleSafetyFault(fault);
@@ -119,17 +119,17 @@ void BldcController::update()
         filtered_measured_speed_ = speed_rpm;
     }
     status_.current_speed_rpm = filtered_measured_speed_;
-    
+
     uint8_t commutation_position = commutation_controller_.getCurrentPosition();
     status_.measured_position = commutation_position;
-    
+
     float target_duty_cycle = 0.0f;
 
     if (status_.is_running) {
         switch (status_.control_mode) {
             case ControlMode::OPEN_LOOP: {
                 target_duty_cycle = status_.duty_cycle;
-                
+
                 uint32_t current_time_us = time_us();
                 if (!open_loop_running_) {
                     open_loop_last_step_time_us_ = current_time_us;
@@ -289,7 +289,7 @@ void BldcController::start()
     if (status_.active_fault == SafetyFault::NONE) {
         status_.is_running = true;
         pwm_interface_.enable(true);
-        
+
         // Reset speed measurement on motor start
         disable_interrupts();
         speed_measurement_active_ = false;
@@ -299,7 +299,7 @@ void BldcController::start()
         last_hall_state_ = 0xFF;
         last_period_us_ = 0;
         enable_interrupts();
-        
+
         // Reset PID timing and target speed filters
         last_pid_update_time_us_ = 0;
         filtered_target_speed_ = 0.0f;
@@ -318,7 +318,7 @@ void BldcController::stop()
         CriticalSection cs;
         commutation_controller_.update(0, 0.0f);
     }
-    
+
     // Reset speed measurement on motor stop
     disable_interrupts();
     speed_measurement_active_ = false;
@@ -328,7 +328,7 @@ void BldcController::stop()
     last_period_us_ = 0;
     enable_interrupts();
     status_.current_speed_rpm = 0.0f;
-    
+
     // Reset PID timing
     last_pid_update_time_us_ = 0;
 }
@@ -349,7 +349,7 @@ MotorStatus BldcController::getStatus() const
 void BldcController::clearFault(SafetyFault fault)
 {
     safety_monitor_.clearFault(fault);
-    
+
     // Clear emergency stop if that was the fault
     if (fault == SafetyFault::EMERGENCY_STOP) {
         safety_monitor_.setEmergencyStop(false);
@@ -490,16 +490,16 @@ float BldcController::applyAccelerationLimit(float target_speed, float dt)
     } else {
         filtered_target_speed_ = target_speed;
     }
-    
+
     // Stage 2: Slew rate limiter
     if (params_.acceleration_rate == 0.0f) {
         limited_target_speed_ = filtered_target_speed_;
         return limited_target_speed_;
     }
-    
+
     float speed_diff = filtered_target_speed_ - limited_target_speed_;
     float max_change = params_.acceleration_rate * dt;
-    
+
     if (std::abs(speed_diff) <= max_change) {
         limited_target_speed_ = filtered_target_speed_;
     } else if (speed_diff > 0.0f) {
@@ -507,7 +507,7 @@ float BldcController::applyAccelerationLimit(float target_speed, float dt)
     } else {
         limited_target_speed_ -= max_change;
     }
-    
+
     return limited_target_speed_;
 }
 
@@ -532,14 +532,14 @@ void BldcController::handleSafetyFault(SafetyFault fault)
         case SafetyFault::EMERGENCY_STOP:
             emergencyStop();
             break;
-            
+
         case SafetyFault::UNDERVOLTAGE:
         case SafetyFault::OVERVOLTAGE:
         case SafetyFault::HALL_SENSOR_FAULT:
             // Stop motor but allow restart after fault clears
             stop();
             break;
-            
+
         default:
             break;
     }
@@ -550,39 +550,39 @@ void BldcController::hallSensorInterruptHandler()
     /**
      * Hall sensor interrupt handler - called from GPIO interrupt context
      * This function must be interrupt-safe and as fast as possible
-     * 
+     *
      * Algorithm:
      * - Read current Hall state
      * - Calculate step delta (can be negative for reverse movement)
      * - Update end timestamp and increment pulse counter
      * - Initialize start timestamp on first call
      */
-    
+
     if (status_.control_mode == ControlMode::OPEN_LOOP)
         return;
     // Get current timestamp immediately to minimize latency
     uint32_t timestamp_us = time_us();
-    
+
     // Read current Hall sensor state via CommutationController
     uint8_t hall_state = commutation_controller_.getCurrentPosition();
-    
+
     // Validate Hall state (0-5 are valid, 0xFF indicates invalid/error)
     if (hall_state > 5 && hall_state != 0xFF) {
         return; // Invalid Hall state, ignore
     }
-    
+
     // Check if state has changed from previous reading
     if (hall_state == last_hall_state_) {
         return; // No change in Hall state, ignore
     }
-    
+
     // Calculate step delta between current and previous Hall state
     int8_t delta = 0;
     if (last_hall_state_ != 0xFF) {
         // Calculate forward and backward differences
         int8_t diff_forward = (hall_state - last_hall_state_ + 6) % 6;
         int8_t diff_backward = (last_hall_state_ - hall_state + 6) % 6;
-        
+
         // Choose shorter path (determines direction)
         if (diff_forward <= diff_backward) {
             delta = diff_forward;  // Forward movement (positive)
@@ -590,7 +590,7 @@ void BldcController::hallSensorInterruptHandler()
             delta = -diff_backward; // Backward movement (negative)
         }
     }
-    
+
     // Update last Hall state
     last_hall_state_ = hall_state;
 
@@ -648,8 +648,7 @@ void BldcController::pwmInterruptHandler() {
     // Read current from active conducting phase
     float measured_current = getCurrentFromActivePhase();
 
-    // Run current controller: target_current → delta
-    // Current controller outputs delta around 0, where 0 = neutral (no current)
+    // Run current controller
     float duty_cycle = current_controller_.update(target_current, measured_current);
 
     // Write results atomically (avoid torn writes from SysTick interrupt)

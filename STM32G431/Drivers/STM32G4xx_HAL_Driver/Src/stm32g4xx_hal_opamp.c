@@ -196,7 +196,7 @@
     |  Non Inverting  | VP1    | PA3      | PB14     | PB13        | PD11     | PD12     | PD9      |
     |    Input        | VP2    | PA7      | PB0      | PA1         | PB11     | PC3      | PB13     |
     |                 | VP3    | DAC3_CH1 | PD14     | DAC3_CH2(2) | DAC4_CH1 | DAC4_CH2 | DAC3_CH1 |
-    +-----------------------------------------------------------------------------------------------+  
+    +-----------------------------------------------------------------------------------------------+
     (1): No connection in follower mode.
     (2): Available for STM32G47x/ STM32G48x devices only
 
@@ -216,7 +216,7 @@
     | on GPIO         |        |        |        |  ADC1    |  ADC1  |        |  ADC2    |
     |                 |        |        |        |  CH12    |  CH11  |        |  CH14    |
     +------------------------------------------------------------------------------------+
-    (1): This ADC channel is connected internally to the OPAMPx_VOUT when OPAINTOEN 
+    (1): This ADC channel is connected internally to the OPAMPx_VOUT when OPAINTOEN
          bit is set.
          In this case, the I/O on which the OPAMPx_VOUT is available, can be used for
          another purpose.

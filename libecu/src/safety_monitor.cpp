@@ -25,30 +25,30 @@ SafetyFault SafetyMonitor::update(const SafetyData& data)
         setFault(SafetyFault::EMERGENCY_STOP);
         return active_fault_;
     }
-    
+
     // Check Hall sensor fault
     if (data.hall_fault) {
         setFault(SafetyFault::HALL_SENSOR_FAULT);
         return active_fault_;
     }
-    
+
     // Check overcurrent
     //if (checkOvercurrent(data)) {
     //    setFault(SafetyFault::OVERCURRENT);
     //    return active_fault_;
     //}
-    
+
     // Check overtemperature
     if (checkTemperature(data)) {
         setFault(SafetyFault::OVERTEMPERATURE);
         return active_fault_;
     }
-    
+
     // No faults detected
     if (active_fault_ != SafetyFault::NONE) {
         active_fault_ = SafetyFault::NONE;
     }
-    
+
     return active_fault_;
 }
 
@@ -82,9 +82,9 @@ bool SafetyMonitor::checkOvercurrent(const SafetyData& data)
     float u_current = std::abs(data.phase_u_current);
     float v_current = std::abs(data.phase_v_current);
     float w_current = std::abs(data.phase_w_current);
-    
+
     float max_current = std::max(u_current, std::max(v_current, w_current));
-    
+
     return max_current > limits_.max_current;
 }
 
@@ -98,7 +98,7 @@ void SafetyMonitor::setFault(SafetyFault fault)
     if (active_fault_ != fault) {
         active_fault_ = fault;
         fault_timestamp_ = 0; // Reset timestamp for new fault
-        
+
         // Increment fault counter
         uint8_t index = static_cast<uint8_t>(fault);
         if (index < 7) {

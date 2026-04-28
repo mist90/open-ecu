@@ -20,11 +20,11 @@
 /**
  * @namespace libecu
  * @brief Platform-independent BLDC motor control library
- * 
+ *
  * The libecu library provides a complete set of algorithms and interfaces
  * for BLDC motor control that can be ported to different microcontrollers
  * by implementing the hardware abstraction layer (HAL) interfaces.
- * 
+ *
  * Key features:
  * - 6-step commutation algorithm with Hall sensor feedback
  * - PID speed controller with anti-windup

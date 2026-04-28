@@ -37,10 +37,10 @@ public:
 
 private:
     HallGpioConfig config_;
-    
+
     // Hall state to motor position lookup table
     static const uint8_t POSITION_TABLE[8];
-    
+
     /**
      * @brief Read GPIO pin state
      * @param port GPIO port

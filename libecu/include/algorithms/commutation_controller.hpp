@@ -17,7 +17,7 @@ namespace libecu {
  */
 struct CommutationStep {
     PwmState phase_u;    ///< Phase U PWM state
-    PwmState phase_v;    ///< Phase V PWM state  
+    PwmState phase_v;    ///< Phase V PWM state
     PwmState phase_w;    ///< Phase W PWM state
 };
 
@@ -100,9 +100,9 @@ private:
     PwmState cached_phase_u_state_;
     PwmState cached_phase_v_state_;
     PwmState cached_phase_w_state_;
-    
+
     static const CommutationStep COMMUTATION_TABLE[6];
-    
+
     void applyCommutationStep(const CommutationStep& step, float duty_cycle);
 };
 

@@ -32,15 +32,15 @@ bool CommutationController::initialize(uint32_t pwm_frequency)
     if (!pwm_interface_.initialize(pwm_frequency, 100)) {
         return false;
     }
-    
+
     // Initialize all phases to OFF state
     pwm_interface_.setState(PwmChannel::PHASE_U, PwmState::OFF);
     pwm_interface_.setState(PwmChannel::PHASE_V, PwmState::OFF);
     pwm_interface_.setState(PwmChannel::PHASE_W, PwmState::OFF);
-    
+
     // Set all phases to neutral (50% duty cycle)
     pwm_interface_.setNeutral();
-    
+
     return true;
 }
 
@@ -54,9 +54,9 @@ bool CommutationController::update(uint8_t position, float duty_cycle)
     if (position > 5) {
         return false;
     }
-    
+
     applyCommutationStep(COMMUTATION_TABLE[position], duty_cycle);
-    
+
     is_running_ = true;
     return true;
 }

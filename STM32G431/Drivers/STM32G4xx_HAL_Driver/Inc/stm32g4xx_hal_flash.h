@@ -252,7 +252,7 @@ typedef struct
   */
 #define OB_RDP_LEVEL_0            0xAAU
 #define OB_RDP_LEVEL_1            0xBBU
-#define OB_RDP_LEVEL_2            0xCCU                    /*!< Warning: When enabling read protection level 2 
+#define OB_RDP_LEVEL_2            0xCCU                    /*!< Warning: When enabling read protection level 2
                                                                 it's no more possible to go back to level 1 or 0 */
 /**
   * @}
@@ -458,9 +458,9 @@ typedef struct
 /** @defgroup FLASH_OB_PCROP_RDP FLASH Option Bytes PCROP On RDP Level Type
   * @{
   */
-#define OB_PCROP_RDP_NOT_ERASE    0x00000000U              /*!< PCROP area is not erased when the RDP level 
+#define OB_PCROP_RDP_NOT_ERASE    0x00000000U              /*!< PCROP area is not erased when the RDP level
                                                                 is decreased from Level 1 to Level 0 */
-#define OB_PCROP_RDP_ERASE        FLASH_PCROP1ER_PCROP_RDP /*!< PCROP area is erased when the RDP level is 
+#define OB_PCROP_RDP_ERASE        FLASH_PCROP1ER_PCROP_RDP /*!< PCROP area is erased when the RDP level is
                                                                 decreased from Level 1 to Level 0 (full mass erase) */
 /**
   * @}
@@ -493,15 +493,15 @@ typedef struct
   * @{
   */
 #define FLASH_KEY1                0x45670123U              /*!< Flash key1 */
-#define FLASH_KEY2                0xCDEF89ABU              /*!< Flash key2: used with FLASH_KEY1 
+#define FLASH_KEY2                0xCDEF89ABU              /*!< Flash key2: used with FLASH_KEY1
                                                                 to unlock the FLASH registers access */
 
 #define FLASH_PDKEY1              0x04152637U              /*!< Flash power down key1 */
-#define FLASH_PDKEY2              0xFAFBFCFDU              /*!< Flash power down key2: used with FLASH_PDKEY1 
+#define FLASH_PDKEY2              0xFAFBFCFDU              /*!< Flash power down key2: used with FLASH_PDKEY1
                                                                 to unlock the RUN_PD bit in FLASH_ACR */
 
 #define FLASH_OPTKEY1             0x08192A3BU              /*!< Flash option byte key1 */
-#define FLASH_OPTKEY2             0x4C5D6E7FU              /*!< Flash option byte key2: used with FLASH_OPTKEY1 
+#define FLASH_OPTKEY2             0x4C5D6E7FU              /*!< Flash option byte key2: used with FLASH_OPTKEY1
                                                                 to allow option bytes operations */
 /**
   * @}
@@ -577,8 +577,8 @@ typedef struct
   *           @arg FLASH_LATENCY_5:  FLASH Five wait states
   *           @arg FLASH_LATENCY_6:  FLASH Six wait states
   *           @arg FLASH_LATENCY_7:  FLASH Seven wait states
-  *           @arg FLASH_LATENCY_8:  FLASH Eight wait states 
-  *           @arg FLASH_LATENCY_9:  FLASH Nine wait states 
+  *           @arg FLASH_LATENCY_8:  FLASH Eight wait states
+  *           @arg FLASH_LATENCY_9:  FLASH Nine wait states
   *           @arg FLASH_LATENCY_10: FLASH Ten wait state
   *           @arg FLASH_LATENCY_11: FLASH Eleven wait state
   *           @arg FLASH_LATENCY_12: FLASH Twelve wait states
@@ -601,8 +601,8 @@ typedef struct
   *           @arg FLASH_LATENCY_5:  FLASH Five wait states
   *           @arg FLASH_LATENCY_6:  FLASH Six wait states
   *           @arg FLASH_LATENCY_7:  FLASH Seven wait states
-  *           @arg FLASH_LATENCY_8:  FLASH Eight wait states 
-  *           @arg FLASH_LATENCY_9:  FLASH Nine wait states 
+  *           @arg FLASH_LATENCY_8:  FLASH Eight wait states
+  *           @arg FLASH_LATENCY_9:  FLASH Nine wait states
   *           @arg FLASH_LATENCY_10: FLASH Ten wait state
   *           @arg FLASH_LATENCY_11: FLASH Eleven wait state
   *           @arg FLASH_LATENCY_12: FLASH Twelve wait states

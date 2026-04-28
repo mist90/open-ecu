@@ -460,13 +460,13 @@ extern "C" {
                                             ((__CONFIG__) == SYSCFG_BREAK_SRAMPARITY)    || \
                                             ((__CONFIG__) == SYSCFG_BREAK_LOCKUP))
 
-#if (CCMSRAM_SIZE == 0x00008000UL)    /* STM32G4 devices with CCMSRAM_SIZE = 32 Kbytes */ 
+#if (CCMSRAM_SIZE == 0x00008000UL)    /* STM32G4 devices with CCMSRAM_SIZE = 32 Kbytes */
 #define IS_SYSCFG_CCMSRAMWRP_PAGE(__PAGE__)  ((__PAGE__) > 0U)
-#elif (CCMSRAM_SIZE == 0x00005000UL)  /* STM32G4 devices with CCMSRAM_SIZE = 20 Kbytes */ 
+#elif (CCMSRAM_SIZE == 0x00005000UL)  /* STM32G4 devices with CCMSRAM_SIZE = 20 Kbytes */
 #define IS_SYSCFG_CCMSRAMWRP_PAGE(__PAGE__)  (((__PAGE__) > 0U) && ((__PAGE__) <= 0x000FFFFFU))
-#elif (CCMSRAM_SIZE == 0x00004000UL)  /* STM32G4 devices with CCMSRAM_SIZE = 16 Kbytes */ 
+#elif (CCMSRAM_SIZE == 0x00004000UL)  /* STM32G4 devices with CCMSRAM_SIZE = 16 Kbytes */
 #define IS_SYSCFG_CCMSRAMWRP_PAGE(__PAGE__)  (((__PAGE__) > 0U) && ((__PAGE__) <= 0x0000FFFFU))
-#elif (CCMSRAM_SIZE == 0x00002800UL)  /* STM32G4 devices with CCMSRAM_SIZE = 10 Kbytes */ 
+#elif (CCMSRAM_SIZE == 0x00002800UL)  /* STM32G4 devices with CCMSRAM_SIZE = 10 Kbytes */
 #define IS_SYSCFG_CCMSRAMWRP_PAGE(__PAGE__)  (((__PAGE__) > 0U) && ((__PAGE__) <= 0x000003FFU))
 #endif /* CCMSRAM_SIZE */
 

@@ -110,7 +110,7 @@ public:
 
 
     /**
-     * @brief Update monitor 
+     * @brief Update monitor
      * @param safety_data Current safety monitoring data
      */
     void monitor(const SafetyData& safety_data);
@@ -229,7 +229,7 @@ private:
     MotorStatus status_;
     DriveMode dmode_;
     bool initialized_;
-    
+
     // Speed measurement state (interrupt-driven)
     volatile bool speed_measurement_active_; ///< True if speed measurement is active (ROTATING state)
     volatile uint32_t speed_start_time_us_;  ///< Start timestamp for speed measurement
@@ -240,15 +240,15 @@ private:
 
     // Position tracking for CURRENT_MODE (to detect commutation events)
     volatile uint8_t prev_position_;         ///< Previous rotor position for change detection
-    
+
     // Open-loop timing control
     uint8_t open_loop_step_;                 ///< Current step in open-loop mode (0-5)
     uint32_t open_loop_last_step_time_us_;   ///< Timestamp of last step change
     bool open_loop_running_;                 ///< Open-loop timing initialized
-    
+
     // Control loop timing
     uint32_t last_pid_update_time_us_;       ///< Timestamp of last successful PID update
-    
+
     // Target speed filtering state (LPF → slew rate limiter cascade)
     float filtered_target_speed_;            ///< LPF-filtered target speed
     float filtered_measured_speed_;           ///< LPF-filtered measured speed
@@ -277,10 +277,10 @@ private:
 
     /**
      * @brief Apply acceleration/deceleration limits to target speed
-     * 
+     *
      * Implements a slew rate limiter that restricts how fast target_speed can change.
      * Stores previous limited value internally - does NOT use measured speed.
-     * 
+     *
      * @param target_speed Desired target speed
      * @param dt Time step in seconds
      * @return Rate-limited target speed
@@ -298,7 +298,7 @@ private:
      * @return Measured phase current in Amperes
      */
     float getCurrentFromActivePhase();
-    
+
     /**
      * @brief Calculate step interval from target speed for open-loop control
      * @param speed_rpm Target speed in RPM

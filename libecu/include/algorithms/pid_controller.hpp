@@ -15,7 +15,7 @@ namespace libecu {
  */
 struct PidParameters {
     float kp;           ///< Proportional gain
-    float ki;           ///< Integral gain  
+    float ki;           ///< Integral gain
     float kd;           ///< Derivative gain
     float max_output;   ///< Maximum output value
     float min_output;   ///< Minimum output value
@@ -52,7 +52,7 @@ public:
      * @param setpoint Desired value
      * @param feedback Current value
      * @return Control output (returns 0 if disabled)
-     * 
+     *
      * Uses sample_time_s from parameters. Suitable for fixed-frequency loops.
      */
     float update(float setpoint, float feedback);
@@ -95,13 +95,13 @@ public:
 
 private:
     PidParameters params_;
-    
+
     float error_;
     float previous_error_;
     float integral_;
     float derivative_;
     float output_;
-    
+
     /**
      * @brief Clamp value between min and max
      * @param value Value to clamp

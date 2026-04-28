@@ -35,14 +35,14 @@ private:
     uint32_t period_;
     uint16_t dead_time_ns_;
     bool enabled_;
-    
+
     /**
      * @brief Convert PWM channel to TIM channel
      * @param channel PWM channel
      * @return TIM channel constant
      */
     uint32_t getTimChannel(PwmChannel channel);
-    
+
     /**
      * @brief Calculate duty cycle value from percentage
      * @param duty_cycle Duty cycle (0.0 to 1.0)

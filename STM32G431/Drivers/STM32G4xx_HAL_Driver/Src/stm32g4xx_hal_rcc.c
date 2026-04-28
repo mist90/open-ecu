@@ -965,7 +965,7 @@ HAL_StatusTypeDef HAL_RCC_ClockConfig(RCC_ClkInitTypeDef  *RCC_ClkInitStruct, ui
   * @brief  Select the clock source to output on MCO pin(PA8/PG10).
   * @note   PA8/PG10 should be configured in alternate function mode.
   * @note   The default configuration of the GPIOG pin 10 (PG10) is set to reset mode (NRST pin)
-  *         and user shall set the NRST_MODE Bit in the FLASH OPTR register to be able to use it 
+  *         and user shall set the NRST_MODE Bit in the FLASH OPTR register to be able to use it
   *         as an MCO pin.
   *         The @ref HAL_FLASHEx_OBProgram() API can be used to configure the NRST_MODE Bit value.
   * @param  RCC_MCOx  specifies the output direction for the clock source.

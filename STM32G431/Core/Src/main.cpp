@@ -235,7 +235,7 @@ int main(void)
         pwm_driver, hall_sensor, *commutation_controller,
         *safety_monitor, motor_params,
         &adc_driver);
-    
+
     if (!motor_controller->initialize()) {
         Error_Handler();
     }
@@ -280,7 +280,7 @@ int main(void)
 
             if (motor_controller) {
                 // Update motor controller
-                
+
                 libecu::MotorStatus status;
                 {
                     libecu::CriticalSection cs;
