@@ -223,9 +223,10 @@ int main(void)
     libecu::MotorControlParams motor_params;
     motor_params.max_duty_cycle = 0.9f;
     motor_params.max_current = 18.0f;
-    motor_params.max_speed_rpm = 150.0f;
+    motor_params.max_speed_rpm = 30.0f;
     motor_params.acceleration_rate = 100.0f;  // RPM/s
     motor_params.target_speed_lpf_alpha = 0.1f;  // LPF smoothing for noisy potentiometer input
+    motor_params.measured_speed_lpf_alpha = 0.1f; // LPF smoothing for noisy velocity measurement
     motor_params.control_frequency = PERIODIC_TIMER_FREQ;
     motor_params.pid_voltage_mode = speed_pid_params_voltage;
     motor_params.pid_current_mode = speed_pid_params_current;

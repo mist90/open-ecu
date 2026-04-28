@@ -112,7 +112,7 @@ void BldcController::update()
 {
     float speed_rpm = calculateSpeed();
 
-    float alpha = params_.target_speed_lpf_alpha;
+    float alpha = params_.measured_speed_lpf_alpha;
     if (alpha > 0.0f && alpha < 1.0f) {
         filtered_measured_speed_ = alpha * speed_rpm + (1.0f - alpha) * filtered_measured_speed_;
     } else {
@@ -567,7 +567,7 @@ void BldcController::hallSensorInterruptHandler()
     uint8_t hall_state = commutation_controller_.getCurrentPosition();
 
     // Validate Hall state (0-5 are valid, 0xFF indicates invalid/error)
-    if (hall_state > 5 && hall_state != 0xFF) {
+    if (hall_state > 5) {
         return; // Invalid Hall state, ignore
     }
 
@@ -579,15 +579,11 @@ void BldcController::hallSensorInterruptHandler()
     // Calculate step delta between current and previous Hall state
     int8_t delta = 0;
     if (last_hall_state_ != 0xFF) {
-        // Calculate forward and backward differences
-        int8_t diff_forward = (hall_state - last_hall_state_ + 6) % 6;
-        int8_t diff_backward = (last_hall_state_ - hall_state + 6) % 6;
-
-        // Choose shorter path (determines direction)
-        if (diff_forward <= diff_backward) {
-            delta = diff_forward;  // Forward movement (positive)
-        } else {
-            delta = -diff_backward; // Backward movement (negative)
+        delta = int8_t(hall_state) - int8_t(last_hall_state_);
+        if (delta < -3) {
+            delta += 6;
+        } else if (delta > 3) {
+            delta -= 6;
         }
     }
 
@@ -595,17 +591,16 @@ void BldcController::hallSensorInterruptHandler()
     last_hall_state_ = hall_state;
 
     // Initialize measurement on first valid transition (transition to ROTATING state)
-    if (!speed_measurement_active_) {
+    if (speed_measurement_active_) {
+        speed_pulse_count_ += delta;
+    } else {
         speed_measurement_active_ = true;
         speed_start_time_us_ = timestamp_us;
-        speed_end_time_us_ = timestamp_us;
         speed_pulse_count_ = 0;
-        return;
     }
 
     // Update end timestamp and pulse counter
     speed_end_time_us_ = timestamp_us;
-    speed_pulse_count_ += delta;
 
     moveNextPosition(hall_state);
 }
