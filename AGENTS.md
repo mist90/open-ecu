@@ -2,10 +2,19 @@
 
 ## Quick Reference
 - **Language**: Mixed C/C++ (C++17 for libecu, C for STM32 HAL)
-- **Target Platform**: STM32G431CBU (Cortex-M4, FPU)
+- **Target Platform**: STM32G431CBU (Cortex-M4, FPU, 128KB Flash, 32KB RAM)
 - **Build System**: CMake 3.16+ with ARM GCC toolchain
 - **Control Loop**: 1kHz speed control + 40kHz current loop (Hall sensors: async)
 - **Architecture**: Layered (libecu core → HAL → Application)
+- **Debug UART**: 115200 baud, PA2 (TX), PA3 (RX) — primary debug output
+- **IDE support**: CMake generates `STM32G431/build/compile_commands.json`
+
+## MCU Constraints (CRITICAL)
+- **Flash (128KB)**: `-Os` in Release, HAL modules are filtered to essentials only (see `cmake/stm32g4-config.cmake`)
+- **RAM (32KB)**: `--debug-pwm` consumes ~8KB; use static allocation, no heap
+- **FPU**: `fpv4-sp-d16` with hard float ABI; use `float` only, never `double`
+- **Linker script**: `STM32G431/STM32G431CBUX_FLASH.ld`
+- **Stack monitoring**: `-fstack-usage` enabled — check `.su` files in build output
 
 ## Build Commands
 
@@ -91,9 +100,9 @@ cd STM32G431
 ```
 
 ### Testing
-- **No automated unit tests** - the `libecu/tests/` directory does not exist
+- **No automated unit tests** — `libecu/tests/` does not exist
+- **Python simulations** exist in `tests/` (`sim_current.py`, `sim_3phase_current.py`) — use numpy/matplotlib to model current dynamics, not firmware tests
 - Manual hardware testing required on b-g431b-esc1 board with BLDC motor
-- Monitor via UART (115200 baud) on PA2 (TX), PA3 (RX)
 - `make test-compile` in `libecu/` validates library builds only (not actual tests)
 
 ## Project Structure
@@ -103,19 +112,23 @@ open-ecu/
 │   ├── include/               # Public headers
 │   │   ├── interfaces/        # Hardware abstraction (PwmInterface, HallInterface)
 │   │   ├── algorithms/        # Control algorithms (PID, commutation)
-│   │   └── safety/            # Safety monitoring
+│   │   ├── safety/            # Safety monitoring
+│   │   └── platform/          # Platform utilities (critical_section.hpp)
 │   ├── src/                   # Core implementations
 │   ├── hal/stm32g4/          # STM32G4-specific HAL implementations
 │   └── Makefile              # Host platform build
 ├── STM32G431/                # STM32G431 platform
 │   ├── Core/                  # Application code
 │   │   ├── Inc/              # Headers (main.h)
-│   │   └── Src/              # Sources (main.cpp, stm32g4xx_it.c)
+│   │   ├── Src/              # Sources (main.cpp, stm32g4xx_it.c)
+│   │   └── Startup/          # Startup assembly
 │   ├── Drivers/              # STM32 HAL and CMSIS
 │   ├── CMakeLists.txt        # Platform build config
 │   ├── build.sh              # Platform build script
-│   └── flash.sh              # Platform flash script
+│   ├── flash.sh              # Platform flash script
+│   └── STM32G431CBUX_FLASH.ld # Linker script
 ├── cmake/                    # Shared CMake toolchains
+├── tests/                    # Python simulations (numpy/matplotlib)
 ├── build.sh                  # Multi-platform build wrapper
 └── flash.sh                  # Multi-platform flash wrapper
 ```

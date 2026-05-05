@@ -65,13 +65,6 @@ public:
     virtual void setChannelState(PwmChannel channel, PwmState state, float duty_cycle = 0.0f) = 0;
 
     /**
-     * @brief Set PWM state for a channel (legacy method)
-     * @param channel PWM channel
-     * @param state PWM state
-     */
-    virtual void setState(PwmChannel channel, PwmState state) = 0;
-
-    /**
      * @brief Enable/disable PWM output
      * @param enable true to enable, false to disable
      */
@@ -81,12 +74,6 @@ public:
      * @brief Emergency stop - immediately disable all outputs
      */
     virtual void emergencyStop() = 0;
-
-    /**
-     * @brief Get current PWM frequency
-     * @return PWM frequency in Hz
-     */
-    virtual uint32_t getFrequency() const = 0;
 
     /**
      * @brief Set all phases to neutral (50% duty cycle)

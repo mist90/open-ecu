@@ -198,11 +198,6 @@ void Stm32Pwm::setChannelState(PwmChannel channel, PwmState state, float duty_cy
     }
 }
 
-void Stm32Pwm::setState(PwmChannel channel, PwmState state) {
-    // Legacy method - use setChannelState with default duty_cycle
-    setChannelState(channel, state, 0.0f);
-}
-
 void Stm32Pwm::enable(bool enable) {
     enabled_ = enable;
 
@@ -235,10 +230,6 @@ void Stm32Pwm::emergencyStop() {
     __HAL_TIM_SET_COMPARE(tim_handle, TIM_CHANNEL_1, 0);
     __HAL_TIM_SET_COMPARE(tim_handle, TIM_CHANNEL_2, 0);
     __HAL_TIM_SET_COMPARE(tim_handle, TIM_CHANNEL_3, 0);
-}
-
-uint32_t Stm32Pwm::getFrequency() const {
-    return frequency_;
 }
 
 uint32_t Stm32Pwm::getTimChannel(PwmChannel channel) {

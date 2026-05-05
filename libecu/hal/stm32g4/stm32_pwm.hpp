@@ -24,10 +24,8 @@ public:
     // PwmInterface implementation
     bool initialize(uint32_t frequency, uint16_t dead_time_ns) override;
     void setChannelState(PwmChannel channel, PwmState state, float duty_cycle = 0.0f) override;
-    void setState(PwmChannel channel, PwmState state) override;
     void enable(bool enable) override;
     void emergencyStop() override;
-    uint32_t getFrequency() const override;
 
 private:
     void* htim_;

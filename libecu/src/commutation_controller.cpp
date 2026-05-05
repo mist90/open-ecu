@@ -33,12 +33,7 @@ bool CommutationController::initialize(uint32_t pwm_frequency)
         return false;
     }
 
-    // Initialize all phases to OFF state
-    pwm_interface_.setState(PwmChannel::PHASE_U, PwmState::OFF);
-    pwm_interface_.setState(PwmChannel::PHASE_V, PwmState::OFF);
-    pwm_interface_.setState(PwmChannel::PHASE_W, PwmState::OFF);
-
-    // Set all phases to neutral (50% duty cycle)
+    // Set all phases to neutral
     pwm_interface_.setNeutral();
 
     return true;
