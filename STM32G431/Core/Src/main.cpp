@@ -231,6 +231,7 @@ int main(void)
     motor_params.pid_voltage_mode = speed_pid_params_voltage;
     motor_params.pid_current_mode = speed_pid_params_current;
     motor_params.pid_current_regulator = current_pid_params;
+    motor_params.useInverseCommTable = false;
 
     motor_controller = new libecu::BldcController(
         pwm_driver, hall_sensor, *commutation_controller,

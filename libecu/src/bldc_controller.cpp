@@ -608,7 +608,7 @@ void BldcController::hallSensorInterruptHandler()
 void BldcController::moveNextPosition(uint8_t position)
 {
     CriticalSection cs;
-    uint8_t next_position = (dmode_ == DriveMode::FORWARD) ? (position + 1) % 6 : (position + 5) % 6;
+    uint8_t next_position = (dmode_ == DriveMode::FORWARD && params_.useInverseCommTable) ? (position + 1) % 6 : (position + 5) % 6;
     status_.target_position = next_position;
     if (status_.electric_mode == ElectricMode::VOLTAGE_MODE) {
         commutation_controller_.update(next_position, status_.duty_cycle);

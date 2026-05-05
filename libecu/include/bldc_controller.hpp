@@ -58,6 +58,7 @@ struct MotorControlParams {
     float target_speed_lpf_alpha; ///< LPF alpha for target speed (0.0-1.0), 0 = disabled, 1.0 = no filtering
     float measured_speed_lpf_alpha; ///< LPF alpha for target speed (0.0-1.0), 0 = disabled, 1.0 = no filtering
     uint32_t control_frequency; ///< Control loop frequency (Hz)
+    bool useInverseCommTable; ///< Use inverse six-step commutation table
     PidParameters pid_voltage_mode; ///< Velocity PID parameters for voltage mode (outputs duty cycle)
     PidParameters pid_current_mode; ///< Velocity PID parameters for current mode (outputs current)
     PidParameters pid_current_regulator; ///< Current PID parameters for current mode (outputs duty cycle)
