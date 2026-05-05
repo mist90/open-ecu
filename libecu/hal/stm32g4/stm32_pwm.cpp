@@ -6,7 +6,6 @@
 #include "stm32_pwm.hpp"
 #include "../../Core/Inc/main.h"
 
-extern TIM_HandleTypeDef htim1;
 extern "C" void HAL_TIM_MspPostInit(TIM_HandleTypeDef* htim);
 
 namespace libecu {

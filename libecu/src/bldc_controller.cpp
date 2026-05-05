@@ -26,13 +26,11 @@ BldcController::BldcController(
     PwmInterface& pwm_interface,
     HallInterface& hall_interface,
     CommutationController& commutation_controller,
-    SafetyMonitor& safety_monitor,
     const MotorControlParams& params,
     AdcInterface* adc_interface)
     : pwm_interface_(pwm_interface)
     , hall_interface_(hall_interface)
     , commutation_controller_(commutation_controller)
-    , safety_monitor_(safety_monitor)
     , adc_interface_(adc_interface)
     , pid_controller_(params.pid_voltage_mode)
     , current_controller_(params.pid_current_regulator)
@@ -67,7 +65,6 @@ BldcController::BldcController(
     status_.measured_current = 0.0f;
     status_.target_position = 0xFF;
     status_.measured_position = 0xFF;
-    status_.active_fault = SafetyFault::NONE;
     status_.is_running = false;
     status_.control_mode = ControlMode::OPEN_LOOP;
     status_.electric_mode = ElectricMode::VOLTAGE_MODE;
@@ -84,28 +81,8 @@ bool BldcController::initialize()
     // Reset PID controller
     pid_controller_.reset();
 
-    // Reset safety monitor
-    safety_monitor_.resetFaultCounters();
-
     initialized_ = true;
     return true;
-}
-
-void BldcController::monitor(const SafetyData& safety_data)
-{
-    if (!initialized_) {
-        return;
-    }
-
-    // Update safety monitoring
-    SafetyFault fault = safety_monitor_.update(safety_data);
-    status_.active_fault = fault;
-
-    // Handle safety faults
-    if (fault != SafetyFault::NONE) {
-        handleSafetyFault(fault);
-        return;
-    }
 }
 
 void BldcController::update()
@@ -286,26 +263,24 @@ void BldcController::setDriveMode(DriveMode mode)
 
 void BldcController::start()
 {
-    if (status_.active_fault == SafetyFault::NONE) {
-        status_.is_running = true;
-        pwm_interface_.enable(true);
+    status_.is_running = true;
+    pwm_interface_.enable(true);
 
-        // Reset speed measurement on motor start
-        disable_interrupts();
-        speed_measurement_active_ = false;
-        speed_start_time_us_ = 0;
-        speed_end_time_us_ = 0;
-        speed_pulse_count_ = 0;
-        last_hall_state_ = 0xFF;
-        last_period_us_ = 0;
-        enable_interrupts();
+    // Reset speed measurement on motor start
+    disable_interrupts();
+    speed_measurement_active_ = false;
+    speed_start_time_us_ = 0;
+    speed_end_time_us_ = 0;
+    speed_pulse_count_ = 0;
+    last_hall_state_ = 0xFF;
+    last_period_us_ = 0;
+    enable_interrupts();
 
-        // Reset PID timing and target speed filters
-        last_pid_update_time_us_ = 0;
-        filtered_target_speed_ = 0.0f;
-        filtered_measured_speed_ = 0.0f;
-        limited_target_speed_ = 0.0f;
-    }
+    // Reset PID timing and target speed filters
+    last_pid_update_time_us_ = 0;
+    filtered_target_speed_ = 0.0f;
+    filtered_measured_speed_ = 0.0f;
+    limited_target_speed_ = 0.0f;
 }
 
 void BldcController::stop()
@@ -338,22 +313,11 @@ void BldcController::emergencyStop()
     status_.is_running = false;
     status_.duty_cycle = 0.0f;
     commutation_controller_.emergencyStop();
-    safety_monitor_.setEmergencyStop(true);
 }
 
 MotorStatus BldcController::getStatus() const
 {
     return status_;
-}
-
-void BldcController::clearFault(SafetyFault fault)
-{
-    safety_monitor_.clearFault(fault);
-
-    // Clear emergency stop if that was the fault
-    if (fault == SafetyFault::EMERGENCY_STOP) {
-        safety_monitor_.setEmergencyStop(false);
-    }
 }
 
 float BldcController::calculateSpeed()
@@ -521,28 +485,6 @@ uint32_t BldcController::calculateOpenLoopStepInterval(float speed_rpm)
     }
     uint8_t num_poles = commutation_controller_.getNumPoles();
     return static_cast<uint32_t>(10000000.0f / (speed_rpm * num_poles * BLDC_NUM_PHASES));
-}
-
-void BldcController::handleSafetyFault(SafetyFault fault)
-{
-    // Emergency stop for critical faults
-    switch (fault) {
-        case SafetyFault::OVERCURRENT:
-        case SafetyFault::OVERTEMPERATURE:
-        case SafetyFault::EMERGENCY_STOP:
-            emergencyStop();
-            break;
-
-        case SafetyFault::UNDERVOLTAGE:
-        case SafetyFault::OVERVOLTAGE:
-        case SafetyFault::HALL_SENSOR_FAULT:
-            // Stop motor but allow restart after fault clears
-            stop();
-            break;
-
-        default:
-            break;
-    }
 }
 
 void BldcController::hallSensorInterruptHandler()

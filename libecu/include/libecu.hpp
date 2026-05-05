@@ -14,9 +14,6 @@
 #include "algorithms/commutation_controller.hpp"
 #include "algorithms/pid_controller.hpp"
 
-// Safety monitoring
-#include "safety/safety_monitor.hpp"
-
 /**
  * @namespace libecu
  * @brief Platform-independent BLDC motor control library

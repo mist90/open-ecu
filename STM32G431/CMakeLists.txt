@@ -104,7 +104,6 @@ file(GLOB LIBECU_CORE_SOURCES
     "../libecu/src/bldc_controller.cpp"
     "../libecu/src/commutation_controller.cpp"
     "../libecu/src/pid_controller.cpp"
-    "../libecu/src/safety_monitor.cpp"
 )
 
 file(GLOB LIBECU_HAL_SOURCES

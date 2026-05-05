@@ -15,7 +15,6 @@
 #include "interfaces/adc_interface.hpp"
 #include "algorithms/commutation_controller.hpp"
 #include "algorithms/pid_controller.hpp"
-#include "safety/safety_monitor.hpp"
 
 namespace libecu {
 
@@ -75,7 +74,6 @@ struct MotorStatus {
     float measured_current;   ///< Measured motor current (A)
     uint8_t target_position;   ///< Driven motor position
     uint8_t measured_position;   ///< Measured motor position
-    SafetyFault active_fault; ///< Active safety fault
     bool is_running;          ///< Motor running status
     ControlMode control_mode;   ///< Current control mode (mechanical)
     ElectricMode electric_mode; ///< Current electric mode (electrical)
@@ -91,7 +89,6 @@ public:
      * @param pwm_interface PWM interface
      * @param hall_interface Hall sensor interface
      * @param commutation_controller Commutation controller
-     * @param safety_monitor Safety monitor
      * @param params Motor control parameters (includes PID parameters for both modes)
      * @param adc_interface ADC interface for current sensing (optional, nullptr for voltage mode only)
      */
@@ -99,7 +96,6 @@ public:
         PwmInterface& pwm_interface,
         HallInterface& hall_interface,
         CommutationController& commutation_controller,
-        SafetyMonitor& safety_monitor,
         const MotorControlParams& params,
         AdcInterface* adc_interface = nullptr
     );
@@ -109,13 +105,6 @@ public:
      * @return true if initialization successful
      */
     bool initialize();
-
-
-    /**
-     * @brief Update monitor
-     * @param safety_data Current safety monitoring data
-     */
-    void monitor(const SafetyData& safety_data);
 
     /**
      * @brief Update motor control (call at control frequency)
@@ -183,12 +172,6 @@ public:
     MotorStatus getStatus() const;
 
     /**
-     * @brief Clear safety fault
-     * @param fault Fault to clear
-     */
-    void clearFault(SafetyFault fault);
-
-    /**
      * @brief Hall sensor interrupt handler (called from GPIO interrupt context)
      * This method must be called from the Hall sensor GPIO interrupt handlers.
      * It captures the current Hall sensor state and timestamp for speed calculation.
@@ -217,7 +200,6 @@ private:
     PwmInterface& pwm_interface_;
     HallInterface& hall_interface_;
     CommutationController& commutation_controller_;
-    SafetyMonitor& safety_monitor_;
     AdcInterface* adc_interface_;
 
     // Owned components
@@ -288,12 +270,6 @@ private:
      * @return Rate-limited target speed
      */
     float applyAccelerationLimit(float target_speed, float dt);
-
-    /**
-     * @brief Handle safety faults
-     * @param fault Active safety fault
-     */
-    void handleSafetyFault(SafetyFault fault);
 
     /**
      * @brief Get current from active conducting phase based on commutation state

@@ -185,8 +185,7 @@ open-ecu/
 │   ├── src/                   # Core algorithm implementations
 │   │   ├── bldc_controller.cpp
 │   │   ├── commutation_controller.cpp
-│   │   ├── pid_controller.cpp
-│   │   └── safety_monitor.cpp
+│   │   └── pid_controller.cpp
 │   ├── hal/                   # Platform-specific HAL implementations
 │   │   └── stm32g4/           # STM32G4 drivers
 │   │       ├── stm32_pwm.cpp
