@@ -20,6 +20,7 @@
 #define BLDC_MIN_CURRENT  -4.0f
 #define BLDC_MAX_SPEED  150.0f
 #define BLDC_MAX_ACCELERATION  100.0f
+#define BLDC_INVERTION false
 
 ADC_HandleTypeDef hadc1;
 ADC_HandleTypeDef hadc2;
@@ -95,9 +96,9 @@ float readPotentiometer(float max_value)
 
         // Convert ADC value (0-4095) to (0-max_value)
         // Linear mapping: output = (adc_value / 4095.0) * max_value
-        float speed_rpm = (static_cast<float>(adc_value) / 4095.0f) * max_value;
+        float speed_rps = (static_cast<float>(adc_value) / 4095.0f) * max_value;
 
-        return speed_rpm;
+        return speed_rps;
     }
 
     // If conversion failed, return 0
@@ -196,20 +197,19 @@ int main(void)
     motor_params.max_duty_cycle = 0.9f;
     motor_params.max_current = BLDC_MAX_CURRENT;
     motor_params.min_current = BLDC_MIN_CURRENT;
-    motor_params.max_speed_rpm = BLDC_MAX_SPEED;
-    motor_params.acceleration_rate = BLDC_MAX_ACCELERATION;  // RPM/s
+    motor_params.max_speed_rps = BLDC_MAX_SPEED;
+    motor_params.acceleration_rate = BLDC_MAX_ACCELERATION;  // RPS/s
     motor_params.target_speed_lpf_alpha = 0.1f;  // LPF smoothing for noisy potentiometer input
     motor_params.measured_speed_lpf_alpha = 0.1f; // LPF smoothing for noisy velocity measurement
     motor_params.control_frequency = PERIODIC_TIMER_FREQ;
     motor_params.pid_voltage_mode = {0.01f, 0.1f}; // Speed PID controller parameters for VOLTAGE_MODE (outputs duty cycle 0.0-1.0)
     motor_params.pid_current_mode = {0.05f, 1.0f}; // Speed PID controller parameters for CURRENT_MODE (outputs current from negative to positive values)
     motor_params.pid_current_regulator = {0.1f, 50.0f}; // Current PID controller parameters for CURRENT_MODE (outputs duty cycle 0..1.0)
-    motor_params.useInverseCommTable = false;
+    motor_params.useInverseCommTable = BLDC_INVERTION;
 
     motor_controller = new libecu::BldcController(
         pwm_driver, hall_sensor, *commutation_controller,
-        motor_params,
-        &adc_driver);
+        motor_params, &adc_driver);
 
     if (!motor_controller->initialize()) {
         Error_Handler();
@@ -264,7 +264,7 @@ int main(void)
                 // Read potentiometer and update target speed (runs in main loop)
                 if (status.control_mode == libecu::ControlMode::CLOSED_LOOP_VELOCITY ||
                         status.control_mode == libecu::ControlMode::OPEN_LOOP) {
-                    float target_speed = readPotentiometer(motor_params.max_speed_rpm);
+                    float target_speed = readPotentiometer(motor_params.max_speed_rps);
                     motor_controller->setTargetSpeed(target_speed);
                 } else if (status.control_mode == libecu::ControlMode::CLOSED_LOOP_TORQUE) {
                     if (status.electric_mode == libecu::ElectricMode::CURRENT_MODE) {
@@ -276,8 +276,8 @@ int main(void)
                     }
                 }
                 printf("%u->%u: %.2f %.2f %.2f %.2f\n", status.measured_position, status.target_position,
-                                            status.target_speed_rpm,
-                                            status.current_speed_rpm,
+                                            status.target_speed_rps,
+                                            status.current_speed_rps,
                                             status.duty_cycle,
                                             status.measured_current);
             }

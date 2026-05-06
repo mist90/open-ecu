@@ -53,8 +53,8 @@ struct MotorControlParams {
     float max_duty_cycle;     ///< Maximum duty cycle (0.0 to 1.0)
     float max_current;        ///< Maximum motor current (A)
     float min_current;        ///< Minimum negative current (A)
-    float max_speed_rpm;      ///< Maximum speed in RPM
-    float acceleration_rate;  ///< Acceleration rate (RPM/s), 0 = disabled
+    float max_speed_rps;      ///< Maximum speed in RPS
+    float acceleration_rate;  ///< Acceleration rate (RPS/s), 0 = disabled
     float target_speed_lpf_alpha; ///< LPF alpha for target speed (0.0-1.0), 0 = disabled, 1.0 = no filtering
     float measured_speed_lpf_alpha; ///< LPF alpha for target speed (0.0-1.0), 0 = disabled, 1.0 = no filtering
     uint32_t control_frequency; ///< Control loop frequency (Hz)
@@ -68,8 +68,8 @@ struct MotorControlParams {
  * @brief Motor status information
  */
 struct MotorStatus {
-    float current_speed_rpm;  ///< Current motor speed (RPM)
-    float target_speed_rpm;   ///< Target motor speed (RPM)
+    float current_speed_rps;  ///< Current motor speed (RPS)
+    float target_speed_rps;   ///< Target motor speed (RPS)
     float duty_cycle;         ///< Current duty cycle
     float target_current;     ///< Target motor current (A)
     float measured_current;   ///< Measured motor current (A)
@@ -114,9 +114,9 @@ public:
 
     /**
      * @brief Set target speed for closed-loop control
-     * @param speed_rpm Target speed in RPM
+     * @param speed_rps Target speed in RPS
      */
-    void setTargetSpeed(float speed_rpm);
+    void setTargetSpeed(float speed_rps);
 
     /**
      * @brief Set duty cycle for open-loop control
@@ -256,7 +256,7 @@ private:
 
     /**
      * @brief Calculate motor speed from Hall sensor transitions
-     * @return Speed in RPM
+     * @return Speed in RPS
      */
     float calculateSpeed();
 
@@ -280,10 +280,10 @@ private:
 
     /**
      * @brief Calculate step interval from target speed for open-loop control
-     * @param speed_rpm Target speed in RPM
+     * @param speed_rps Target speed in RPS
      * @return Step interval in microseconds
      */
-    uint32_t calculateOpenLoopStepInterval(float speed_rpm);
+    uint32_t calculateOpenLoopStepInterval(float speed_rps);
 };
 
 } // namespace libecu

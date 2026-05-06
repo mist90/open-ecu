@@ -58,8 +58,8 @@ BldcController::BldcController(
 #endif
 {
     // Initialize status
-    status_.current_speed_rpm = 0.0f;
-    status_.target_speed_rpm = 0.0f;
+    status_.current_speed_rps = 0.0f;
+    status_.target_speed_rps = 0.0f;
     status_.duty_cycle = 0.0f;
     status_.target_current = 0.0f;
     status_.measured_current = 0.0f;
@@ -101,15 +101,15 @@ bool BldcController::initialize()
 
 void BldcController::update()
 {
-    float speed_rpm = calculateSpeed();
+    float speed_rps = calculateSpeed();
 
     float alpha = params_.measured_speed_lpf_alpha;
     if (alpha > 0.0f && alpha < 1.0f) {
-        filtered_measured_speed_ = alpha * speed_rpm + (1.0f - alpha) * filtered_measured_speed_;
+        filtered_measured_speed_ = alpha * speed_rps + (1.0f - alpha) * filtered_measured_speed_;
     } else {
-        filtered_measured_speed_ = speed_rpm;
+        filtered_measured_speed_ = speed_rps;
     }
-    status_.current_speed_rpm = filtered_measured_speed_;
+    status_.current_speed_rps = filtered_measured_speed_;
 
     uint8_t commutation_position = commutation_controller_.getCurrentPosition();
     status_.measured_position = commutation_position;
@@ -126,7 +126,7 @@ void BldcController::update()
                     open_loop_last_step_time_us_ = current_time_us;
                     open_loop_running_ = true;
                 } else {
-                    uint32_t step_interval_us = calculateOpenLoopStepInterval(status_.target_speed_rpm);
+                    uint32_t step_interval_us = calculateOpenLoopStepInterval(status_.target_speed_rps);
                     if (step_interval_us > 0 && (current_time_us - open_loop_last_step_time_us_) >= step_interval_us) {
                         open_loop_step_ = (open_loop_step_ + 1) % 6;
                         open_loop_last_step_time_us_ = current_time_us;
@@ -156,14 +156,14 @@ void BldcController::update()
 
                 // Apply acceleration limiting (slew rate limiter on target_speed)
                 float limited_target = applyAccelerationLimit(
-                    status_.target_speed_rpm,
+                    status_.target_speed_rps,
                     dt
                 );
 
                 // Run speed PID (already configured for correct mode)
                 float pid_output = pid_speed_controller_.update(
                     limited_target,
-                    status_.current_speed_rpm,
+                    status_.current_speed_rps,
                     dt
                 );
 
@@ -218,14 +218,14 @@ void BldcController::update()
     }
 }
 
-void BldcController::setTargetSpeed(float speed_rpm)
+void BldcController::setTargetSpeed(float speed_rps)
 {
     CriticalSection cs;
     // Clamp to maximum speed
-    status_.target_speed_rpm = std::min(std::abs(speed_rpm), params_.max_speed_rpm);
+    status_.target_speed_rps = std::min(std::abs(speed_rps), params_.max_speed_rps);
 
     // Set direction based on sign
-    dmode_ = (speed_rpm >= 0.0f) ? DriveMode::FORWARD : DriveMode::REVERSE;
+    dmode_ = (speed_rps >= 0.0f) ? DriveMode::FORWARD : DriveMode::REVERSE;
 }
 
 void BldcController::setDutyCycle(float duty_cycle)
@@ -316,7 +316,7 @@ void BldcController::stop()
     speed_pulse_count_ = 0;
     last_period_us_ = 0;
     enable_interrupts();
-    status_.current_speed_rpm = 0.0f;
+    status_.current_speed_rps = 0.0f;
 
     // Reset PID timing
     last_pid_update_time_us_ = 0;
@@ -390,15 +390,15 @@ float BldcController::calculateSpeed()
             return 0.0f;
         }
 
-        // Calculate speed in RPM
+        // Calculate speed in RPS
         // pulse_count pulses in period_us microseconds
         // Each full revolution = num_poles * BLDC_NUM_PHASES pulses (Hall transitions per revolution)
         // For num_poles=8: steps_per_rev = 8 * 3 = 24
-        // RPM = (pulses / period_us) * (1000000 us/s) / steps_per_revolution
+        // RPS = (pulses / period_us) * (1000000 us/s) / steps_per_revolution
         uint8_t num_poles = commutation_controller_.getNumPoles();
         uint32_t steps_per_revolution = num_poles * BLDC_NUM_PHASES;
 
-        float speed_rpm = (static_cast<float>(pulse_count) * 1000000.0f) /
+        float speed_rps = (static_cast<float>(pulse_count) * 1000000.0f) /
                          (static_cast<float>(period_us) * steps_per_revolution);
 
         // Account for direction setting
@@ -406,7 +406,7 @@ float BldcController::calculateSpeed()
         // Negative pulse_count with FORWARD = negative speed (moving backwards)
         // Invert sign for REVERSE
         if (dmode_ == DriveMode::REVERSE) {
-            speed_rpm = -speed_rpm;
+            speed_rps = -speed_rps;
         }
 
         // Save measured period for future extrapolation
@@ -418,7 +418,7 @@ float BldcController::calculateSpeed()
         speed_pulse_count_ = 0;
         enable_interrupts();
 
-        return speed_rpm;
+        return speed_rps;
     }
 
     // No new pulses - extrapolate based on last measured period
@@ -444,15 +444,15 @@ float BldcController::calculateSpeed()
         uint8_t num_poles = commutation_controller_.getNumPoles();
         uint32_t steps_per_revolution = num_poles * BLDC_NUM_PHASES;
 
-        float speed_rpm = 1000000.0f /
+        float speed_rps = 1000000.0f /
                          (static_cast<float>(extrapolation_time_us) * steps_per_revolution);
 
         // Account for direction
         if (dmode_ == DriveMode::REVERSE) {
-            speed_rpm = -speed_rpm;
+            speed_rps = -speed_rps;
         }
 
-        return speed_rpm;
+        return speed_rps;
     }
 
     // No measurements yet (first pulse received but no period calculated) - return 0
@@ -489,16 +489,16 @@ float BldcController::applyAccelerationLimit(float target_speed, float dt)
     return limited_target_speed_;
 }
 
-uint32_t BldcController::calculateOpenLoopStepInterval(float speed_rpm)
+uint32_t BldcController::calculateOpenLoopStepInterval(float speed_rps)
 {
-    // step_interval_us = 1,000,000 / (speed_rpm / 60 * num_poles * 6)
-    // = 1,000,000 * 60 / (speed_rpm * num_poles * 6)
-    // = 10,000,000 / (speed_rpm * num_poles)
-    if (speed_rpm <= 0.0f) {
+    // step_interval_us = 1,000,000 / (speed_rps / 60 * num_poles * 6)
+    // = 1,000,000 * 60 / (speed_rps * num_poles * 6)
+    // = 10,000,000 / (speed_rps * num_poles)
+    if (speed_rps <= 0.0f) {
         return 0;
     }
     uint8_t num_poles = commutation_controller_.getNumPoles();
-    return static_cast<uint32_t>(10000000.0f / (speed_rpm * num_poles * BLDC_NUM_PHASES));
+    return static_cast<uint32_t>(10000000.0f / (speed_rps * num_poles * BLDC_NUM_PHASES));
 }
 
 void BldcController::hallSensorInterruptHandler()
