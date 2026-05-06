@@ -66,6 +66,9 @@ void Error_Handler(void);
 #define Z__Pin GPIO_PIN_8
 #define Z__GPIO_Port GPIOB
 
+#define BUTTON_Pin GPIO_PIN_10
+#define BUTTON_GPIO_Port GPIOC
+
 /* USER CODE BEGIN Private defines */
 
 /* USER CODE END Private defines */

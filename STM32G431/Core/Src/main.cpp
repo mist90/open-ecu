@@ -106,6 +106,15 @@ float readPotentiometer(float max_value)
 }
 
 /**
+ * @brief Read brake button state
+ * @return true if button is pressed (active LOW)
+ */
+bool readBrakeButton(void)
+{
+    return HAL_GPIO_ReadPin(BUTTON_GPIO_Port, BUTTON_Pin) == GPIO_PIN_RESET;
+}
+
+/**
  * @brief C-linkage wrapper for Hall sensor interrupt handler
  * This function is called from C code (stm32g4xx_it.c) and delegates to the C++ motor controller
  */
@@ -199,7 +208,7 @@ int main(void)
     motor_params.min_current = BLDC_MIN_CURRENT;
     motor_params.max_speed_rps = BLDC_MAX_SPEED;
     motor_params.acceleration_rate = BLDC_MAX_ACCELERATION;  // RPS/s
-    motor_params.target_speed_lpf_alpha = 0.1f;  // LPF smoothing for noisy potentiometer input
+    motor_params.target_speed_lpf_alpha = 0.0f;  // LPF smoothing for noisy potentiometer input
     motor_params.measured_speed_lpf_alpha = 0.1f; // LPF smoothing for noisy velocity measurement
     motor_params.control_frequency = PERIODIC_TIMER_FREQ;
     motor_params.pid_voltage_mode = {0.01f, 0.1f}; // Speed PID controller parameters for VOLTAGE_MODE (outputs duty cycle 0.0-1.0)
@@ -264,14 +273,14 @@ int main(void)
                 // Read potentiometer and update target speed (runs in main loop)
                 if (status.control_mode == libecu::ControlMode::CLOSED_LOOP_VELOCITY ||
                         status.control_mode == libecu::ControlMode::OPEN_LOOP) {
-                    float target_speed = readPotentiometer(motor_params.max_speed_rps);
+                    float target_speed = readBrakeButton()? 0.0 : readPotentiometer(motor_params.max_speed_rps);
                     motor_controller->setTargetSpeed(target_speed);
                 } else if (status.control_mode == libecu::ControlMode::CLOSED_LOOP_TORQUE) {
                     if (status.electric_mode == libecu::ElectricMode::CURRENT_MODE) {
-                        float target_current = readPotentiometer(motor_params.max_current);
+                        float target_current = readBrakeButton()? 0.0 : readPotentiometer(motor_params.max_current);
                         motor_controller->setCurrent(target_current);
                     } else if (status.electric_mode == libecu::ElectricMode::VOLTAGE_MODE) {
-                        float target_duty_cycle = readPotentiometer(1.0f);
+                        float target_duty_cycle = readBrakeButton()? 0.0 : readPotentiometer(1.0f);
                         motor_controller->setDutyCycle(target_duty_cycle);
                     }
                 }
@@ -434,6 +443,12 @@ static void MX_GPIO_Init(void)
     GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING_FALLING;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
     HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+    /*Configure GPIO pins : BUTTON_Pin */
+    GPIO_InitStruct.Pin = BUTTON_Pin;
+    GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
     /* Enable EXTI interrupts for Hall sensor pins */
     HAL_NVIC_SetPriority(EXTI9_5_IRQn, 1, 0);
