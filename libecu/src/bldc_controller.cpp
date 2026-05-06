@@ -32,8 +32,8 @@ BldcController::BldcController(
     , hall_interface_(hall_interface)
     , commutation_controller_(commutation_controller)
     , adc_interface_(adc_interface)
-    , pid_controller_(params.pid_voltage_mode)
-    , current_controller_(params.pid_current_regulator)
+    , pid_speed_controller_()
+    , current_controller_()
     , params_(params)
     , dmode_(DriveMode::FORWARD)
     , initialized_(false)
@@ -68,7 +68,21 @@ BldcController::BldcController(
     status_.is_running = false;
     status_.control_mode = ControlMode::OPEN_LOOP;
     status_.electric_mode = ElectricMode::VOLTAGE_MODE;
-    // PID controller already initialized with voltage mode parameters in initializer list
+    // PID controller settings
+    params_.pid_voltage_mode.sample_time_s = 1.0f / float(pwm_interface_.getFrequency());
+    params_.pid_voltage_mode.min_output = 0.0f;
+    params_.pid_voltage_mode.min_output = 1.0f;
+
+    params_.pid_current_mode.sample_time_s = 1.0f / float(pwm_interface_.getFrequency());
+    params_.pid_current_mode.min_output = params_.min_current;
+    params_.pid_current_mode.max_output = params_.max_current;
+
+    params_.pid_current_regulator.sample_time_s = 1.0f / float(pwm_interface_.getFrequency());
+    params_.pid_current_regulator.min_output = 0.0f;
+    params_.pid_current_regulator.max_output = 1.0f;
+    current_controller_ = params_.pid_current_regulator;
+
+    pid_speed_controller_.setParameters(params_.pid_voltage_mode);
 }
 
 bool BldcController::initialize()
@@ -79,7 +93,7 @@ bool BldcController::initialize()
     }
 
     // Reset PID controller
-    pid_controller_.reset();
+    pid_speed_controller_.reset();
 
     initialized_ = true;
     return true;
@@ -141,13 +155,13 @@ void BldcController::update()
                 last_pid_update_time_us_ = current_time_us;
 
                 // Apply acceleration limiting (slew rate limiter on target_speed)
-                 float limited_target = applyAccelerationLimit(
+                float limited_target = applyAccelerationLimit(
                     status_.target_speed_rpm,
                     dt
                 );
 
                 // Run speed PID (already configured for correct mode)
-                float pid_output = pid_controller_.update(
+                float pid_output = pid_speed_controller_.update(
                     limited_target,
                     status_.current_speed_rpm,
                     dt
@@ -223,7 +237,7 @@ void BldcController::setDutyCycle(float duty_cycle)
 void BldcController::setCurrent(float current_a)
 {
     CriticalSection cs;
-    status_.target_current = std::max(0.0f, std::min(current_a, params_.max_current));
+    status_.target_current = std::max(params_.min_current, std::min(current_a, params_.max_current));
 }
 
 void BldcController::setControlMode(ControlMode mode)
@@ -234,7 +248,7 @@ void BldcController::setControlMode(ControlMode mode)
 
         // Reset PID when switching to velocity control
         if (mode == ControlMode::CLOSED_LOOP_VELOCITY) {
-            pid_controller_.reset();
+            pid_speed_controller_.reset();
             last_pid_update_time_us_ = 0;  // Reset timing for fresh start
         }
     }
@@ -248,10 +262,10 @@ void BldcController::setElectricMode(ElectricMode mode)
     // Reconfigure PID controller with appropriate parameters for the mode
     if (mode == ElectricMode::VOLTAGE_MODE) {
         // VOLTAGE_MODE: PID outputs duty cycle (0.0-1.0)
-        pid_controller_.setParameters(params_.pid_voltage_mode);
+        pid_speed_controller_.setParameters(params_.pid_voltage_mode);
     } else {
         // CURRENT_MODE: PID outputs current (Amperes)
-        pid_controller_.setParameters(params_.pid_current_mode);
+        pid_speed_controller_.setParameters(params_.pid_current_mode);
     }
 }
 

@@ -84,6 +84,12 @@ public:
         setChannelState(PwmChannel::PHASE_V, PwmState::OFF, 0.0f);
         setChannelState(PwmChannel::PHASE_W, PwmState::OFF, 0.0f);
     }
+
+    uint32_t getFrequency() {
+        return frequency_;
+    }
+protected:
+    uint32_t frequency_ = 0;
 };
 
 } // namespace libecu

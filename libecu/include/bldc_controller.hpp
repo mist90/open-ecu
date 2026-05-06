@@ -52,6 +52,7 @@ enum class DriveMode : uint8_t {
 struct MotorControlParams {
     float max_duty_cycle;     ///< Maximum duty cycle (0.0 to 1.0)
     float max_current;        ///< Maximum motor current (A)
+    float min_current;        ///< Minimum negative current (A)
     float max_speed_rpm;      ///< Maximum speed in RPM
     float acceleration_rate;  ///< Acceleration rate (RPM/s), 0 = disabled
     float target_speed_lpf_alpha; ///< LPF alpha for target speed (0.0-1.0), 0 = disabled, 1.0 = no filtering
@@ -127,8 +128,8 @@ public:
 
     /**
      * @brief Set target current for torque control
-     * @param current_a Target current in Amperes (0.0 to max_current)
-     *                  Clamped to [0, max_current] range
+     * @param current_a Target current in Amperes (min_current to max_current)
+     *                  Clamped to [min_current, max_current] range
      */
     void setCurrent(float current_a);
 
@@ -203,7 +204,7 @@ private:
     AdcInterface* adc_interface_;
 
     // Owned components
-    PidController pid_controller_;           // Speed controller (outer loop)
+    PidController pid_speed_controller_;     // Speed controller (outer loop)
     PidController current_controller_;       // Current controller (inner loop)
 
     // Configuration

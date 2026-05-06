@@ -11,7 +11,8 @@ extern "C" void HAL_TIM_MspPostInit(TIM_HandleTypeDef* htim);
 namespace libecu {
 
 Stm32Pwm::Stm32Pwm(void* htim)
-    : htim_(htim), frequency_(20000), period_(0), dead_time_ns_(100), enabled_(false) {
+    : htim_(htim), period_(0), dead_time_ns_(100), enabled_(false) {
+    frequency_ = 20000;
 }
 
 bool Stm32Pwm::initialize(uint32_t frequency, uint16_t dead_time_ns) {

@@ -27,11 +27,12 @@ struct PidParameters {
  */
 class PidController {
 public:
+    PidController() = default;
     /**
      * @brief Constructor
      * @param params PID parameters
      */
-    explicit PidController(const PidParameters& params);
+    PidController(const PidParameters& params);
 
     /**
      * @brief Reset PID controller state

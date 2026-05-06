@@ -29,7 +29,6 @@ public:
 
 private:
     void* htim_;
-    uint32_t frequency_;
     uint32_t period_;
     uint16_t dead_time_ns_;
     bool enabled_;

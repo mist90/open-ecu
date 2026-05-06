@@ -15,10 +15,11 @@
 
 #define PERIODIC_TIMER_FREQ 1000
 #define PWM_TIMER_FREQ 40000
-#define BLDC_NUM_POLES 40 // 8
-#define BLDC_MAX_CURRENT 18.0f // 6.0f
-#define BLDC_MAX_SPEED 20.0f // 150.0f
-#define BLDC_MAX_ACCELERATION 1.0f // 100.0f
+#define BLDC_NUM_POLES  8
+#define BLDC_MAX_CURRENT  6.0f
+#define BLDC_MIN_CURRENT  -4.0f
+#define BLDC_MAX_SPEED  150.0f
+#define BLDC_MAX_ACCELERATION  100.0f
 
 ADC_HandleTypeDef hadc1;
 ADC_HandleTypeDef hadc2;
@@ -191,42 +192,18 @@ int main(void)
     // Using 8 pole pairs for commutation
     commutation_controller = new libecu::CommutationController(pwm_driver, hall_sensor, BLDC_NUM_POLES);
 
-    // Speed PID controller parameters for VOLTAGE_MODE (outputs duty cycle 0.0-1.0)
-    libecu::PidParameters speed_pid_params_voltage;
-    speed_pid_params_voltage.kp = 0.01f;
-    speed_pid_params_voltage.ki = 0.1f;
-    speed_pid_params_voltage.kd = 0.0f;
-    speed_pid_params_voltage.max_output = 1.0f;    // Max duty cycle
-    speed_pid_params_voltage.min_output = 0.0f;
-
-    // Speed PID controller parameters for CURRENT_MODE
-    libecu::PidParameters speed_pid_params_current;
-    speed_pid_params_current.kp = 0.05f;     // Higher gain for current control
-    speed_pid_params_current.ki = 1.0f;     // Different integral for current
-    speed_pid_params_current.kd = 0.0f;
-    speed_pid_params_current.max_output = BLDC_MAX_CURRENT;    // Max current (A)
-    speed_pid_params_current.min_output = 0.0f;
-
-    // Current PID controller parameters for CURRENT_MODE (outputs duty cycle 0..1.0)
-    libecu::PidParameters current_pid_params;
-    current_pid_params.kp = 0.1f;
-    current_pid_params.ki = 50.0f;
-    current_pid_params.kd = 0.0f;
-    current_pid_params.max_output = 1.0f;
-    current_pid_params.min_output = 0.0f;
-    current_pid_params.sample_time_s = 1.0f / PWM_TIMER_FREQ;
-
     libecu::MotorControlParams motor_params;
     motor_params.max_duty_cycle = 0.9f;
     motor_params.max_current = BLDC_MAX_CURRENT;
+    motor_params.min_current = BLDC_MIN_CURRENT;
     motor_params.max_speed_rpm = BLDC_MAX_SPEED;
     motor_params.acceleration_rate = BLDC_MAX_ACCELERATION;  // RPM/s
     motor_params.target_speed_lpf_alpha = 0.1f;  // LPF smoothing for noisy potentiometer input
     motor_params.measured_speed_lpf_alpha = 0.1f; // LPF smoothing for noisy velocity measurement
     motor_params.control_frequency = PERIODIC_TIMER_FREQ;
-    motor_params.pid_voltage_mode = speed_pid_params_voltage;
-    motor_params.pid_current_mode = speed_pid_params_current;
-    motor_params.pid_current_regulator = current_pid_params;
+    motor_params.pid_voltage_mode = {0.01f, 0.1f}; // Speed PID controller parameters for VOLTAGE_MODE (outputs duty cycle 0.0-1.0)
+    motor_params.pid_current_mode = {0.05f, 1.0f}; // Speed PID controller parameters for CURRENT_MODE (outputs current from negative to positive values)
+    motor_params.pid_current_regulator = {0.1f, 50.0f}; // Current PID controller parameters for CURRENT_MODE (outputs duty cycle 0..1.0)
     motor_params.useInverseCommTable = false;
 
     motor_controller = new libecu::BldcController(
