@@ -10,7 +10,7 @@ extern "C" void HAL_TIM_MspPostInit(TIM_HandleTypeDef* htim);
 
 namespace libecu {
 
-Stm32Pwm::Stm32Pwm(void* htim)
+Stm32Pwm::Stm32Pwm(void* htim) noexcept
     : htim_(htim), period_(0), dead_time_ns_(100), enabled_(false) {
     frequency_ = 20000;
 }
@@ -230,7 +230,7 @@ void Stm32Pwm::enable(bool enable) {
     }
 }
 
-uint32_t Stm32Pwm::getTimChannel(PwmChannel channel) {
+uint32_t Stm32Pwm::getTimChannel(PwmChannel channel) noexcept {
     switch (channel) {
         case PwmChannel::PHASE_U: return TIM_CHANNEL_1;
         case PwmChannel::PHASE_V: return TIM_CHANNEL_2;
@@ -239,7 +239,7 @@ uint32_t Stm32Pwm::getTimChannel(PwmChannel channel) {
     }
 }
 
-uint32_t Stm32Pwm::calculateCompareValue(float duty_cycle) {
+uint32_t Stm32Pwm::calculateCompareValue(float duty_cycle) noexcept {
     uint32_t compare_value = static_cast<uint32_t>(duty_cycle * period_);
     // Limit to 95% to ensure proper PWM operation
     uint32_t max_value = static_cast<uint32_t>(period_ * 0.95f);

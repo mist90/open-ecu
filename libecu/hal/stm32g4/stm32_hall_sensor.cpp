@@ -20,7 +20,7 @@ const uint8_t Stm32HallSensor::POSITION_TABLE[8] = {
     0xFF     // 111
 };
 
-Stm32HallSensor::Stm32HallSensor(const HallGpioConfig& config)
+Stm32HallSensor::Stm32HallSensor(const HallGpioConfig& config) noexcept
     : config_(config) {
 }
 
@@ -38,7 +38,7 @@ uint8_t Stm32HallSensor::getPosition() {
     return POSITION_TABLE[state & 0x07];
 }
 
-bool Stm32HallSensor::readGpioPin(void* port, uint16_t pin) {
+bool Stm32HallSensor::readGpioPin(void* port, uint16_t pin) noexcept {
     return HAL_GPIO_ReadPin(static_cast<GPIO_TypeDef*>(port), pin) == GPIO_PIN_SET;
 }
 

@@ -21,11 +21,11 @@ namespace libecu {
  */
 class CriticalSection {
 public:
-    CriticalSection() {
+    CriticalSection() noexcept {
         disable_interrupts();
     }
 
-    ~CriticalSection() {
+    ~CriticalSection() noexcept {
         enable_interrupts();
     }
 

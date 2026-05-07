@@ -74,13 +74,13 @@ public:
      * @brief Set all phases to neutral (50% duty cycle)
      * Used for motor startup and balanced operation
      */
-    virtual void setNeutral() {
+    virtual void setNeutral() noexcept {
         setChannelState(PwmChannel::PHASE_U, PwmState::OFF, 0.0f);
         setChannelState(PwmChannel::PHASE_V, PwmState::OFF, 0.0f);
         setChannelState(PwmChannel::PHASE_W, PwmState::OFF, 0.0f);
     }
 
-    uint32_t getFrequency() {
+    uint32_t getFrequency() noexcept {
         return frequency_;
     }
 protected:

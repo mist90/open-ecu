@@ -8,7 +8,7 @@
 
 namespace libecu {
 
-PidController::PidController(const PidParameters& params)
+PidController::PidController(const PidParameters& params) noexcept
     : params_(params)
     , error_(0.0f)
     , previous_error_(0.0f)
@@ -18,7 +18,7 @@ PidController::PidController(const PidParameters& params)
 {
 }
 
-void PidController::reset()
+void PidController::reset() noexcept
 {
     error_ = 0.0f;
     previous_error_ = 0.0f;
@@ -27,7 +27,7 @@ void PidController::reset()
     output_ = 0.0f;
 }
 
-float PidController::update(float setpoint, float feedback, float dt)
+float PidController::update(float setpoint, float feedback, float dt) noexcept
 {
     error_ = setpoint - feedback;
 
@@ -56,19 +56,19 @@ float PidController::update(float setpoint, float feedback, float dt)
     return output_;
 }
 
-float PidController::update(float setpoint, float feedback)
+float PidController::update(float setpoint, float feedback) noexcept
 {
     return update(setpoint, feedback, params_.sample_time_s);
 }
 
-void PidController::setParameters(const PidParameters& params)
+void PidController::setParameters(const PidParameters& params) noexcept
 {
     params_ = params;
 
     integral_ = clamp(integral_, params_.min_output, params_.max_output);
 }
 
-float PidController::clamp(float value, float min_val, float max_val)
+float PidController::clamp(float value, float min_val, float max_val) noexcept
 {
     return std::max(min_val, std::min(value, max_val));
 }

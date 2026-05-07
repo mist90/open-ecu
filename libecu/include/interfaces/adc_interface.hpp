@@ -48,7 +48,7 @@ public:
      * @param calibration Sensor calibration parameters
      * @return true if initialization successful
      */
-    bool initialize(const CurrentSensorCalibration& calibration) {
+    bool initialize(const CurrentSensorCalibration& calibration) noexcept {
         calibration_ = calibration;
 
         // ADC calibration and injected channel startup is done in main.cpp
@@ -70,7 +70,7 @@ public:
      * @param channel PWM channel to use correct offset
      * @return Current in Amperes
      */
-    float convertAdcToCurrent(uint32_t adc_raw, PwmChannel channel) {
+    float convertAdcToCurrent(uint32_t adc_raw, PwmChannel channel) noexcept {
         // Convert ADC raw value to voltage
         float adc_max_value = (1 << calibration_.adc_resolution_bits) - 1;  // e.g., 4095 for 12-bit
         float v_adc = (adc_raw * calibration_.adc_reference_voltage) / adc_max_value;
@@ -109,7 +109,7 @@ public:
      * @param channel Phase channel (U/V/W)
      * @return Phase current in Amperes (negative = reverse direction)
      */
-    float readPhaseCurrent(PwmChannel channel) {
+    float readPhaseCurrent(PwmChannel channel) noexcept {
         return convertAdcToCurrent(getRawAdcValue(channel), channel);
     }
 
@@ -119,7 +119,7 @@ public:
      * @param i_v Reference to store Phase V current (A)
      * @param i_w Reference to store Phase W current (A)
      */
-    void readAllCurrents(float& i_u, float& i_v, float& i_w) {
+    void readAllCurrents(float& i_u, float& i_v, float& i_w) noexcept {
         i_u = convertAdcToCurrent(getRawAdcValue(PwmChannel::PHASE_U), PwmChannel::PHASE_U);
         i_v = convertAdcToCurrent(getRawAdcValue(PwmChannel::PHASE_V), PwmChannel::PHASE_V);
         i_w = convertAdcToCurrent(getRawAdcValue(PwmChannel::PHASE_W), PwmChannel::PHASE_W);
@@ -130,7 +130,7 @@ public:
      * Measures ADC reading when motor is stationary to determine V_offset
      * @return true if calibration successful
      */
-    bool calibrateZeroOffset() {
+    bool calibrateZeroOffset() noexcept {
         if (!initialized_) {
             return false;
         }
@@ -173,7 +173,7 @@ public:
      * @brief Get current calibration parameters
      * @return Current calibration struct
      */
-    const CurrentSensorCalibration& getCalibration() const {
+    const CurrentSensorCalibration& getCalibration() const noexcept {
         return calibration_;
     }
 

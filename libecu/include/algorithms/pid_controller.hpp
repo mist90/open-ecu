@@ -27,17 +27,17 @@ struct PidParameters {
  */
 class PidController {
 public:
-    PidController() = default;
+    PidController() noexcept = default;
     /**
      * @brief Constructor
      * @param params PID parameters
      */
-    PidController(const PidParameters& params);
+    explicit PidController(const PidParameters& params) noexcept;
 
     /**
      * @brief Reset PID controller state
      */
-    void reset();
+    void reset() noexcept;
 
     /**
      * @brief Update PID controller
@@ -46,7 +46,7 @@ public:
      * @param dt Time step in seconds
      * @return Control output
      */
-    float update(float setpoint, float feedback, float dt);
+    float update(float setpoint, float feedback, float dt) noexcept;
 
     /**
      * @brief Update PID controller with fixed sample time
@@ -56,13 +56,13 @@ public:
      *
      * Uses sample_time_s from parameters. Suitable for fixed-frequency loops.
      */
-    float update(float setpoint, float feedback);
+    float update(float setpoint, float feedback) noexcept;
 
     /**
      * @brief Set PID parameters
      * @param params New PID parameters
      */
-    void setParameters(const PidParameters& params);
+    void setParameters(const PidParameters& params) noexcept;
 
     /**
      * @brief Get current PID parameters
@@ -110,7 +110,7 @@ private:
      * @param max_val Maximum value
      * @return Clamped value
      */
-    float clamp(float value, float min_val, float max_val);
+    float clamp(float value, float min_val, float max_val) noexcept;
 };
 
 } // namespace libecu

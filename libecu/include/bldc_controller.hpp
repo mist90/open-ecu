@@ -98,24 +98,24 @@ public:
         CommutationController& commutation_controller,
         const MotorControlParams& params,
         AdcInterface* adc_interface = nullptr
-    );
+    ) noexcept;
 
     /**
      * @brief Initialize motor controller
      * @return true if initialization successful
      */
-    bool initialize();
+    bool initialize() noexcept;
 
     /**
      * @brief Update motor control (call at control frequency)
      */
-    void update();
+    void update() noexcept;
 
     /**
      * @brief Set target speed for closed-loop control
      * @param speed_rps Target speed in RPS
      */
-    void setTargetSpeed(float speed_rps);
+    void setTargetSpeed(float speed_rps) noexcept;
 
     /**
      * @brief Set duty cycle for open-loop control
@@ -123,48 +123,48 @@ public:
      *                   0.0 = 0V output (no torque)
      *                   1.0 = maximum voltage output (full torque)
      */
-    void setDutyCycle(float duty_cycle);
+    void setDutyCycle(float duty_cycle) noexcept;
 
     /**
      * @brief Set target current for torque control
      * @param current_a Target current in Amperes (min_current to max_current)
      *                  Clamped to [min_current, max_current] range
      */
-    void setCurrent(float current_a);
+    void setCurrent(float current_a) noexcept;
 
     /**
      * @brief Set control mode (mechanical/commutation strategy)
      * @param mode Control mode
      */
-    void setControlMode(ControlMode mode);
+    void setControlMode(ControlMode mode) noexcept;
 
     /**
      * @brief Set electric mode (electrical control strategy)
      * @param mode Electric mode
      */
-    void setElectricMode(ElectricMode mode);
+    void setElectricMode(ElectricMode mode) noexcept;
 
     /**
      * @brief Set motor drive mode
      * @param mode Rotation mode
      */
-    void setDriveMode(DriveMode mode);
+    void setDriveMode(DriveMode mode) noexcept;
 
     /**
      * @brief Start motor
      */
-    void start();
+    void start() noexcept;
 
     /**
      * @brief Stop motor
      */
-    void stop();
+    void stop() noexcept;
 
     /**
      * @brief Get motor status
      * @return Current motor status
      */
-    MotorStatus getStatus() const;
+    MotorStatus getStatus() const noexcept;
 
     /**
      * @brief Hall sensor interrupt handler (called from GPIO interrupt context)
@@ -172,25 +172,25 @@ public:
      * It captures the current Hall sensor state and timestamp for speed calculation.
      * The hall state is read internally via CommutationController::getCurrentPosition().
      */
-    void hallSensorInterruptHandler();
+    void hallSensorInterruptHandler() noexcept;
 
     /**
      * @brief PWM interrupt handler for high-frequency current control loop (20kHz)
      * Call this from TIM1 update interrupt when current control mode is active.
      * This runs the inner current control loop at PWM frequency.
      */
-    void pwmInterruptHandler();
+    void pwmInterruptHandler() noexcept;
 
 #ifdef DEBUG_PWM_ISR
     /**
      * @brief Process debug buffer output (call from main loop)
      * Outputs one sample per call to avoid blocking
      */
-    void processDebugOutput();
+    void processDebugOutput() noexcept;
 #endif
 
 private:
-    void moveNextPosition(uint8_t position);
+    void moveNextPosition(uint8_t position) noexcept;
     // Component references
     PwmInterface& pwm_interface_;
     HallInterface& hall_interface_;
@@ -252,7 +252,7 @@ private:
      * @brief Calculate motor speed from Hall sensor transitions
      * @return Speed in RPS
      */
-    float calculateSpeed();
+    float calculateSpeed() noexcept;
 
     /**
      * @brief Apply acceleration/deceleration limits to target speed
@@ -264,20 +264,20 @@ private:
      * @param dt Time step in seconds
      * @return Rate-limited target speed
      */
-    float applyAccelerationLimit(float target_speed, float dt);
+    float applyAccelerationLimit(float target_speed, float dt) noexcept;
 
     /**
      * @brief Get current from active conducting phase based on commutation state
      * @return Measured phase current in Amperes
      */
-    float getCurrentFromActivePhase();
+    float getCurrentFromActivePhase() noexcept;
 
     /**
      * @brief Calculate step interval from target speed for open-loop control
      * @param speed_rps Target speed in RPS
      * @return Step interval in microseconds
      */
-    uint32_t calculateOpenLoopStepInterval(float speed_rps);
+    uint32_t calculateOpenLoopStepInterval(float speed_rps) noexcept;
 };
 
 } // namespace libecu

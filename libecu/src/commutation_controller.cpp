@@ -17,7 +17,7 @@ const CommutationStep CommutationController::COMMUTATION_TABLE[6] = {
     {PwmState::OFF, PwmState::DOWN, PwmState::UP},   // 5
 };
 
-CommutationController::CommutationController(PwmInterface& pwm_interface, HallInterface& hall_interface, uint8_t num_poles)
+CommutationController::CommutationController(PwmInterface& pwm_interface, HallInterface& hall_interface, uint8_t num_poles) noexcept
     : pwm_interface_(pwm_interface)
     , hall_interface_(hall_interface)
     , current_step_(0)
@@ -25,7 +25,7 @@ CommutationController::CommutationController(PwmInterface& pwm_interface, HallIn
 {
 }
 
-bool CommutationController::initialize(uint32_t pwm_frequency)
+bool CommutationController::initialize(uint32_t pwm_frequency) noexcept
 {
     // Initialize PWM with dead-time (100ns is typical for power MOSFETs)
     if (!pwm_interface_.initialize(pwm_frequency, 100)) {
@@ -38,12 +38,12 @@ bool CommutationController::initialize(uint32_t pwm_frequency)
     return true;
 }
 
-uint8_t CommutationController::getCurrentPosition()
+uint8_t CommutationController::getCurrentPosition() noexcept
 {
     return hall_interface_.getPosition();
 }
 
-bool CommutationController::update(uint8_t position, float duty_cycle)
+bool CommutationController::update(uint8_t position, float duty_cycle) noexcept
 {
     if (position > 5) {
         return false;
@@ -54,7 +54,7 @@ bool CommutationController::update(uint8_t position, float duty_cycle)
     return true;
 }
 
-void CommutationController::applyCommutationStep(const CommutationStep& step, float duty_cycle)
+void CommutationController::applyCommutationStep(const CommutationStep& step, float duty_cycle) noexcept
 {
     // Cache phase states for fast access
     cached_phase_u_state_ = step.phase_u;
@@ -67,7 +67,7 @@ void CommutationController::applyCommutationStep(const CommutationStep& step, fl
     pwm_interface_.setChannelState(PwmChannel::PHASE_W, step.phase_w, duty_cycle);
 }
 
-void CommutationController::updateDutyCycle(float duty_cycle)
+void CommutationController::updateDutyCycle(float duty_cycle) noexcept
 {
     // Update duty cycle without changing phase states
     // Uses cached phase states from last commutation update
@@ -78,7 +78,7 @@ void CommutationController::updateDutyCycle(float duty_cycle)
     pwm_interface_.setChannelState(PwmChannel::PHASE_W, cached_phase_w_state_, duty_cycle);
 }
 
-PwmState CommutationController::getPhaseState(PwmChannel channel) const
+PwmState CommutationController::getPhaseState(PwmChannel channel) const noexcept
 {
     switch (channel) {
         case PwmChannel::PHASE_U:

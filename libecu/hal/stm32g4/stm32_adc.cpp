@@ -19,10 +19,10 @@ extern OPAMP_HandleTypeDef hopamp3;
 
 namespace libecu {
 
-Stm32Adc::Stm32Adc() {
+Stm32Adc::Stm32Adc() noexcept {
 }
 
-bool Stm32Adc::initializeHardware() {
+bool Stm32Adc::initializeHardware() noexcept {
     // Initialize OPAMPs first (analog front-end)
     initOPAMP1();
     initOPAMP2();
@@ -67,7 +67,7 @@ bool Stm32Adc::initializeHardware() {
     return true;
 }
 
-void Stm32Adc::initADC1() {
+void Stm32Adc::initADC1() noexcept {
     ADC_MultiModeTypeDef multimode = {0};
     ADC_ChannelConfTypeDef sConfig = {0};
     ADC_InjOversamplingTypeDef sConfigOversampling = {.Ratio = ADC_OVERSAMPLING_RATIO_2, .RightBitShift = ADC_RIGHTBITSHIFT_1};
@@ -142,7 +142,7 @@ void Stm32Adc::initADC1() {
     }
 }
 
-void Stm32Adc::initADC2() {
+void Stm32Adc::initADC2() noexcept {
     /** Common config
      */
     hadc2.Instance = ADC2;
@@ -200,7 +200,7 @@ void Stm32Adc::initADC2() {
     }
 }
 
-void Stm32Adc::initOPAMP1() {
+void Stm32Adc::initOPAMP1() noexcept {
     hopamp1.Instance = OPAMP1;
     hopamp1.Init.PowerMode = OPAMP_POWERMODE_NORMALSPEED;
     hopamp1.Init.Mode = OPAMP_PGA_MODE;
@@ -221,7 +221,7 @@ void Stm32Adc::initOPAMP1() {
     }
 }
 
-void Stm32Adc::initOPAMP2() {
+void Stm32Adc::initOPAMP2() noexcept {
     hopamp2.Instance = OPAMP2;
     hopamp2.Init.PowerMode = OPAMP_POWERMODE_NORMALSPEED;
     hopamp2.Init.Mode = OPAMP_PGA_MODE;
@@ -242,7 +242,7 @@ void Stm32Adc::initOPAMP2() {
     }
 }
 
-void Stm32Adc::initOPAMP3() {
+void Stm32Adc::initOPAMP3() noexcept {
     hopamp3.Instance = OPAMP3;
     hopamp3.Init.PowerMode = OPAMP_POWERMODE_NORMALSPEED;
     hopamp3.Init.Mode = OPAMP_PGA_MODE;

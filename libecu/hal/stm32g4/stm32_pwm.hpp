@@ -19,7 +19,7 @@ public:
      * @brief Constructor
      * @param htim Timer handle (TIM1) - pass as void* to avoid header dependencies
      */
-    explicit Stm32Pwm(void* htim);
+    explicit Stm32Pwm(void* htim) noexcept;
 
     // PwmInterface implementation
     bool initialize(uint32_t frequency, uint16_t dead_time_ns) override;
@@ -37,14 +37,14 @@ private:
      * @param channel PWM channel
      * @return TIM channel constant
      */
-    uint32_t getTimChannel(PwmChannel channel);
+    uint32_t getTimChannel(PwmChannel channel) noexcept;
 
     /**
      * @brief Calculate duty cycle value from percentage
      * @param duty_cycle Duty cycle (0.0 to 1.0)
      * @return Timer compare value
      */
-    uint32_t calculateCompareValue(float duty_cycle);
+    uint32_t calculateCompareValue(float duty_cycle) noexcept;
 };
 
 } // namespace libecu

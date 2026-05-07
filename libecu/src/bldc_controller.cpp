@@ -27,7 +27,7 @@ BldcController::BldcController(
     HallInterface& hall_interface,
     CommutationController& commutation_controller,
     const MotorControlParams& params,
-    AdcInterface* adc_interface)
+    AdcInterface* adc_interface) noexcept
     : pwm_interface_(pwm_interface)
     , hall_interface_(hall_interface)
     , commutation_controller_(commutation_controller)
@@ -80,12 +80,12 @@ BldcController::BldcController(
     params_.pid_current_regulator.sample_time_s = 1.0f / float(pwm_interface_.getFrequency());
     params_.pid_current_regulator.min_output = 0.0f;
     params_.pid_current_regulator.max_output = 1.0f;
-    current_controller_ = params_.pid_current_regulator;
 
+    current_controller_.setParameters(params_.pid_current_regulator);
     pid_speed_controller_.setParameters(params_.pid_voltage_mode);
 }
 
-bool BldcController::initialize()
+bool BldcController::initialize() noexcept
 {
     // Initialize commutation controller (includes PWM and Hall sensor)
     if (!commutation_controller_.initialize()) {
@@ -99,7 +99,7 @@ bool BldcController::initialize()
     return true;
 }
 
-void BldcController::update()
+void BldcController::update() noexcept
 {
     float speed_rps = calculateSpeed();
 
@@ -218,7 +218,7 @@ void BldcController::update()
     }
 }
 
-void BldcController::setTargetSpeed(float speed_rps)
+void BldcController::setTargetSpeed(float speed_rps) noexcept
 {
     CriticalSection cs;
 
@@ -230,7 +230,7 @@ void BldcController::setTargetSpeed(float speed_rps)
     status_.target_speed_rps = std::min(std::abs(speed_rps), params_.max_speed_rps);
 }
 
-void BldcController::setDutyCycle(float duty_cycle)
+void BldcController::setDutyCycle(float duty_cycle) noexcept
 {
     CriticalSection cs;
     if (dmode_ == DriveMode::NEUTRAL)
@@ -240,7 +240,7 @@ void BldcController::setDutyCycle(float duty_cycle)
     status_.duty_cycle = std::max(0.0f, std::min(duty_cycle, params_.max_duty_cycle));
 }
 
-void BldcController::setCurrent(float current_a)
+void BldcController::setCurrent(float current_a) noexcept
 {
     CriticalSection cs;
     if (dmode_ == DriveMode::NEUTRAL)
@@ -248,7 +248,7 @@ void BldcController::setCurrent(float current_a)
     status_.target_current = std::max(params_.min_current, std::min(current_a, params_.max_current));
 }
 
-void BldcController::setControlMode(ControlMode mode)
+void BldcController::setControlMode(ControlMode mode) noexcept
 {
     CriticalSection cs;
     if (status_.control_mode != mode) {
@@ -262,7 +262,7 @@ void BldcController::setControlMode(ControlMode mode)
     }
 }
 
-void BldcController::setElectricMode(ElectricMode mode)
+void BldcController::setElectricMode(ElectricMode mode) noexcept
 {
     CriticalSection cs;
     status_.electric_mode = mode;
@@ -278,7 +278,7 @@ void BldcController::setElectricMode(ElectricMode mode)
     pid_speed_controller_.reset();
 }
 
-void BldcController::setDriveMode(DriveMode mode)
+void BldcController::setDriveMode(DriveMode mode) noexcept
 {
     CriticalSection cs;
     dmode_ = mode;
@@ -294,7 +294,7 @@ void BldcController::setDriveMode(DriveMode mode)
     }
 }
 
-void BldcController::start()
+void BldcController::start() noexcept
 {
     status_.is_running = true;
     pwm_interface_.enable(true);
@@ -316,7 +316,7 @@ void BldcController::start()
     limited_target_speed_ = 0.0f;
 }
 
-void BldcController::stop()
+void BldcController::stop() noexcept
 {
     status_.is_running = false;
     status_.duty_cycle = 0.0f;
@@ -341,12 +341,12 @@ void BldcController::stop()
     last_pid_update_time_us_ = 0;
 }
 
-MotorStatus BldcController::getStatus() const
+MotorStatus BldcController::getStatus() const noexcept
 {
     return status_;
 }
 
-float BldcController::calculateSpeed()
+float BldcController::calculateSpeed() noexcept
 {
     /**
      * Improved speed measurement algorithm with extrapolation:
@@ -471,7 +471,7 @@ float BldcController::calculateSpeed()
     return 0.0f;
 }
 
-float BldcController::applyAccelerationLimit(float target_speed, float dt)
+float BldcController::applyAccelerationLimit(float target_speed, float dt) noexcept
 {
     // Stage 1: LPF to smooth noisy analog input
     float alpha = params_.target_speed_lpf_alpha;
@@ -501,7 +501,7 @@ float BldcController::applyAccelerationLimit(float target_speed, float dt)
     return limited_target_speed_;
 }
 
-uint32_t BldcController::calculateOpenLoopStepInterval(float speed_rps)
+uint32_t BldcController::calculateOpenLoopStepInterval(float speed_rps) noexcept
 {
     // step_interval_us = 1,000,000 / (speed_rps / 60 * num_poles * 6)
     // = 1,000,000 * 60 / (speed_rps * num_poles * 6)
@@ -513,7 +513,7 @@ uint32_t BldcController::calculateOpenLoopStepInterval(float speed_rps)
     return static_cast<uint32_t>(10000000.0f / (speed_rps * num_poles * BLDC_NUM_PHASES));
 }
 
-void BldcController::hallSensorInterruptHandler()
+void BldcController::hallSensorInterruptHandler() noexcept
 {
     /**
      * Hall sensor interrupt handler - called from GPIO interrupt context
@@ -573,7 +573,7 @@ void BldcController::hallSensorInterruptHandler()
     moveNextPosition(hall_state);
 }
 
-void BldcController::moveNextPosition(uint8_t position)
+void BldcController::moveNextPosition(uint8_t position) noexcept
 {
     CriticalSection cs;
     uint8_t next_position = (dmode_ == DriveMode::FORWARD && params_.useInverseCommTable) ? (position + 1) % 6 : (position + 5) % 6;
@@ -588,7 +588,7 @@ void BldcController::moveNextPosition(uint8_t position)
     }
 }
 
-void BldcController::pwmInterruptHandler() {
+void BldcController::pwmInterruptHandler() noexcept {
     // Read shared data atomically (avoid torn reads from SysTick interrupt)
     ElectricMode electric_mode;
     float target_current;
@@ -642,7 +642,7 @@ void BldcController::pwmInterruptHandler() {
 #endif
 }
 
-float BldcController::getCurrentFromActivePhase() {
+float BldcController::getCurrentFromActivePhase() noexcept {
     if (!adc_interface_) {
         return 0.0f;
     }
@@ -669,7 +669,7 @@ float BldcController::getCurrentFromActivePhase() {
 }
 
 #ifdef DEBUG_PWM_ISR
-void BldcController::processDebugOutput() {
+void BldcController::processDebugOutput() noexcept {
     // Check if buffer is ready for reading
     if (!debug_buffer_ready_) {
         return;

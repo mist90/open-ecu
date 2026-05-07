@@ -21,7 +21,7 @@ public:
     /**
      * @brief Constructor
      */
-    explicit Stm32Adc();
+    explicit Stm32Adc() noexcept;
 
     /**
      * @brief Initialize ADC and OPAMP hardware
@@ -31,7 +31,7 @@ public:
      *
      * @return true if initialization successful, false otherwise
      */
-    bool initializeHardware();
+    bool initializeHardware() noexcept;
 
     // AdcInterface implementation
     uint32_t getRawAdcValue(PwmChannel channel) override;
@@ -42,28 +42,28 @@ private:
      * Configures ADC1 with injected channel for Phase U (OPAMP1)
      * and regular channel for potentiometer
      */
-    void initADC1();
+    void initADC1() noexcept;
 
     /**
      * @brief Initialize ADC2 peripheral
      * Configures ADC2 with injected channels for Phase V (OPAMP2) and Phase W (OPAMP3)
      */
-    void initADC2();
+    void initADC2() noexcept;
 
     /**
      * @brief Initialize OPAMP1 peripheral (Phase U current amplifier)
      */
-    void initOPAMP1();
+    void initOPAMP1() noexcept;
 
     /**
      * @brief Initialize OPAMP2 peripheral (Phase V current amplifier)
      */
-    void initOPAMP2();
+    void initOPAMP2() noexcept;
 
     /**
      * @brief Initialize OPAMP3 peripheral (Phase W current amplifier)
      */
-    void initOPAMP3();
+    void initOPAMP3() noexcept;
 };
 
 } // namespace libecu

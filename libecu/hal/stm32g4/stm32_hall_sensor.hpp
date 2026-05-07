@@ -29,7 +29,7 @@ public:
      * @brief Constructor
      * @param config GPIO configuration
      */
-    explicit Stm32HallSensor(const HallGpioConfig& config);
+    explicit Stm32HallSensor(const HallGpioConfig& config) noexcept;
 
     // HallInterface implementation
     bool initialize() override;
@@ -47,7 +47,7 @@ private:
      * @param pin GPIO pin
      * @return Pin state (true/false)
      */
-    bool readGpioPin(void* port, uint16_t pin);
+    bool readGpioPin(void* port, uint16_t pin) noexcept;
 };
 
 } // namespace libecu
