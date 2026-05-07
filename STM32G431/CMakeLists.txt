@@ -58,7 +58,7 @@ string(REPLACE ";" " " CPU_PARAMS_STR "${CPU_PARAMETERS}")
 
 # Compiler flags
 set(CMAKE_C_FLAGS "${CPU_PARAMS_STR} -ffunction-sections -fdata-sections -Wall -fstack-usage")
-set(CMAKE_CXX_FLAGS "${CPU_PARAMS_STR} -ffunction-sections -fdata-sections -fno-exceptions -fno-rtti -fno-use-cxa-atexit -Wall -fstack-usage")
+set(CMAKE_CXX_FLAGS "${CPU_PARAMS_STR} -ffunction-sections -fdata-sections -fno-exceptions -fno-rtti -fno-use-cxa-atexit -fno-exceptions -Wall -fstack-usage")
 
 # Debug/Release specific flags
 set(CMAKE_C_FLAGS_DEBUG "-g3 -O0")
