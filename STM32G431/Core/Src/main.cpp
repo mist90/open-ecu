@@ -284,7 +284,7 @@ int main(void)
                         motor_controller->setDutyCycle(target_duty_cycle);
                     }
                 }
-                printf("%u->%u: RPS target:%.2f\tmeas:%.2f\tD:%.2f\tI:%.2f\n", status.measured_position, status.target_position,
+                printf("%u->%u: RPS target:% 6.2f  meas:% 6.2f  D:% 6.2f  I:% 6.2f\n", status.measured_position, status.target_position,
                                             status.target_speed_rps,
                                             status.current_speed_rps,
                                             status.duty_cycle,
