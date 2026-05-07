@@ -40,10 +40,9 @@ enum class ElectricMode : uint8_t {
  */
 enum class DriveMode : uint8_t {
     FORWARD = 0,
-    REVERSE = 1
-    // NEUTRAL = 2
+    REVERSE = 1,
+    NEUTRAL = 2
     // PARKING = 3
-    // BRAKE = 4
 };
 
 /**
@@ -160,11 +159,6 @@ public:
      * @brief Stop motor
      */
     void stop();
-
-    /**
-     * @brief Emergency stop
-     */
-    void emergencyStop();
 
     /**
      * @brief Get motor status

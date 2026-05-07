@@ -221,22 +221,30 @@ void BldcController::update()
 void BldcController::setTargetSpeed(float speed_rps)
 {
     CriticalSection cs;
+
+    if (dmode_ == DriveMode::NEUTRAL)
+        return;
+    if (speed_rps < 0.0f)
+        return;
     // Clamp to maximum speed
     status_.target_speed_rps = std::min(std::abs(speed_rps), params_.max_speed_rps);
-
-    // Set direction based on sign
-    dmode_ = (speed_rps >= 0.0f) ? DriveMode::FORWARD : DriveMode::REVERSE;
 }
 
 void BldcController::setDutyCycle(float duty_cycle)
 {
     CriticalSection cs;
+    if (dmode_ == DriveMode::NEUTRAL)
+        return;
+    if (duty_cycle < 0.0f)
+        return;
     status_.duty_cycle = std::max(0.0f, std::min(duty_cycle, params_.max_duty_cycle));
 }
 
 void BldcController::setCurrent(float current_a)
 {
     CriticalSection cs;
+    if (dmode_ == DriveMode::NEUTRAL)
+        return;
     status_.target_current = std::max(params_.min_current, std::min(current_a, params_.max_current));
 }
 
@@ -267,12 +275,23 @@ void BldcController::setElectricMode(ElectricMode mode)
         // CURRENT_MODE: PID outputs current (Amperes)
         pid_speed_controller_.setParameters(params_.pid_current_mode);
     }
+    pid_speed_controller_.reset();
 }
 
 void BldcController::setDriveMode(DriveMode mode)
 {
     CriticalSection cs;
     dmode_ = mode;
+    if (dmode_ == DriveMode::NEUTRAL) {
+        pwm_interface_.enable(false);
+        status_.target_speed_rps = 0.0f;
+        status_.duty_cycle = 0.0f;
+        status_.target_current = 0.0f;
+        pid_speed_controller_.reset();
+        current_controller_.reset();
+    } else {
+        pwm_interface_.enable(true);
+    }
 }
 
 void BldcController::start()
@@ -320,13 +339,6 @@ void BldcController::stop()
 
     // Reset PID timing
     last_pid_update_time_us_ = 0;
-}
-
-void BldcController::emergencyStop()
-{
-    status_.is_running = false;
-    status_.duty_cycle = 0.0f;
-    commutation_controller_.emergencyStop();
 }
 
 MotorStatus BldcController::getStatus() const
@@ -639,9 +651,9 @@ float BldcController::getCurrentFromActivePhase() {
     // In 6-step commutation, we want to read current from the DOWN phase (low-side conducting)
 
     // Get cached phase states from CommutationController
-    PwmState state_u = commutation_controller_.getCachedPhaseState(PwmChannel::PHASE_U);
-    PwmState state_v = commutation_controller_.getCachedPhaseState(PwmChannel::PHASE_V);
-    PwmState state_w = commutation_controller_.getCachedPhaseState(PwmChannel::PHASE_W);
+    PwmState state_u = commutation_controller_.getPhaseState(PwmChannel::PHASE_U);
+    PwmState state_v = commutation_controller_.getPhaseState(PwmChannel::PHASE_V);
+    PwmState state_w = commutation_controller_.getPhaseState(PwmChannel::PHASE_W);
 
     // Find the DOWN phase (low-side conducting)
     if (state_u == PwmState::DOWN) {

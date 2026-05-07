@@ -209,7 +209,7 @@ int main(void)
     motor_params.max_speed_rps = BLDC_MAX_SPEED;
     motor_params.acceleration_rate = BLDC_MAX_ACCELERATION;  // RPS/s
     motor_params.target_speed_lpf_alpha = 0.0f;  // LPF smoothing for noisy potentiometer input
-    motor_params.measured_speed_lpf_alpha = 0.1f; // LPF smoothing for noisy velocity measurement
+    motor_params.measured_speed_lpf_alpha = 0.5f; // LPF smoothing for noisy velocity measurement
     motor_params.control_frequency = PERIODIC_TIMER_FREQ;
     motor_params.pid_voltage_mode = {0.01f, 0.1f}; // Speed PID controller parameters for VOLTAGE_MODE (outputs duty cycle 0.0-1.0)
     motor_params.pid_current_mode = {0.05f, 1.0f}; // Speed PID controller parameters for CURRENT_MODE (outputs current from negative to positive values)
@@ -284,7 +284,7 @@ int main(void)
                         motor_controller->setDutyCycle(target_duty_cycle);
                     }
                 }
-                printf("%u->%u: %.2f %.2f %.2f %.2f\n", status.measured_position, status.target_position,
+                printf("%u->%u: RPS target:%.2f\tmeas:%.2f\tD:%.2f\tI:%.2f\n", status.measured_position, status.target_position,
                                             status.target_speed_rps,
                                             status.current_speed_rps,
                                             status.duty_cycle,

@@ -148,9 +148,11 @@ bool Stm32Pwm::initialize(uint32_t frequency, uint16_t dead_time_ns) {
 }
 
 void Stm32Pwm::setChannelState(PwmChannel channel, PwmState state, float duty_cycle) {
+    if (!enabled_)
+        return;
     // Clamp duty_cycle to valid range
     if (duty_cycle < 0.0f) duty_cycle = 0.0f;
-    if (duty_cycle > 1.0f) duty_cycle = 1.0f;
+    if (duty_cycle > 0.95f) duty_cycle = 0.95f;
 
     TIM_HandleTypeDef* tim_handle = static_cast<TIM_HandleTypeDef*>(htim_);
     TIM_TypeDef* tim_instance = (TIM_TypeDef*)tim_handle->Instance;
@@ -199,6 +201,9 @@ void Stm32Pwm::setChannelState(PwmChannel channel, PwmState state, float duty_cy
 }
 
 void Stm32Pwm::enable(bool enable) {
+    if (!(enable ^ enabled_))
+        return;
+
     enabled_ = enable;
 
     TIM_HandleTypeDef* tim_handle = static_cast<TIM_HandleTypeDef*>(htim_);
@@ -211,25 +216,18 @@ void Stm32Pwm::enable(bool enable) {
         HAL_TIMEx_PWMN_Start(tim_handle, TIM_CHANNEL_2);
         HAL_TIMEx_PWMN_Start(tim_handle, TIM_CHANNEL_3);
     } else {
-        emergencyStop();
+        HAL_TIM_PWM_Stop(tim_handle, TIM_CHANNEL_1);
+        HAL_TIM_PWM_Stop(tim_handle, TIM_CHANNEL_2);
+        HAL_TIM_PWM_Stop(tim_handle, TIM_CHANNEL_3);
+
+        HAL_TIMEx_PWMN_Stop(tim_handle, TIM_CHANNEL_1);
+        HAL_TIMEx_PWMN_Stop(tim_handle, TIM_CHANNEL_2);
+        HAL_TIMEx_PWMN_Stop(tim_handle, TIM_CHANNEL_3);
+
+        __HAL_TIM_SET_COMPARE(tim_handle, TIM_CHANNEL_1, 0);
+        __HAL_TIM_SET_COMPARE(tim_handle, TIM_CHANNEL_2, 0);
+        __HAL_TIM_SET_COMPARE(tim_handle, TIM_CHANNEL_3, 0);
     }
-}
-
-void Stm32Pwm::emergencyStop() {
-    enabled_ = false;
-
-    TIM_HandleTypeDef* tim_handle = static_cast<TIM_HandleTypeDef*>(htim_);
-    HAL_TIM_PWM_Stop(tim_handle, TIM_CHANNEL_1);
-    HAL_TIM_PWM_Stop(tim_handle, TIM_CHANNEL_2);
-    HAL_TIM_PWM_Stop(tim_handle, TIM_CHANNEL_3);
-
-    HAL_TIMEx_PWMN_Stop(tim_handle, TIM_CHANNEL_1);
-    HAL_TIMEx_PWMN_Stop(tim_handle, TIM_CHANNEL_2);
-    HAL_TIMEx_PWMN_Stop(tim_handle, TIM_CHANNEL_3);
-
-    __HAL_TIM_SET_COMPARE(tim_handle, TIM_CHANNEL_1, 0);
-    __HAL_TIM_SET_COMPARE(tim_handle, TIM_CHANNEL_2, 0);
-    __HAL_TIM_SET_COMPARE(tim_handle, TIM_CHANNEL_3, 0);
 }
 
 uint32_t Stm32Pwm::getTimChannel(PwmChannel channel) {

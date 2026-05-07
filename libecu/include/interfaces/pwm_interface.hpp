@@ -71,11 +71,6 @@ public:
     virtual void enable(bool enable) = 0;
 
     /**
-     * @brief Emergency stop - immediately disable all outputs
-     */
-    virtual void emergencyStop() = 0;
-
-    /**
      * @brief Set all phases to neutral (50% duty cycle)
      * Used for motor startup and balanced operation
      */

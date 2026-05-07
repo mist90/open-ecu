@@ -53,11 +53,6 @@ public:
     bool update(uint8_t position, float duty_cycle);
 
     /**
-     * @brief Emergency stop motor
-     */
-    void emergencyStop();
-
-    /**
      * @brief Get current motor position (0-5 range)
      * @return Current motor position as step index (0-5), or 0xFF if invalid
      */
@@ -74,13 +69,7 @@ public:
      * @param channel PWM channel
      * @return Cached phase state
      */
-    PwmState getCachedPhaseState(PwmChannel channel) const;
-
-    /**
-     * @brief Check if motor is running
-     * @return true if motor is running
-     */
-    bool isRunning() const { return is_running_; }
+    PwmState getPhaseState(PwmChannel channel) const;
 
     /**
      * @brief Get number of motor pole pairs
@@ -93,7 +82,6 @@ private:
     HallInterface& hall_interface_;
 
     uint8_t current_step_;
-    bool is_running_;
     uint8_t num_poles_;  ///< Number of motor pole pairs
 
     // Cached phase states for fast access (updated in update())

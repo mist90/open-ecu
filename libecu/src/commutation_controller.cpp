@@ -21,7 +21,6 @@ CommutationController::CommutationController(PwmInterface& pwm_interface, HallIn
     : pwm_interface_(pwm_interface)
     , hall_interface_(hall_interface)
     , current_step_(0)
-    , is_running_(false)
     , num_poles_(num_poles)
 {
 }
@@ -52,22 +51,11 @@ bool CommutationController::update(uint8_t position, float duty_cycle)
 
     applyCommutationStep(COMMUTATION_TABLE[position], duty_cycle);
 
-    is_running_ = true;
     return true;
-}
-
-void CommutationController::emergencyStop()
-{
-    pwm_interface_.emergencyStop();
-    is_running_ = false;
-    current_step_ = 0;
 }
 
 void CommutationController::applyCommutationStep(const CommutationStep& step, float duty_cycle)
 {
-    if (duty_cycle < 0.0f) duty_cycle = 0.0f;
-    if (duty_cycle > 1.0f) duty_cycle = 0.9f;
-
     // Cache phase states for fast access
     cached_phase_u_state_ = step.phase_u;
     cached_phase_v_state_ = step.phase_v;
@@ -84,16 +72,13 @@ void CommutationController::updateDutyCycle(float duty_cycle)
     // Update duty cycle without changing phase states
     // Uses cached phase states from last commutation update
 
-    if (duty_cycle < 0.0f) duty_cycle = 0.0f;
-    if (duty_cycle > 1.0f) duty_cycle = 0.9f;
-
     // Apply duty cycle to existing phase states (no state change)
     pwm_interface_.setChannelState(PwmChannel::PHASE_U, cached_phase_u_state_, duty_cycle);
     pwm_interface_.setChannelState(PwmChannel::PHASE_V, cached_phase_v_state_, duty_cycle);
     pwm_interface_.setChannelState(PwmChannel::PHASE_W, cached_phase_w_state_, duty_cycle);
 }
 
-PwmState CommutationController::getCachedPhaseState(PwmChannel channel) const
+PwmState CommutationController::getPhaseState(PwmChannel channel) const
 {
     switch (channel) {
         case PwmChannel::PHASE_U:
