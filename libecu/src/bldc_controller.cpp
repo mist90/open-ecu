@@ -615,6 +615,9 @@ void BldcController::pwmInterruptHandler() noexcept {
     // Read bus voltage
     float bus_voltage = adc_interface_->readBusVoltage();
 
+    if (bus_voltage > params_.max_voltage)
+        setDriveMode(DriveMode::NEUTRAL);
+
     // Run current controller
     float duty_cycle = current_controller_.update(target_current, measured_current);
 

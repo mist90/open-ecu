@@ -6,8 +6,6 @@
 #include "stm32_pwm.hpp"
 #include "../../Core/Inc/main.h"
 
-extern "C" void HAL_TIM_MspPostInit(TIM_HandleTypeDef* htim);
-
 namespace libecu {
 
 Stm32Pwm::Stm32Pwm(void* htim) noexcept
@@ -18,6 +16,11 @@ Stm32Pwm::Stm32Pwm(void* htim) noexcept
 bool Stm32Pwm::initialize(uint32_t frequency, uint16_t dead_time_ns) {
     frequency_ = frequency;
     dead_time_ns_ = dead_time_ns;
+
+    __HAL_RCC_GPIOC_CLK_ENABLE();
+    __HAL_RCC_GPIOB_CLK_ENABLE();
+    __HAL_RCC_GPIOA_CLK_ENABLE();
+    __HAL_RCC_TIM1_CLK_ENABLE();
 
     // Calculate timer settings for center-aligned mode
     // In center-aligned mode, counter goes 0→ARR→0, so period = 2*ARR
@@ -71,9 +74,6 @@ bool Stm32Pwm::initialize(uint32_t frequency, uint16_t dead_time_ns) {
     if (HAL_TIMEx_MasterConfigSynchronization(tim_handle, &sMasterConfig) != HAL_OK) {
         return false;
     }
-
-    // Initialize GPIO pins for PWM outputs (moved from MX_TIM1_Init)
-    HAL_TIM_MspPostInit(tim_handle);
 
     // Configure PWM channels
     TIM_OC_InitTypeDef sConfigOC = {0};
@@ -144,6 +144,14 @@ bool Stm32Pwm::initialize(uint32_t frequency, uint16_t dead_time_ns) {
         return false;
     }
 
+    HAL_TIM_PWM_Start(tim_handle, TIM_CHANNEL_1);
+    HAL_TIM_PWM_Start(tim_handle, TIM_CHANNEL_2);
+    HAL_TIM_PWM_Start(tim_handle, TIM_CHANNEL_3);
+
+    HAL_TIMEx_PWMN_Start(tim_handle, TIM_CHANNEL_1);
+    HAL_TIMEx_PWMN_Start(tim_handle, TIM_CHANNEL_2);
+    HAL_TIMEx_PWMN_Start(tim_handle, TIM_CHANNEL_3);
+
     return true;
 }
 
@@ -206,27 +214,33 @@ void Stm32Pwm::enable(bool enable) {
 
     enabled_ = enable;
 
-    TIM_HandleTypeDef* tim_handle = static_cast<TIM_HandleTypeDef*>(htim_);
+    GPIO_InitTypeDef GPIO_InitStruct = {0};
+
     if (enable) {
-        HAL_TIM_PWM_Start(tim_handle, TIM_CHANNEL_1);
-        HAL_TIM_PWM_Start(tim_handle, TIM_CHANNEL_2);
-        HAL_TIM_PWM_Start(tim_handle, TIM_CHANNEL_3);
+        GPIO_InitStruct.Pin = GPIO_PIN_13;
+        GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+        GPIO_InitStruct.Pull = GPIO_NOPULL;
+        GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+        GPIO_InitStruct.Alternate = GPIO_AF4_TIM1;
+        HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
-        HAL_TIMEx_PWMN_Start(tim_handle, TIM_CHANNEL_1);
-        HAL_TIMEx_PWMN_Start(tim_handle, TIM_CHANNEL_2);
-        HAL_TIMEx_PWMN_Start(tim_handle, TIM_CHANNEL_3);
+        GPIO_InitStruct.Pin = GPIO_PIN_15;
+        GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+        GPIO_InitStruct.Pull = GPIO_NOPULL;
+        GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+        GPIO_InitStruct.Alternate = GPIO_AF4_TIM1;
+        HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+        GPIO_InitStruct.Pin = GPIO_PIN_8|GPIO_PIN_9|GPIO_PIN_10|GPIO_PIN_12;
+        GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+        GPIO_InitStruct.Pull = GPIO_NOPULL;
+        GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+        GPIO_InitStruct.Alternate = GPIO_AF6_TIM1;
+        HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
     } else {
-        HAL_TIM_PWM_Stop(tim_handle, TIM_CHANNEL_1);
-        HAL_TIM_PWM_Stop(tim_handle, TIM_CHANNEL_2);
-        HAL_TIM_PWM_Stop(tim_handle, TIM_CHANNEL_3);
-
-        HAL_TIMEx_PWMN_Stop(tim_handle, TIM_CHANNEL_1);
-        HAL_TIMEx_PWMN_Stop(tim_handle, TIM_CHANNEL_2);
-        HAL_TIMEx_PWMN_Stop(tim_handle, TIM_CHANNEL_3);
-
-        __HAL_TIM_SET_COMPARE(tim_handle, TIM_CHANNEL_1, 0);
-        __HAL_TIM_SET_COMPARE(tim_handle, TIM_CHANNEL_2, 0);
-        __HAL_TIM_SET_COMPARE(tim_handle, TIM_CHANNEL_3, 0);
+        HAL_GPIO_DeInit(GPIOC, GPIO_PIN_13);
+        HAL_GPIO_DeInit(GPIOB, GPIO_PIN_15);
+        HAL_GPIO_DeInit(GPIOA, GPIO_PIN_8|GPIO_PIN_9|GPIO_PIN_10|GPIO_PIN_12);
     }
 }
 

@@ -52,6 +52,7 @@ struct MotorControlParams {
     float max_duty_cycle;     ///< Maximum duty cycle (0.0 to 1.0)
     float max_current;        ///< Maximum motor current (A)
     float min_current;        ///< Minimum negative current (A)
+    float max_voltage;        ///< Maximum bus voltage (V), in case of overvoltage (it means battery damage and recuperation) ECU goes to NEUTRAL mode.
     float max_speed_rps;      ///< Maximum speed in RPS
     float acceleration_rate;  ///< Acceleration rate (RPS/s), 0 = disabled
     float target_speed_lpf_alpha; ///< LPF alpha for target speed (0.0-1.0), 0 = disabled, 1.0 = no filtering

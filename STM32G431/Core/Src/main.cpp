@@ -18,7 +18,7 @@
 #define BLDC_NUM_POLES 40 // 8
 #define BLDC_MAX_CURRENT 18.0f //  6.0f
 #define BLDC_MIN_CURRENT  -4.0f
-#define BLDC_MAX_SPEED 20.0f // 150.0f
+#define BLDC_MAX_SPEED 20.0f // 200.0f
 #define BLDC_MAX_ACCELERATION 1.0f // 100.0f
 #define BLDC_INVERTION true // false
 
@@ -175,9 +175,10 @@ int main(void)
     commutation_controller = new libecu::CommutationController(pwm_driver, hall_sensor, BLDC_NUM_POLES);
 
     libecu::MotorControlParams motor_params;
-    motor_params.max_duty_cycle = 0.9f;
+    motor_params.max_duty_cycle = 0.95f;
     motor_params.max_current = BLDC_MAX_CURRENT;
     motor_params.min_current = BLDC_MIN_CURRENT;
+    motor_params.max_voltage = 39.0f;
     motor_params.max_speed_rps = BLDC_MAX_SPEED;
     motor_params.acceleration_rate = BLDC_MAX_ACCELERATION;  // RPS/s
     motor_params.target_speed_lpf_alpha = 0.0f;  // LPF smoothing for noisy potentiometer input
