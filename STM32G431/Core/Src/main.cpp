@@ -171,8 +171,12 @@ int main(void)
     adc_calibration.opamp_gain = 16.0f;              // PGA gain
     adc_calibration.adc_reference_voltage = 3.3f;    // 3.3V ADC reference
     adc_calibration.adc_resolution_bits = 12;        // 12-bit ADC
+    // Configure voltage sensor (resistor divider for Vbus measurement)
+    libecu::VoltageSensorParameters voltage_params;
+    voltage_params.r_up = 196000.0f;   // 196kOhm upper resistor
+    voltage_params.r_down = 18000.0f;  // 18kOhm lower resistor
 
-    if (!adc_driver.initialize(adc_calibration)) {
+    if (!adc_driver.initialize(adc_calibration, voltage_params)) {
         Error_Handler();
     }
 
@@ -284,11 +288,14 @@ int main(void)
                         motor_controller->setDutyCycle(target_duty_cycle);
                     }
                 }
-                printf("%u->%u: RPS target:% 6.2f  meas:% 6.2f  D:% 6.2f  I:% 6.2f\n", status.measured_position, status.target_position,
+                printf("%u->%u: RPS target:% 6.2f   meas:% 6.2f   D:% 6.2f   I:% 6.2f   Vbus:% 6.2f\n",
+                                            status.measured_position,
+                                            status.target_position,
                                             status.target_speed_rps,
                                             status.current_speed_rps,
                                             status.duty_cycle,
-                                            status.measured_current);
+                                            status.measured_current,
+                                            status.bus_voltage);
             }
         }
 
@@ -426,8 +433,8 @@ static void MX_GPIO_Init(void)
     __HAL_RCC_GPIOA_CLK_ENABLE();
     __HAL_RCC_GPIOB_CLK_ENABLE();
 
-    /*Configure GPIO pins : PA1 PA3 PA5 PA7 */
-    GPIO_InitStruct.Pin = GPIO_PIN_1|GPIO_PIN_3|GPIO_PIN_5|GPIO_PIN_7;
+    /*Configure GPIO pins : PA0 PA1 PA3 PA5 PA7 */
+    GPIO_InitStruct.Pin = GPIO_PIN_0|GPIO_PIN_1|GPIO_PIN_3|GPIO_PIN_5|GPIO_PIN_7;
     GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
     HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);

@@ -72,6 +72,7 @@ struct MotorStatus {
     float duty_cycle;         ///< Current duty cycle
     float target_current;     ///< Target motor current (A)
     float measured_current;   ///< Measured motor current (A)
+    float bus_voltage;         ///< Measured bus voltage (V)
     uint8_t target_position;   ///< Driven motor position
     uint8_t measured_position;   ///< Measured motor position
     bool is_running;          ///< Motor running status

@@ -3,6 +3,7 @@
  * @brief STM32G4 ADC implementation for 3-phase current sensing
  * @note Uses ADC injected channels triggered by TIM1_TRGO2 for PWM-synchronized sampling
  *       ADC1 JDR1: Phase U (OPAMP1_OUT via VOPAMP1)
+ *       ADC1 JDR2: Vbus voltage divider (PA0 = ADC1_IN1)
  *       ADC2 JDR1: Phase V (OPAMP2_OUT via VOPAMP2)
  *       ADC2 JDR2: Phase W (OPAMP3_OUT via VOPAMP3_ADC2)
  */
@@ -79,7 +80,7 @@ void Stm32Adc::initADC1() noexcept {
     hadc1.Init.Resolution = ADC_RESOLUTION_12B;
     hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
     hadc1.Init.GainCompensation = 0;
-    hadc1.Init.ScanConvMode = ADC_SCAN_DISABLE;
+    hadc1.Init.ScanConvMode = ADC_SCAN_ENABLE;
     hadc1.Init.EOCSelection = ADC_EOC_SEQ_CONV;  // EOC after sequence
     hadc1.Init.LowPowerAutoWait = DISABLE;
     hadc1.Init.ContinuousConvMode = DISABLE;
@@ -127,7 +128,7 @@ void Stm32Adc::initADC1() noexcept {
     sConfigInjected.InjectedSingleDiff = ADC_SINGLE_ENDED;
     sConfigInjected.InjectedOffsetNumber = ADC_OFFSET_NONE;
     sConfigInjected.InjectedOffset = 0;
-    sConfigInjected.InjectedNbrOfConversion = 1;  // 1 injected channel on ADC1 (OPAMP1 only)
+    sConfigInjected.InjectedNbrOfConversion = 2;  // 2 injected channels on ADC1 (Phase U + Vbus)
     sConfigInjected.InjectedDiscontinuousConvMode = DISABLE;
     sConfigInjected.AutoInjectedConv = DISABLE;
     sConfigInjected.QueueInjectedContext = DISABLE;
@@ -137,6 +138,29 @@ void Stm32Adc::initADC1() noexcept {
     sConfigInjected.InjecOversampling = sConfigOversampling;
 
     if (HAL_ADCEx_InjectedConfigChannel(&hadc1, &sConfigInjected) != HAL_OK)
+    {
+        Error_Handler();
+    }
+
+    /** Configure Injected Channel 2: Vbus voltage divider (PA0 = ADC1_IN1)
+     */
+    ADC_InjectionConfTypeDef sConfigInjectedVbus = {0};
+    sConfigInjectedVbus.InjectedChannel = ADC_CHANNEL_1;
+    sConfigInjectedVbus.InjectedRank = ADC_INJECTED_RANK_2;
+    sConfigInjectedVbus.InjectedSamplingTime = ADC_SAMPLETIME_6CYCLES_5;
+    sConfigInjectedVbus.InjectedSingleDiff = ADC_SINGLE_ENDED;
+    sConfigInjectedVbus.InjectedOffsetNumber = ADC_OFFSET_NONE;
+    sConfigInjectedVbus.InjectedOffset = 0;
+    sConfigInjectedVbus.InjectedNbrOfConversion = 2;  // 2 injected channels: Phase U + Vbus
+    sConfigInjectedVbus.InjectedDiscontinuousConvMode = DISABLE;
+    sConfigInjectedVbus.AutoInjectedConv = DISABLE;
+    sConfigInjectedVbus.QueueInjectedContext = DISABLE;
+    sConfigInjectedVbus.ExternalTrigInjecConv = ADC_EXTERNALTRIGINJEC_T1_TRGO2;
+    sConfigInjectedVbus.ExternalTrigInjecConvEdge = ADC_EXTERNALTRIGINJECCONV_EDGE_RISING;
+    sConfigInjectedVbus.InjecOversamplingMode = ENABLE;
+    sConfigInjectedVbus.InjecOversampling = sConfigOversampling;
+
+    if (HAL_ADCEx_InjectedConfigChannel(&hadc1, &sConfigInjectedVbus) != HAL_OK)
     {
         Error_Handler();
     }
@@ -274,6 +298,11 @@ uint32_t Stm32Adc::getRawAdcValue(PwmChannel channel) {
         default:
             return 0;
     }
+}
+
+uint32_t Stm32Adc::getRawAdcValue() {
+    // Vbus voltage is on ADC1_IN1, injected channel rank 2
+    return HAL_ADCEx_InjectedGetValue(&hadc1, ADC_INJECTED_RANK_2);
 }
 
 } // namespace libecu

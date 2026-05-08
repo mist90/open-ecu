@@ -63,6 +63,7 @@ BldcController::BldcController(
     status_.duty_cycle = 0.0f;
     status_.target_current = 0.0f;
     status_.measured_current = 0.0f;
+    status_.bus_voltage = 0.0f;
     status_.target_position = 0xFF;
     status_.measured_position = 0xFF;
     status_.is_running = false;
@@ -611,6 +612,9 @@ void BldcController::pwmInterruptHandler() noexcept {
     // Read current from active conducting phase
     float measured_current = getCurrentFromActivePhase();
 
+    // Read bus voltage
+    float bus_voltage = adc_interface_->readBusVoltage();
+
     // Run current controller
     float duty_cycle = current_controller_.update(target_current, measured_current);
 
@@ -619,6 +623,7 @@ void BldcController::pwmInterruptHandler() noexcept {
         CriticalSection cs;
         status_.measured_current = measured_current;
         status_.duty_cycle = duty_cycle;
+        status_.bus_voltage = bus_voltage;
         // Apply duty cycle without changing commutation step
         // Phase switching is handled in hallSensorInterruptHandler
         commutation_controller_.updateDutyCycle(duty_cycle);

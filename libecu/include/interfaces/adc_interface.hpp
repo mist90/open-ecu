@@ -27,6 +27,14 @@ struct CurrentSensorCalibration {
 };
 
 /**
+ * @brief Voltage sensor parameters for bus voltage measurement
+ */
+struct VoltageSensorParameters {
+    float r_up;    // Upper resistor of voltage divider (Ohms)
+    float r_down;  // Lower resistor of voltage divider (Ohms)
+};
+
+/**
  * @brief Abstract interface for ADC-based current sensing
  *
  * This interface provides platform-independent current measurement
@@ -48,8 +56,9 @@ public:
      * @param calibration Sensor calibration parameters
      * @return true if initialization successful
      */
-    bool initialize(const CurrentSensorCalibration& calibration) noexcept {
+    bool initialize(const CurrentSensorCalibration& calibration, const VoltageSensorParameters& params) noexcept {
         calibration_ = calibration;
+        voltage_params_ = params;
 
         // ADC calibration and injected channel startup is done in main.cpp
         // before calling this function. Here we just store the calibration.
@@ -63,6 +72,12 @@ public:
      * @return Raw ADC value (0 to 2^resolution - 1)
      */
     virtual uint32_t getRawAdcValue(PwmChannel channel) = 0;
+
+    /**
+     * @brief Get raw ADC value for bus voltage channel
+     * @return Raw ADC value for Vbus (0 to 2^resolution - 1)
+     */
+    virtual uint32_t getRawAdcValue() = 0;
 
     /**
      * @brief Convert raw ADC value to current in Amperes
@@ -102,6 +117,25 @@ public:
         float current = v_shunt / calibration_.shunt_resistance_ohms;
 
         return current;
+    }
+
+    /**
+     * @brief Convert raw ADC value to bus voltage
+     * @param adc_raw Raw ADC reading
+     * @return Bus voltage in Volts, accounting for resistor divider ratio
+     */
+    float convertAdcToVoltage(uint32_t adc_raw) noexcept {
+        float adc_max_value = (1 << calibration_.adc_resolution_bits) - 1;
+        float divider_ratio = (voltage_params_.r_up + voltage_params_.r_down) / voltage_params_.r_down;
+        return (adc_raw * calibration_.adc_reference_voltage * divider_ratio) / adc_max_value;
+    }
+
+    /**
+     * @brief Read bus voltage from ADC
+     * @return Bus voltage in Volts
+     */
+    float readBusVoltage() noexcept {
+        return convertAdcToVoltage(getRawAdcValue());
     }
 
     /**
@@ -180,6 +214,7 @@ public:
 private:
     CurrentSensorCalibration calibration_;
     bool initialized_ = false;
+    VoltageSensorParameters voltage_params_;
 };
 
 } // namespace libecu

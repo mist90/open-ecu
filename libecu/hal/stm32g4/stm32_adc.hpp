@@ -35,6 +35,7 @@ public:
 
     // AdcInterface implementation
     uint32_t getRawAdcValue(PwmChannel channel) override;
+    uint32_t getRawAdcValue() override;
 
 private:
     /**
