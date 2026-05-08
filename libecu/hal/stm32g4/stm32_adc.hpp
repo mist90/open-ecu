@@ -37,6 +37,13 @@ public:
     uint32_t getRawAdcValue(PwmChannel channel) override;
     uint32_t getRawAdcValue() override;
 
+    /**
+     * @brief Read potentiometer and convert to output
+     * @param max_value Maximum speed corresponding to 3.3V
+     * @return output (0 to max_value)
+     */
+    float readPotentiometer(float max_value);
+
 private:
     /**
      * @brief Initialize ADC1 peripheral

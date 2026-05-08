@@ -22,13 +22,6 @@
 #define BLDC_MAX_ACCELERATION 1.0f // 100.0f
 #define BLDC_INVERTION true // false
 
-ADC_HandleTypeDef hadc1;
-ADC_HandleTypeDef hadc2;
-
-OPAMP_HandleTypeDef hopamp1;
-OPAMP_HandleTypeDef hopamp2;
-OPAMP_HandleTypeDef hopamp3;
-
 TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
 
@@ -78,31 +71,6 @@ extern "C" void disable_interrupts() {
 
 extern "C" void enable_interrupts() {
     __asm volatile ("cpsie i" : : : "memory");
-}
-
-/**
- * @brief Read potentiometer and convert to output
- * @param max_value Maximum speed corresponding to 3.3V
- * @return output (0 to max_value)
- */
-float readPotentiometer(float max_value)
-{
-    // Start ADC regular conversion
-    HAL_ADC_Start(&hadc1);
-
-    // Wait for conversion complete (should be very fast)
-    if (HAL_ADC_PollForConversion(&hadc1, 10) == HAL_OK) {
-        uint32_t adc_value = HAL_ADC_GetValue(&hadc1);
-
-        // Convert ADC value (0-4095) to (0-max_value)
-        // Linear mapping: output = (adc_value / 4095.0) * max_value
-        float speed_rps = (static_cast<float>(adc_value) / 4095.0f) * max_value;
-
-        return speed_rps;
-    }
-
-    // If conversion failed, return 0
-    return 0.0f;
 }
 
 /**
@@ -277,14 +245,14 @@ int main(void)
                 // Read potentiometer and update target speed (runs in main loop)
                 if (status.control_mode == libecu::ControlMode::CLOSED_LOOP_VELOCITY ||
                         status.control_mode == libecu::ControlMode::OPEN_LOOP) {
-                    float target_speed = readBrakeButton()? 0.0 : readPotentiometer(motor_params.max_speed_rps);
+                    float target_speed = readBrakeButton()? 0.0 : adc_driver.readPotentiometer(motor_params.max_speed_rps);
                     motor_controller->setTargetSpeed(target_speed);
                 } else if (status.control_mode == libecu::ControlMode::CLOSED_LOOP_TORQUE) {
                     if (status.electric_mode == libecu::ElectricMode::CURRENT_MODE) {
-                        float target_current = readBrakeButton()? 0.0 : readPotentiometer(motor_params.max_current);
+                        float target_current = readBrakeButton()? 0.0 : adc_driver.readPotentiometer(motor_params.max_current);
                         motor_controller->setCurrent(target_current);
                     } else if (status.electric_mode == libecu::ElectricMode::VOLTAGE_MODE) {
-                        float target_duty_cycle = readBrakeButton()? 0.0 : readPotentiometer(1.0f);
+                        float target_duty_cycle = readBrakeButton()? 0.0 : adc_driver.readPotentiometer(1.0f);
                         motor_controller->setDutyCycle(target_duty_cycle);
                     }
                 }
@@ -429,27 +397,6 @@ static void MX_GPIO_Init(void)
 
     /* GPIO Ports Clock Enable */
     __HAL_RCC_GPIOC_CLK_ENABLE();
-    __HAL_RCC_GPIOF_CLK_ENABLE();
-    __HAL_RCC_GPIOA_CLK_ENABLE();
-    __HAL_RCC_GPIOB_CLK_ENABLE();
-
-    /*Configure GPIO pins : PA0 PA1 PA3 PA5 PA7 */
-    GPIO_InitStruct.Pin = GPIO_PIN_0|GPIO_PIN_1|GPIO_PIN_3|GPIO_PIN_5|GPIO_PIN_7;
-    GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
-    GPIO_InitStruct.Pull = GPIO_NOPULL;
-    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-
-    /*Configure GPIO pins : PB0 PB2 PB12 */
-    GPIO_InitStruct.Pin = GPIO_PIN_0|GPIO_PIN_2|GPIO_PIN_12;
-    GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
-    GPIO_InitStruct.Pull = GPIO_NOPULL;
-    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
-
-    /*Configure GPIO pins : A__Pin B__Pin Z__Pin */
-    GPIO_InitStruct.Pin = A__Pin|B__Pin|Z__Pin;
-    GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING_FALLING;
-    GPIO_InitStruct.Pull = GPIO_NOPULL;
-    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
     /*Configure GPIO pins : BUTTON_Pin */
     GPIO_InitStruct.Pin = BUTTON_Pin;

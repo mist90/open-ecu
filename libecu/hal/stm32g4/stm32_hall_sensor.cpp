@@ -25,6 +25,17 @@ Stm32HallSensor::Stm32HallSensor(const HallGpioConfig& config) noexcept
 }
 
 bool Stm32HallSensor::initialize() {
+    GPIO_InitTypeDef GPIO_InitStruct = {0};
+
+    /* GPIO Ports Clock Enable */
+    __HAL_RCC_GPIOB_CLK_ENABLE();
+
+    /*Configure GPIO pins : A__Pin B__Pin Z__Pin */
+    GPIO_InitStruct.Pin = config_.hall_a_pin | config_.hall_b_pin | config_.hall_c_pin;
+    GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING_FALLING;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    HAL_GPIO_Init(static_cast<GPIO_TypeDef*>(config_.gpio_port), &GPIO_InitStruct);
+
     return true;
 }
 

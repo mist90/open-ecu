@@ -12,11 +12,11 @@
 #include "../../Core/Inc/main.h"
 
 // Hardware handles (defined in main.cpp)
-extern ADC_HandleTypeDef hadc1;
-extern ADC_HandleTypeDef hadc2;
-extern OPAMP_HandleTypeDef hopamp1;
-extern OPAMP_HandleTypeDef hopamp2;
-extern OPAMP_HandleTypeDef hopamp3;
+ADC_HandleTypeDef hadc1;
+ADC_HandleTypeDef hadc2;
+OPAMP_HandleTypeDef hopamp1;
+OPAMP_HandleTypeDef hopamp2;
+OPAMP_HandleTypeDef hopamp3;
 
 namespace libecu {
 
@@ -24,6 +24,24 @@ Stm32Adc::Stm32Adc() noexcept {
 }
 
 bool Stm32Adc::initializeHardware() noexcept {
+    GPIO_InitTypeDef GPIO_InitStruct = {0};
+
+    /* GPIO Ports Clock Enable */
+    __HAL_RCC_GPIOA_CLK_ENABLE();
+    __HAL_RCC_GPIOB_CLK_ENABLE();
+
+    /*Configure GPIO pins : PA0 PA1 PA3 PA5 PA7 */
+    GPIO_InitStruct.Pin = GPIO_PIN_0|GPIO_PIN_1|GPIO_PIN_3|GPIO_PIN_5|GPIO_PIN_7;
+    GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+    /*Configure GPIO pins : PB0 PB2 PB12 */
+    GPIO_InitStruct.Pin = GPIO_PIN_0|GPIO_PIN_2|GPIO_PIN_12;
+    GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
     // Initialize OPAMPs first (analog front-end)
     initOPAMP1();
     initOPAMP2();
@@ -303,6 +321,26 @@ uint32_t Stm32Adc::getRawAdcValue(PwmChannel channel) {
 uint32_t Stm32Adc::getRawAdcValue() {
     // Vbus voltage is on ADC1_IN1, injected channel rank 2
     return HAL_ADCEx_InjectedGetValue(&hadc1, ADC_INJECTED_RANK_2);
+}
+
+float Stm32Adc::readPotentiometer(float max_value)
+{
+    // Start ADC regular conversion
+    HAL_ADC_Start(&hadc1);
+
+    // Wait for conversion complete (should be very fast)
+    if (HAL_ADC_PollForConversion(&hadc1, 10) == HAL_OK) {
+        uint32_t adc_value = HAL_ADC_GetValue(&hadc1);
+
+        // Convert ADC value (0-4095) to (0-max_value)
+        // Linear mapping: output = (adc_value / 4095.0) * max_value
+        float ret_value = (static_cast<float>(adc_value) / 4095.0f) * max_value;
+
+        return ret_value;
+    }
+
+    // If conversion failed, return 0
+    return 0.0f;
 }
 
 } // namespace libecu
