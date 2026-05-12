@@ -141,7 +141,7 @@ int main(void)
     adc_calibration.adc_resolution_bits = 12;        // 12-bit ADC
     // Configure voltage sensor (resistor divider for Vbus measurement)
     libecu::VoltageSensorParameters voltage_params;
-    voltage_params.r_up = 196000.0f;   // 196kOhm upper resistor
+    voltage_params.r_up = 169000.0f;   // 169kOhm upper resistor
     voltage_params.r_down = 18000.0f;  // 18kOhm lower resistor
 
     if (!adc_driver.initialize(adc_calibration, voltage_params)) {
