@@ -178,7 +178,7 @@ int main(void)
     motor_params.max_duty_cycle = 0.95f;
     motor_params.max_current = BLDC_MAX_CURRENT;
     motor_params.min_current = BLDC_MIN_CURRENT;
-    motor_params.max_voltage = 39.0f;
+    motor_params.max_voltage = 36.0f;
     motor_params.max_speed_rps = BLDC_MAX_SPEED;
     motor_params.acceleration_rate = BLDC_MAX_ACCELERATION;  // RPS/s
     motor_params.target_speed_lpf_alpha = 0.0f;  // LPF smoothing for noisy potentiometer input

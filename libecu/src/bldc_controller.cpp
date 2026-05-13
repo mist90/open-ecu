@@ -110,24 +110,25 @@ void BldcController::update() noexcept
     } else {
         filtered_measured_speed_ = speed_rps;
     }
-    status_.current_speed_rps = filtered_measured_speed_;
 
     uint8_t commutation_position = commutation_controller_.getCurrentPosition();
-    status_.measured_position = commutation_position;
+    MotorStatus status;
+    {
+        CriticalSection cs;
+        status_.current_speed_rps = filtered_measured_speed_;
+        status_.measured_position = commutation_position;
+        status = status_;
+    }
 
-    float target_duty_cycle = 0.0f;
-
-    if (status_.is_running) {
-        switch (status_.control_mode) {
+    if (status.is_running) {
+        switch (status.control_mode) {
             case ControlMode::OPEN_LOOP: {
-                target_duty_cycle = status_.duty_cycle;
-
                 uint32_t current_time_us = time_us();
                 if (!open_loop_running_) {
                     open_loop_last_step_time_us_ = current_time_us;
                     open_loop_running_ = true;
                 } else {
-                    uint32_t step_interval_us = calculateOpenLoopStepInterval(status_.target_speed_rps);
+                    uint32_t step_interval_us = calculateOpenLoopStepInterval(status.target_speed_rps);
                     if (step_interval_us > 0 && (current_time_us - open_loop_last_step_time_us_) >= step_interval_us) {
                         open_loop_step_ = (open_loop_step_ + 1) % 6;
                         open_loop_last_step_time_us_ = current_time_us;
@@ -157,34 +158,33 @@ void BldcController::update() noexcept
 
                 // Apply acceleration limiting (slew rate limiter on target_speed)
                 float limited_target = applyAccelerationLimit(
-                    status_.target_speed_rps,
+                    status.target_speed_rps,
                     dt
                 );
 
                 // Run speed PID (already configured for correct mode)
                 float pid_output = pid_speed_controller_.update(
                     limited_target,
-                    status_.current_speed_rps,
+                    status.current_speed_rps,
                     dt
                 );
 
                 // Electric mode determines how to use PID output
-                if (status_.electric_mode == ElectricMode::VOLTAGE_MODE) {
+                if (status.electric_mode == ElectricMode::VOLTAGE_MODE) {
                     // VOLTAGE_MODE: PID outputs duty cycle directly
-                    target_duty_cycle = pid_output;
+                    {
+                        CriticalSection cs;
+                        status_.duty_cycle = pid_output;
+                    }
                 } else {
                     // CURRENT_MODE: PID outputs target current
-                    // Store for inner current loop (runs in pwmInterruptHandler at 20kHz)
+                    // Store for inner current loop (runs in pwmInterruptHandler)
                     {
                         CriticalSection cs;
                         status_.target_current = pid_output;
                     }
 
                     // duty_cycle is calculated by pwmInterruptHandler() (atomic read)
-                    {
-                        CriticalSection cs;
-                        target_duty_cycle = status_.duty_cycle;
-                    }
                 }
                 break;
             }
@@ -192,18 +192,6 @@ void BldcController::update() noexcept
             case ControlMode::CLOSED_LOOP_TORQUE:
                 // Torque control: fixed duty cycle or current + Hall sensor commutation
                 // No speed PID - user sets fixed torque/current command
-                if (status_.electric_mode == ElectricMode::VOLTAGE_MODE) {
-                    // Fixed duty cycle with Hall sensor commutation
-                    target_duty_cycle = status_.duty_cycle;
-                } else {
-                    // Fixed current target with Hall sensor commutation
-                    // Current control runs in pwmInterruptHandler() at 20kHz
-                    // duty_cycle is updated by pwmInterruptHandler() (atomic read)
-                    {
-                        CriticalSection cs;
-                        target_duty_cycle = status_.duty_cycle;
-                    }
-                }
                 break;
         }
     } else {
@@ -211,10 +199,6 @@ void BldcController::update() noexcept
     }
 
     if (commutation_position != 0xFF) {
-        {
-            CriticalSection cs;
-            status_.duty_cycle = target_duty_cycle;
-        }
         moveNextPosition(commutation_position);
     }
 }
@@ -306,7 +290,7 @@ void BldcController::start() noexcept
     speed_start_time_us_ = 0;
     speed_end_time_us_ = 0;
     speed_pulse_count_ = 0;
-    last_hall_state_ = 0xFF;
+    last_hall_state_ = commutation_controller_.getCurrentPosition();
     last_period_us_ = 0;
     enable_interrupts();
 
@@ -537,6 +521,8 @@ void BldcController::hallSensorInterruptHandler() noexcept
 
     // Validate Hall state (0-5 are valid, 0xFF indicates invalid/error)
     if (hall_state > 5) {
+        /* Go to safety mode */
+        setDriveMode(DriveMode::NEUTRAL);
         return; // Invalid Hall state, ignore
     }
 
@@ -546,14 +532,15 @@ void BldcController::hallSensorInterruptHandler() noexcept
     }
 
     // Calculate step delta between current and previous Hall state
-    int8_t delta = 0;
-    if (last_hall_state_ != 0xFF) {
-        delta = int8_t(hall_state) - int8_t(last_hall_state_);
-        if (delta < -3) {
-            delta += 6;
-        } else if (delta > 3) {
-            delta -= 6;
-        }
+    int8_t delta = (hall_state - last_hall_state_ + 9) % 6 - 3;
+    if (delta < -1) {
+        /* This wrong step - go to safety mode */
+        setDriveMode(DriveMode::NEUTRAL);
+        return;
+    } else if (delta > 1) {
+        /* This wrong step - go to safety mode */
+        setDriveMode(DriveMode::NEUTRAL);
+        return;
     }
 
     // Update last Hall state
