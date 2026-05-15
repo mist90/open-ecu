@@ -198,7 +198,7 @@ void BldcController::update() noexcept
         open_loop_running_ = false;
     }
 
-    if (commutation_position != 0xFF) {
+    if (commutation_position != 0xFF && std::abs(status.current_speed_rps) < 0.01f) {
         moveNextPosition(commutation_position);
     }
 }
@@ -522,7 +522,7 @@ void BldcController::hallSensorInterruptHandler() noexcept
     // Validate Hall state (0-5 are valid, 0xFF indicates invalid/error)
     if (hall_state > 5) {
         /* Go to safety mode */
-        setDriveMode(DriveMode::NEUTRAL);
+        //setDriveMode(DriveMode::NEUTRAL);
         return; // Invalid Hall state, ignore
     }
 
@@ -533,11 +533,11 @@ void BldcController::hallSensorInterruptHandler() noexcept
 
     // Calculate step delta between current and previous Hall state
     int8_t delta = (hall_state - last_hall_state_ + 9) % 6 - 3;
-    if (delta < -1) {
+    if (delta < -2) {
         /* This wrong step - go to safety mode */
         setDriveMode(DriveMode::NEUTRAL);
         return;
-    } else if (delta > 1) {
+    } else if (delta > 2) {
         /* This wrong step - go to safety mode */
         setDriveMode(DriveMode::NEUTRAL);
         return;

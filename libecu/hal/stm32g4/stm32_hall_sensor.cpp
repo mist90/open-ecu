@@ -33,7 +33,7 @@ bool Stm32HallSensor::initialize() {
     /*Configure GPIO pins : A__Pin B__Pin Z__Pin */
     GPIO_InitStruct.Pin = config_.hall_a_pin | config_.hall_b_pin | config_.hall_c_pin;
     GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING_FALLING;
-    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Pull = GPIO_PULLUP;
     HAL_GPIO_Init(static_cast<GPIO_TypeDef*>(config_.gpio_port), &GPIO_InitStruct);
 
     return true;
