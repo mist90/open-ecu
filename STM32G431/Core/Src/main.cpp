@@ -22,6 +22,15 @@
 #define BLDC_MAX_ACCELERATION 5.0f // 100.0f
 #define BLDC_INVERTION true // false
 
+#define COMPACT_PRINTF
+
+#ifndef COMPACT_PRINTF
+#define PRINT_STRING "%u->%u: RPS target:% 6.2f   meas:% 6.2f   D:% 6.2f   I target:% 6.2f   meas:% 6.2f   Vbus:% 6.2f\n"
+#else
+/* This format is for monitor.py */
+#define PRINT_STRING "%u;%u;%.2f;%.2f;%.2f;%.2f;%.2f;%.2f\n"
+#endif
+
 TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
 
@@ -125,7 +134,7 @@ int main(void)
     MX_USART2_UART_Init();
 
     // Initialize motor control components
-    if (!pwm_driver.initialize(PWM_TIMER_FREQ, 100)) {  // 20kHz PWM, 100ns dead-time
+    if (!pwm_driver.initialize(PWM_TIMER_FREQ, 200)) {  // 20kHz PWM, 200ns dead-time
         Error_Handler();
     }
 
@@ -235,38 +244,35 @@ int main(void)
         if (control_tick) {
             control_tick = false;
 
-            if (motor_controller) {
-                // Update motor controller
-
-                libecu::MotorStatus status;
-                {
-                    libecu::CriticalSection cs;
-                    status = motor_controller->getStatus();
-                }
-                // Read potentiometer and update target speed (runs in main loop)
-                if (status.control_mode == libecu::ControlMode::CLOSED_LOOP_VELOCITY ||
-                        status.control_mode == libecu::ControlMode::OPEN_LOOP) {
-                    float target_speed = readBrakeButton()? 0.0 : adc_driver.readPotentiometer(motor_params.max_speed_rps);
-                    motor_controller->setTargetSpeed(target_speed);
-                } else if (status.control_mode == libecu::ControlMode::CLOSED_LOOP_TORQUE) {
-                    if (status.electric_mode == libecu::ElectricMode::CURRENT_MODE) {
-                        float target_current = readBrakeButton()? 0.0 : adc_driver.readPotentiometer(motor_params.max_current);
-                        motor_controller->setCurrent(target_current);
-                    } else if (status.electric_mode == libecu::ElectricMode::VOLTAGE_MODE) {
-                        float target_duty_cycle = readBrakeButton()? 0.0 : adc_driver.readPotentiometer(1.0f);
-                        motor_controller->setDutyCycle(target_duty_cycle);
-                    }
-                }
-                printf("%u->%u: RPS target:% 6.2f   meas:% 6.2f   D:% 6.2f   I target:% 6.2f   meas:% 6.2f   Vbus:% 6.2f\n",
-                                            status.measured_position,
-                                            status.target_position,
-                                            status.target_speed_rps,
-                                            status.current_speed_rps,
-                                            status.duty_cycle,
-                                            status.target_current,
-                                            status.measured_current,
-                                            status.bus_voltage);
+            // Update motor controller status
+            libecu::MotorStatus status;
+            {
+                libecu::CriticalSection cs;
+                status = motor_controller->getStatus();
             }
+            // Read potentiometer and update target speed (runs in main loop)
+            if (status.control_mode == libecu::ControlMode::CLOSED_LOOP_VELOCITY ||
+                    status.control_mode == libecu::ControlMode::OPEN_LOOP) {
+                float target_speed = readBrakeButton()? 0.0 : adc_driver.readPotentiometer(motor_params.max_speed_rps);
+                motor_controller->setTargetSpeed(target_speed);
+            } else if (status.control_mode == libecu::ControlMode::CLOSED_LOOP_TORQUE) {
+                if (status.electric_mode == libecu::ElectricMode::CURRENT_MODE) {
+                    float target_current = readBrakeButton()? 0.0 : adc_driver.readPotentiometer(motor_params.max_current);
+                    motor_controller->setCurrent(target_current);
+                } else if (status.electric_mode == libecu::ElectricMode::VOLTAGE_MODE) {
+                    float target_duty_cycle = readBrakeButton()? 0.0 : adc_driver.readPotentiometer(1.0f);
+                    motor_controller->setDutyCycle(target_duty_cycle);
+                }
+            }
+            printf(PRINT_STRING,
+                        status.measured_position,
+                        status.target_position,
+                        status.target_speed_rps,
+                        status.current_speed_rps,
+                        status.duty_cycle,
+                        status.target_current,
+                        status.measured_current,
+                        status.bus_voltage);
         }
 
 #ifdef DEBUG_PWM_ISR
@@ -364,7 +370,7 @@ static void MX_TIM2_Init(void)
 static void MX_USART2_UART_Init(void)
 {
     huart2.Instance = USART2;
-    huart2.Init.BaudRate = 115200;
+    huart2.Init.BaudRate = 2000000;
     huart2.Init.WordLength = UART_WORDLENGTH_8B;
     huart2.Init.StopBits = UART_STOPBITS_1;
     huart2.Init.Parity = UART_PARITY_NONE;

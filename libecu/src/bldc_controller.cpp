@@ -681,7 +681,7 @@ void BldcController::processDebugOutput() noexcept {
     }
 
     // Buffer finished - print extra newline and clear buffer
-    printf("\n");
+    printf("\n\n");
 
     // Clear buffer under disabled interrupts
     disable_interrupts();
