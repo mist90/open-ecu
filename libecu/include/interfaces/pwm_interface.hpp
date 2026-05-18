@@ -65,6 +65,16 @@ public:
     virtual void setChannelState(PwmChannel channel, PwmState state, float duty_cycle = 0.0f) = 0;
 
     /**
+     * @brief Set PWM modulation for a channel
+     * @param channel PWM channel
+     * @param duty_cycle PWM duty cycle (0.0 to 1.0)
+     *                   For UP: High-side active for duty_cycle
+     *                   For DOWN: Low-side active for duty_cycle
+     *                   For OFF: duty_cycle is ignored (both switches disabled)
+     */
+    virtual void updateDutyCycle(PwmChannel channel, float duty_cycle = 0.0f) = 0;
+
+    /**
      * @brief Enable/disable PWM output
      * @param enable true to enable, false to disable
      */

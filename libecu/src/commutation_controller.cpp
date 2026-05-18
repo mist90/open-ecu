@@ -73,9 +73,12 @@ void CommutationController::updateDutyCycle(float duty_cycle) noexcept
     // Uses cached phase states from last commutation update
 
     // Apply duty cycle to existing phase states (no state change)
-    pwm_interface_.setChannelState(PwmChannel::PHASE_U, cached_phase_u_state_, duty_cycle);
-    pwm_interface_.setChannelState(PwmChannel::PHASE_V, cached_phase_v_state_, duty_cycle);
-    pwm_interface_.setChannelState(PwmChannel::PHASE_W, cached_phase_w_state_, duty_cycle);
+    if (cached_phase_u_state_ == PwmState::UP)
+        pwm_interface_.updateDutyCycle(PwmChannel::PHASE_U, duty_cycle);
+    else if (cached_phase_v_state_ == PwmState::UP)
+        pwm_interface_.updateDutyCycle(PwmChannel::PHASE_V, duty_cycle);
+    else
+        pwm_interface_.updateDutyCycle(PwmChannel::PHASE_W, duty_cycle);
 }
 
 PwmState CommutationController::getPhaseState(PwmChannel channel) const noexcept

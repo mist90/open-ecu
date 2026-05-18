@@ -208,6 +208,15 @@ void Stm32Pwm::setChannelState(PwmChannel channel, PwmState state, float duty_cy
     }
 }
 
+void Stm32Pwm::updateDutyCycle(PwmChannel channel, float duty_cycle)
+{
+    TIM_HandleTypeDef* tim_handle = static_cast<TIM_HandleTypeDef*>(htim_);
+    uint32_t tim_channel = getTimChannel(channel);
+    uint32_t compare_value = calculateCompareValue(duty_cycle);
+
+    __HAL_TIM_SET_COMPARE(tim_handle, tim_channel, compare_value);
+}
+
 void Stm32Pwm::enable(bool enable) {
     if (!(enable ^ enabled_))
         return;
