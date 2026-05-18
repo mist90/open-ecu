@@ -26,6 +26,7 @@ public:
     void setChannelState(PwmChannel channel, PwmState state, float duty_cycle = 0.0f) override;
     void updateDutyCycle(PwmChannel channel, float duty_cycle = 0.0f) override;
     void enable(bool enable) override;
+    void apply() override;
 
 private:
     void* htim_;

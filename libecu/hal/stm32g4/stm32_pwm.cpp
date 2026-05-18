@@ -152,6 +152,12 @@ bool Stm32Pwm::initialize(uint32_t frequency, uint16_t dead_time_ns) {
     HAL_TIMEx_PWMN_Start(tim_handle, TIM_CHANNEL_2);
     HAL_TIMEx_PWMN_Start(tim_handle, TIM_CHANNEL_3);
 
+    // Enable CCPC (Capture/Compare Preload Control) for atomic commutation
+    // CCxE, CCxNE, OCxM bits are preloaded — only applied on COM event
+    if (HAL_TIMEx_ConfigCommutEvent(tim_handle, TIM_TS_NONE, TIM_COMMUTATION_SOFTWARE) != HAL_OK) {
+        return false;
+    }
+
     return true;
 }
 
@@ -267,6 +273,11 @@ uint32_t Stm32Pwm::calculateCompareValue(float duty_cycle) noexcept {
     // Limit to 95% to ensure proper PWM operation
     uint32_t max_value = static_cast<uint32_t>(period_ * 0.95f);
     return (compare_value > max_value) ? max_value : compare_value;
+}
+
+void Stm32Pwm::apply() {
+    TIM_HandleTypeDef* tim_handle = static_cast<TIM_HandleTypeDef*>(htim_);
+    HAL_TIM_GenerateEvent(tim_handle, TIM_EVENTSOURCE_COM);
 }
 
 } // namespace libecu

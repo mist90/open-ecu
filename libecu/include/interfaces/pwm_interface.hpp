@@ -74,20 +74,28 @@ public:
      */
     virtual void updateDutyCycle(PwmChannel channel, float duty_cycle = 0.0f) = 0;
 
-    /**
+/**
      * @brief Enable/disable PWM output
      * @param enable true to enable, false to disable
      */
     virtual void enable(bool enable) = 0;
 
     /**
+     * @brief Apply all pending channel state changes atomically
+     * @note Default implementation is a no-op. Override in platform-specific
+     *       implementations that support atomic commutation (e.g., STM32 COMG).
+     */
+    virtual void apply() {}
+
+    /**
      * @brief Set all phases to neutral (50% duty cycle)
      * Used for motor startup and balanced operation
      */
-    virtual void setNeutral() noexcept {
+    void setNeutral() noexcept {
         setChannelState(PwmChannel::PHASE_U, PwmState::OFF, 0.0f);
         setChannelState(PwmChannel::PHASE_V, PwmState::OFF, 0.0f);
         setChannelState(PwmChannel::PHASE_W, PwmState::OFF, 0.0f);
+        apply();
     }
 
     uint32_t getFrequency() noexcept {

@@ -61,10 +61,13 @@ void CommutationController::applyCommutationStep(const CommutationStep& step, fl
     cached_phase_v_state_ = step.phase_v;
     cached_phase_w_state_ = step.phase_w;
 
-    // Apply PWM states with direct duty_cycle control
+    // Queue PWM states — changes are preloaded, not applied until apply() is called
     pwm_interface_.setChannelState(PwmChannel::PHASE_U, step.phase_u, duty_cycle);
     pwm_interface_.setChannelState(PwmChannel::PHASE_V, step.phase_v, duty_cycle);
     pwm_interface_.setChannelState(PwmChannel::PHASE_W, step.phase_w, duty_cycle);
+
+    // Apply all three channel states atomically (TIM_EGR_COMG on STM32)
+    pwm_interface_.apply();
 }
 
 void CommutationController::updateDutyCycle(float duty_cycle) noexcept
