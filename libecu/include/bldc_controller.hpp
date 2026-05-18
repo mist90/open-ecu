@@ -247,6 +247,7 @@ private:
     static constexpr size_t DEBUG_BUFFER_SIZE = 1000;
     std::array<PwmDebugSample, DEBUG_BUFFER_SIZE> debug_buffer_; ///< Single buffer for debug data
     volatile size_t debug_write_index_;       ///< Current write index
+    volatile size_t debug_read_index_;          ///< Current read index (one sample per call)
     volatile bool debug_buffer_ready_;        ///< True when buffer is full and ready for reading
 #endif
 

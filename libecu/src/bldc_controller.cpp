@@ -54,6 +54,7 @@ BldcController::BldcController(
 #ifdef DEBUG_PWM_ISR
     , debug_buffer_{}
     , debug_write_index_(0)
+    , debug_read_index_(0)
     , debug_buffer_ready_(false)
 #endif
 {
@@ -665,29 +666,27 @@ float BldcController::getCurrentFromActivePhase() noexcept {
 
 #ifdef DEBUG_PWM_ISR
 void BldcController::processDebugOutput() noexcept {
-    // Check if buffer is ready for reading
     if (!debug_buffer_ready_) {
         return;
     }
 
-    // Print one sample
-    for (size_t debug_read_index_ = 0; debug_read_index_ < DEBUG_BUFFER_SIZE; debug_read_index_++) {
-        const auto& sample = debug_buffer_[debug_read_index_];
-        printf("%.2f,%.2f,%.2f,%u\n",
-               sample.duty_cycle,
-               sample.target_current,
-               sample.measured_current,
-               (unsigned int)sample.current_position);
+    const auto& sample = debug_buffer_[debug_read_index_];
+    printf("%.2f,%.2f,%.2f,%u\n",
+           sample.duty_cycle,
+           sample.target_current,
+           sample.measured_current,
+           (unsigned int)sample.current_position);
+
+    debug_read_index_++;
+
+    if (debug_read_index_ >= DEBUG_BUFFER_SIZE) {
+        printf("\n\n");
+        disable_interrupts();
+        debug_read_index_ = 0;
+        debug_write_index_ = 0;
+        debug_buffer_ready_ = false;
+        enable_interrupts();
     }
-
-    // Buffer finished - print extra newline and clear buffer
-    printf("\n\n");
-
-    // Clear buffer under disabled interrupts
-    disable_interrupts();
-    debug_write_index_ = 0;
-    debug_buffer_ready_ = false;
-    enable_interrupts();
 }
 #endif
 

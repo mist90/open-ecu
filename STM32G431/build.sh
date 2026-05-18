@@ -38,7 +38,7 @@ echo
 BUILD_TYPE="Debug"
 CLEAN_BUILD=false
 VERBOSE=false
-DEBUG_PWM_ISR=false
+DEBUG_PWM_ISR=true
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -54,8 +54,8 @@ while [[ $# -gt 0 ]]; do
             VERBOSE=true
             shift
             ;;
-        --debug-pwm)
-            DEBUG_PWM_ISR=true
+        --nodebug-pwm)
+            DEBUG_PWM_ISR=false
             shift
             ;;
         -h|--help)
