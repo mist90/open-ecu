@@ -9,10 +9,6 @@
 #include <stdio.h>
 #include <cmath>
 
-// Platform-specific interrupt control
-void disable_interrupts();
-void enable_interrupts();
-
 // Speed measurement configuration
 #define SPEED_TIMEOUT_US          500000  ///< Timeout for speed measurement (1 second)
 #define BLDC_NUM_PHASES           3        ///< Number of phases in BLDC motor
@@ -286,14 +282,13 @@ void BldcController::start() noexcept
     pwm_interface_.enable(true);
 
     // Reset speed measurement on motor start
-    disable_interrupts();
+    CriticalSection cs;
     speed_measurement_active_ = false;
     speed_start_time_us_ = 0;
     speed_end_time_us_ = 0;
     speed_pulse_count_ = 0;
     last_hall_state_ = commutation_controller_.getCurrentPosition();
     last_period_us_ = 0;
-    enable_interrupts();
 
     // Reset PID timing and target speed filters
     last_pid_update_time_us_ = 0;
@@ -304,23 +299,19 @@ void BldcController::start() noexcept
 
 void BldcController::stop() noexcept
 {
+    CriticalSection cs;
     status_.is_running = false;
     status_.duty_cycle = 0.0f;
     open_loop_running_ = false;
     open_loop_step_ = 0;
-    {
-        CriticalSection cs;
-        commutation_controller_.update(0, 0.0f);
-    }
+    commutation_controller_.update(0, 0.0f);
 
     // Reset speed measurement on motor stop
-    disable_interrupts();
     speed_measurement_active_ = false;
     speed_start_time_us_ = 0;
     speed_end_time_us_ = 0;
     speed_pulse_count_ = 0;
     last_period_us_ = 0;
-    enable_interrupts();
     status_.current_speed_rps = 0.0f;
 
     // Reset PID timing
@@ -367,13 +358,12 @@ float BldcController::calculateSpeed() noexcept
     const uint32_t MAX_EXTRAPOLATION_TIMEOUT_US = 5000000;
     if (elapsed_since_last_pulse_us > MAX_EXTRAPOLATION_TIMEOUT_US) {
         // Motor has stopped - reset to STOPPED state
-        disable_interrupts();
+        CriticalSection cs;
         speed_measurement_active_ = false;
         speed_start_time_us_ = 0;
         speed_end_time_us_ = 0;
         speed_pulse_count_ = 0;
         last_period_us_ = 0;
-        enable_interrupts();
         return 0.0f;
     }
 
@@ -410,11 +400,13 @@ float BldcController::calculateSpeed() noexcept
         // Save measured period for future extrapolation
         // Update measurement window: move start time to current end time
         // Reset pulse counter for next measurement period
-        disable_interrupts();
-        last_period_us_ = period_us;
-        speed_start_time_us_ = end_time;
-        speed_pulse_count_ = 0;
-        enable_interrupts();
+        {
+            CriticalSection cs;
+            last_period_us_ = period_us;
+            speed_start_time_us_ = end_time;
+            speed_end_time_us_ = end_time;
+            speed_pulse_count_ = 0;
+        }
 
         return speed_rps;
     }
@@ -544,20 +536,25 @@ void BldcController::hallSensorInterruptHandler() noexcept
         return;
     }
 
+    if (dmode_ == DriveMode::REVERSE)
+        delta = -delta;
+
     // Update last Hall state
     last_hall_state_ = hall_state;
 
-    // Initialize measurement on first valid transition (transition to ROTATING state)
-    if (speed_measurement_active_) {
-        speed_pulse_count_ += delta;
-    } else {
-        speed_measurement_active_ = true;
-        speed_start_time_us_ = timestamp_us;
-        speed_pulse_count_ = 0;
-    }
+    if (delta > 0) {
+        // Initialize measurement on first valid transition (transition to ROTATING state)
+        if (speed_measurement_active_) {
+            speed_pulse_count_ += delta;
+        } else {
+            speed_measurement_active_ = true;
+            speed_start_time_us_ = timestamp_us;
+            speed_pulse_count_ = 0;
+        }
 
-    // Update end timestamp and pulse counter
-    speed_end_time_us_ = timestamp_us;
+        // Update end timestamp and pulse counter
+        speed_end_time_us_ = timestamp_us;
+    }
 
     moveNextPosition(hall_state);
 }
@@ -681,11 +678,10 @@ void BldcController::processDebugOutput() noexcept {
 
     if (debug_read_index_ >= DEBUG_BUFFER_SIZE) {
         printf("\n\n");
-        disable_interrupts();
+        CriticalSection cs;
         debug_read_index_ = 0;
         debug_write_index_ = 0;
         debug_buffer_ready_ = false;
-        enable_interrupts();
     }
 }
 #endif
