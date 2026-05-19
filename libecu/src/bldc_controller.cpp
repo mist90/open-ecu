@@ -338,18 +338,16 @@ float BldcController::calculateSpeed() noexcept
     // Atomically copy volatile variables AND current time together
     // (prevents race where ISR updates end_time after we read current_time)
     disable_interrupts();
+    if (speed_measurement_active_) {
+        enable_interrupts();
+        // STOPPED state: measurement not active
+        return 0.0f;
+    }
     uint32_t current_time_us = time_us();
-    bool is_active = speed_measurement_active_;
     uint32_t start_time = speed_start_time_us_;
     uint32_t end_time = speed_end_time_us_;
     int32_t pulse_count = speed_pulse_count_;
     uint32_t last_period = last_period_us_;
-    enable_interrupts();
-
-    // STOPPED state: measurement not active
-    if (!is_active) {
-        return 0.0f;
-    }
 
     // Calculate elapsed time since last pulse
     uint32_t elapsed_since_last_pulse_us = current_time_us - end_time;
@@ -358,21 +356,26 @@ float BldcController::calculateSpeed() noexcept
     const uint32_t MAX_EXTRAPOLATION_TIMEOUT_US = 5000000;
     if (elapsed_since_last_pulse_us > MAX_EXTRAPOLATION_TIMEOUT_US) {
         // Motor has stopped - reset to STOPPED state
-        CriticalSection cs;
         speed_measurement_active_ = false;
         speed_start_time_us_ = 0;
         speed_end_time_us_ = 0;
         speed_pulse_count_ = 0;
         last_period_us_ = 0;
+        enable_interrupts();
         return 0.0f;
     }
 
     // ROTATING state: we have received at least one pulse
+    uint32_t period_us = end_time - start_time;
+    if (pulse_count > 0) {
+        last_period_us_ = period_us;
+        speed_start_time_us_ = end_time;
+        speed_pulse_count_ = 0;
+    }
+    enable_interrupts();
 
     // If we have new pulses, calculate speed from measured period
     if (pulse_count > 0) {
-        uint32_t period_us = end_time - start_time;
-
         // Avoid division by zero
         if (period_us == 0) {
             return 0.0f;
@@ -396,18 +399,6 @@ float BldcController::calculateSpeed() noexcept
         if (dmode_ == DriveMode::REVERSE) {
             speed_rps = -speed_rps;
         }
-
-        // Save measured period for future extrapolation
-        // Update measurement window: move start time to current end time
-        // Reset pulse counter for next measurement period
-        {
-            CriticalSection cs;
-            last_period_us_ = period_us;
-            speed_start_time_us_ = end_time;
-            speed_end_time_us_ = end_time;
-            speed_pulse_count_ = 0;
-        }
-
         return speed_rps;
     }
 
