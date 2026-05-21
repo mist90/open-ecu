@@ -338,7 +338,7 @@ float BldcController::calculateSpeed() noexcept
     // Atomically copy volatile variables AND current time together
     // (prevents race where ISR updates end_time after we read current_time)
     disable_interrupts();
-    if (speed_measurement_active_) {
+    if (!speed_measurement_active_) {
         enable_interrupts();
         // STOPPED state: measurement not active
         return 0.0f;
