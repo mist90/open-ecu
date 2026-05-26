@@ -12,10 +12,28 @@ from PyQt6.QtCore import QObject, QThread, QTimer, pyqtSignal, Qt
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QLineEdit, QComboBox, QDoubleSpinBox, QTabWidget,
-    QMessageBox, QFrame
+    QMessageBox, QFrame, QSlider, QGroupBox
 )
 
 import pyqtgraph as pg
+
+
+def crc16_ccitt(data: bytes) -> int:
+    crc = 0xFFFF
+    for byte in data:
+        crc ^= byte << 8
+        for _ in range(8):
+            if crc & 0x8000:
+                crc = (crc << 1) ^ 0x1021
+            else:
+                crc = crc << 1
+            crc &= 0xFFFF
+    return crc
+
+
+def format_at_command(cmd: str) -> str:
+    crc = crc16_ccitt(cmd.encode("ascii"))
+    return f"{cmd}*{crc:04X}\r\n"
 
 
 class SerialWorker(QObject):
@@ -58,6 +76,10 @@ class SerialWorker(QObject):
             self.serial = None
         self.connection_status.emit(False, "Disconnected")
 
+    def write(self, data: bytes):
+        if self.serial is not None and self._running:
+            self.serial.write(data)
+
     def run(self):
         if self.serial is None:
             return
@@ -86,6 +108,67 @@ def _style_plot(plot_widget: pg.PlotWidget, title: str = "", bottom_label: str =
         plot_widget.setLabel("bottom", bottom_label)
     plot_widget.setLabel("left", color="#cccccc")
     plot_widget.setLabel("bottom", color="#cccccc")
+
+
+class SpeedController(QWidget):
+    """Speed regulator widget that sends AT+SPD commands."""
+
+    def __init__(self, write_callback):
+        super().__init__()
+        self._write = write_callback
+        self._suppress_signal = False
+        self._init_ui()
+
+    def _init_ui(self):
+        group = QGroupBox("Speed Control")
+        layout = QHBoxLayout(group)
+
+        layout.addWidget(QLabel("Target Speed:"))
+
+        self.slider = QSlider(Qt.Orientation.Horizontal)
+        self.slider.setRange(0, 200)
+        self.slider.setValue(0)
+        self.slider.setTickInterval(10)
+        self.slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self.slider.valueChanged.connect(self._on_slider_changed)
+        layout.addWidget(self.slider, stretch=2)
+
+        self.spinbox = QDoubleSpinBox()
+        self.spinbox.setRange(0, 200)
+        self.spinbox.setDecimals(1)
+        self.spinbox.setSingleStep(5)
+        self.spinbox.setValue(0)
+        self.spinbox.setSuffix(" RPS")
+        self.spinbox.setMinimumWidth(100)
+        self.spinbox.valueChanged.connect(self._on_spinbox_changed)
+        layout.addWidget(self.spinbox)
+
+        self.group = group
+        self.setLayout(layout)
+
+    def set_enabled(self, enabled: bool):
+        self.group.setEnabled(enabled)
+
+    def _on_slider_changed(self, value: int):
+        if self._suppress_signal:
+            return
+        self._suppress_signal = True
+        self.spinbox.setValue(float(value))
+        self._suppress_signal = False
+        self._send_command()
+
+    def _on_spinbox_changed(self, value: float):
+        if self._suppress_signal:
+            return
+        self._suppress_signal = True
+        self.slider.setValue(int(value))
+        self._suppress_signal = False
+        self._send_command()
+
+    def _send_command(self):
+        speed = self.spinbox.value()
+        cmd = format_at_command(f"AT+SPD={speed:.1f}")
+        self._write(cmd.encode("ascii"))
 
 
 class ContinuousTab(QWidget):
@@ -169,6 +252,8 @@ class ContinuousTab(QWidget):
         if len(fields) != 8:
             return
         try:
+            if fields[0].startswith("+TM:"):
+                fields[0] = fields[0][4:]
             ts = float(fields[2])
             cs = float(fields[3])
             dc = float(fields[4])
@@ -238,98 +323,65 @@ class ContinuousTab(QWidget):
 
 
 class CurrentWaveformTab(QWidget):
-    """Captures a 1000-sample DEBUG_PWM_ISR burst and plots signals."""
+    """Captures +OSC bursts from AT oscilloscope output."""
 
     def __init__(self):
         super().__init__()
-        self._lines_buffer: list[str] = []
+        self._osc_samples: list[tuple[int, int]] = []
         self._init_ui()
 
     def _init_ui(self):
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("Fixed 1000 samples (burst on DEBUG_PWM_ISR)"), alignment=Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(QLabel("Oscilloscope burst from +OSC stream"), alignment=Qt.AlignmentFlag.AlignCenter)
 
         self.plot_currents = pg.PlotWidget()
-        _style_plot(self.plot_currents, "PWM ISR - Current", bottom_label="Sample Index")
-        self.curve_target_cur  = self.plot_currents.plot(name="target_current",   pen=pg.mkPen("#aa00ff", width=2))
-        self.curve_meas_cur    = self.plot_currents.plot(name="measured_current", pen=pg.mkPen("#00ffff", width=2))
+        _style_plot(self.plot_currents, "Oscilloscope - Current", bottom_label="Sample Index")
+        self.curve_meas_cur = self.plot_currents.plot(name="measured_current", pen=pg.mkPen("#00ffff", width=2))
         layout.addWidget(self.plot_currents, stretch=2)
 
-        self.plot_duty = pg.PlotWidget()
-        _style_plot(self.plot_duty, "PWM ISR - Duty Cycle", bottom_label="Sample Index")
-        self.curve_duty  = self.plot_duty.plot(name="duty_cycle", pen=pg.mkPen("#ffff00", width=2))
-        layout.addWidget(self.plot_duty, stretch=1)
-
-        self.plot_position = pg.PlotWidget()
-        _style_plot(self.plot_position, "Commutation Position", bottom_label="Sample Index")
-        self.curve_position  = self.plot_position.plot(name="current_position", pen=pg.mkPen("#00ff88", width=2))
-        layout.addWidget(self.plot_position, stretch=1)
-
-        self.label_status = QLabel("Waiting for burst...")
+        self.label_status = QLabel("Waiting for +OSC burst...")
         self.label_status.setStyleSheet("color: #888;")
         layout.addWidget(self.label_status, alignment=Qt.AlignmentFlag.AlignCenter)
 
     def reset(self):
-        self._lines_buffer.clear()
-        self.curve_target_cur.setData([], [])
+        self._osc_samples.clear()
         self.curve_meas_cur.setData([], [])
-        self.curve_duty.setData([], [])
-        self.curve_position.setData([], [])
-        self.label_status.setText("Waiting for burst...")
+        self.label_status.setText("Waiting for +OSC burst...")
+
+    def add_data(self, sample_idx: int, current_scaled: int):
+        self._osc_samples.append((sample_idx, current_scaled))
+        if len(self._osc_samples) > 1100:
+            self._osc_samples = self._osc_samples[-1000:]
+
+    def finish_burst(self):
+        if not self._osc_samples:
+            self.label_status.setText("Empty burst received")
+            return
+
+        self._osc_samples.sort(key=lambda x: x[0])
+        n = len(self._osc_samples)
+        x = np.array([s[0] for s in self._osc_samples], dtype=np.float64)
+        y = np.array([s[1] / 1000.0 for s in self._osc_samples], dtype=np.float64)
+
+        self.curve_meas_cur.setData(x, y)
+        self.plot_currents.setXRange(x[0], x[-1] + 10)
+        self.label_status.setText(f"OSC burst: {n} samples")
 
     def add_line(self, line: str):
         if line == "":
-            self._process_burst()
+            self.finish_burst()
+            self._osc_samples.clear()
             return
-        self._lines_buffer.append(line)
-        if len(self._lines_buffer) > 1100:
-            self._lines_buffer.clear()
-
-    def _process_burst(self):
-        if len(self._lines_buffer) < 50:
-            self._lines_buffer.clear()
-            return
-
-        duty = []
-        tgt_cur = []
-        meas_cur = []
-        pos = []
-
-        success = 0
-        for raw in self._lines_buffer:
-            parts = raw.split(",")
-            if len(parts) != 4:
-                continue
-            try:
-                duty.append(float(parts[0]))
-                tgt_cur.append(float(parts[1]))
-                meas_cur.append(float(parts[2]))
-                pos.append(int(parts[3]))
-                success += 1
-            except ValueError:
-                pass
-
-        self._lines_buffer.clear()
-
-        if success < 10:
-            return
-
-        n = len(duty)
-        x = np.arange(n, dtype=np.float64)
-        duty_arr = np.array(duty)
-        tgt_cur_arr = np.array(tgt_cur)
-        meas_cur_arr = np.array(meas_cur)
-        pos_arr = np.array(pos, dtype=np.float64)
-
-        self.curve_duty.setData(x, duty_arr)
-        self.curve_target_cur.setData(x, tgt_cur_arr)
-        self.curve_meas_cur.setData(x, meas_cur_arr)
-        self.curve_position.setData(x, pos_arr)
-
-        self.plot_currents.setXRange(0, max(n, 1000))
-        self.plot_duty.setXRange(0, max(n, 1000))
-        self.plot_position.setXRange(0, max(n, 1000))
-        self.label_status.setText(f"Received burst: {n} samples")
+        if line.startswith("+OSC:"):
+            rest = line[5:]
+            if "," in rest:
+                parts = rest.split(",", 1)
+                try:
+                    idx = int(parts[0])
+                    cur = int(parts[1])
+                    self.add_data(idx, cur)
+                except ValueError:
+                    pass
 
 
 class MonitorWindow(QMainWindow):
@@ -337,7 +389,7 @@ class MonitorWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Open ECU Monitor")
-        self.resize(1200, 800)
+        self.resize(1200, 900)
 
         self.worker_thread: QThread | None = None
         self.worker: SerialWorker | None = None
@@ -381,6 +433,11 @@ class MonitorWindow(QMainWindow):
         self.status_label.setStyleSheet("color: #888;")
         top_bar.addWidget(self.status_label)
 
+        top_bar.addStretch()
+
+        self.speed_ctrl = SpeedController(self._send_data)
+        top_bar.addWidget(self.speed_ctrl, stretch=1)
+
         root.addLayout(top_bar)
 
         sep = QFrame()
@@ -392,6 +449,10 @@ class MonitorWindow(QMainWindow):
         tabs.addTab(self.tab_continuous, "Continuous")
         tabs.addTab(self.tab_waveform, "Current Waveform")
         root.addWidget(tabs, stretch=1)
+
+    def _send_data(self, data: bytes):
+        if self.worker is not None:
+            self.worker.write(data)
 
     def _populate_ports(self):
         self.port_combo.clear()
@@ -449,6 +510,7 @@ class MonitorWindow(QMainWindow):
         self.btn_connect.setStyleSheet("background-color: #ff4444; color: white;")
         self.tab_continuous.reset()
         self.tab_waveform.reset()
+        self.speed_ctrl.set_enabled(True)
         self._populate_ports()
 
     def _stop(self):
@@ -460,6 +522,7 @@ class MonitorWindow(QMainWindow):
         self.btn_connect.setStyleSheet("")
         self.status_label.setText("Disconnected")
         self.status_label.setStyleSheet("color: #888;")
+        self.speed_ctrl.set_enabled(False)
 
     def _cleanup_thread(self):
         if self.worker_thread is not None:
@@ -476,10 +539,15 @@ class MonitorWindow(QMainWindow):
             self.status_label.setStyleSheet("color: #888;")
 
     def _on_line(self, line: str):
-        if ";" in line:
+        if line.startswith("+TM:") or ("+TM:" in line and ";" in line):
             self.tab_continuous.add_sample(line.split(";"))
-        else:
-            self.tab_waveform.add_line(line)
+        elif line.startswith("+OSC:"):
+            if line == "+OSC:":
+                self.tab_waveform.add_line("")
+            else:
+                self.tab_waveform.add_line(line)
+        elif line.startswith("OK") or line.startswith("ERROR"):
+            pass
 
 
 def main():
@@ -496,6 +564,10 @@ def main():
         QComboBox { background: #2a2a2a; color: #eee; border: 1px solid #555; }
         QComboBox::drop-down { border: none; }
         QLabel { color: #ccc; }
+        QSlider::groove:horizontal { border: 1px solid #555; height: 8px; background: #2a2a2a; border-radius: 4px; }
+        QSlider::handle:horizontal { background: #4a9eff; width: 18px; margin-top: -6px; margin-bottom: -6px; border-radius: 9px; }
+        QGroupBox { color: #ccc; border: 1px solid #555; margin-top: 6px; }
+        QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; }
     """)
     window = MonitorWindow()
     window.show()

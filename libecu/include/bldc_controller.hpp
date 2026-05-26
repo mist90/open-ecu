@@ -183,13 +183,7 @@ public:
      */
     void pwmInterruptHandler() noexcept;
 
-#ifdef DEBUG_PWM_ISR
-    /**
-     * @brief Process debug buffer output (call from main loop)
-     * Outputs one sample per call to avoid blocking
-     */
-    void processDebugOutput() noexcept;
-#endif
+
 
 private:
     void moveNextPosition(uint8_t position) noexcept;
@@ -235,21 +229,7 @@ private:
     float filtered_measured_speed_;           ///< LPF-filtered measured speed
     float limited_target_speed_;             ///< Rate-limited target speed (after LPF)
 
-#ifdef DEBUG_PWM_ISR
-    // Debug data capture (single buffer)
-    struct PwmDebugSample {
-        float duty_cycle;
-        float target_current;
-        float measured_current;
-        uint8_t current_position;
-    };
 
-    static constexpr size_t DEBUG_BUFFER_SIZE = 1000;
-    std::array<PwmDebugSample, DEBUG_BUFFER_SIZE> debug_buffer_; ///< Single buffer for debug data
-    volatile size_t debug_write_index_;       ///< Current write index
-    volatile size_t debug_read_index_;          ///< Current read index (one sample per call)
-    volatile bool debug_buffer_ready_;        ///< True when buffer is full and ready for reading
-#endif
 
     /**
      * @brief Calculate motor speed from Hall sensor transitions

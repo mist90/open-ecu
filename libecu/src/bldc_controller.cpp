@@ -47,12 +47,7 @@ BldcController::BldcController(
     , filtered_target_speed_(0.0f)
     , filtered_measured_speed_(0.0f)
     , limited_target_speed_(0.0f)
-#ifdef DEBUG_PWM_ISR
-    , debug_buffer_{}
-    , debug_write_index_(0)
-    , debug_read_index_(0)
-    , debug_buffer_ready_(false)
-#endif
+
 {
     // Initialize status
     status_.current_speed_rps = 0.0f;
@@ -615,22 +610,7 @@ void BldcController::pwmInterruptHandler() noexcept {
         commutation_controller_.updateDutyCycle(duty_cycle);
     }
 
-#ifdef DEBUG_PWM_ISR
-    // Capture debug data for analysis (single buffer)
-    if (!debug_buffer_ready_ && debug_write_index_ < DEBUG_BUFFER_SIZE) {
-        auto& sample = debug_buffer_[debug_write_index_];
-        sample.duty_cycle = duty_cycle;
-        sample.target_current = target_current;
-        sample.measured_current = measured_current;
-        sample.current_position = commutation_controller_.getCurrentPosition();
-        debug_write_index_++;
 
-        // Buffer full - mark as ready for output
-        if (debug_write_index_ >= DEBUG_BUFFER_SIZE) {
-            debug_buffer_ready_ = true;
-        }
-    }
-#endif
 }
 
 float BldcController::getCurrentFromActivePhase() noexcept {
@@ -659,29 +639,6 @@ float BldcController::getCurrentFromActivePhase() noexcept {
     }
 }
 
-#ifdef DEBUG_PWM_ISR
-void BldcController::processDebugOutput() noexcept {
-    if (!debug_buffer_ready_) {
-        return;
-    }
 
-    const auto& sample = debug_buffer_[debug_read_index_];
-    printf("%.2f,%.2f,%.2f,%u\n",
-           sample.duty_cycle,
-           sample.target_current,
-           sample.measured_current,
-           (unsigned int)sample.current_position);
-
-    debug_read_index_++;
-
-    if (debug_read_index_ >= DEBUG_BUFFER_SIZE) {
-        printf("\n\n");
-        CriticalSection cs;
-        debug_read_index_ = 0;
-        debug_write_index_ = 0;
-        debug_buffer_ready_ = false;
-    }
-}
-#endif
 
 } // namespace libecu

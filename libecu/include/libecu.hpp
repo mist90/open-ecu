@@ -14,6 +14,9 @@
 #include "algorithms/commutation_controller.hpp"
 #include "algorithms/pid_controller.hpp"
 
+// AT command processor
+#include "at_command_processor.hpp"
+
 /**
  * @namespace libecu
  * @brief Platform-independent BLDC motor control library

@@ -12,6 +12,7 @@
 #include <stddef.h>
 #include <string.h>
 #include <stdio.h>
+#include "uart_at_bridge.hpp"
 
 #define PERIODIC_TIMER_FREQ 1000
 #define PWM_TIMER_FREQ 40000
@@ -23,6 +24,8 @@
 #define BLDC_INVERTION  false
 
 #define COMPACT_PRINTF
+
+#define LEGACY_POT_CONTROL
 
 #ifndef COMPACT_PRINTF
 #define PRINT_STRING "%u->%u: RPS target:% 6.2f   meas:% 6.2f   D:% 6.2f   I target:% 6.2f   meas:% 6.2f   Vbus:% 6.2f\n"
@@ -43,6 +46,7 @@ static libecu::Stm32TimHallSensor hall_sensor(hall_config);
 static libecu::Stm32Adc adc_driver;
 static libecu::CommutationController* commutation_controller = nullptr;
 static libecu::BldcController* motor_controller = nullptr;
+static libecu::UartAtBridge* g_at_processor = nullptr;
 static volatile bool control_tick = false;
 
 void SystemClock_Config(void);
@@ -111,6 +115,8 @@ extern "C" void motor_controller_pwm_interrupt_handler(void)
 {
     if (motor_controller != nullptr) {
         motor_controller->pwmInterruptHandler();
+        libecu::MotorStatus status = motor_controller->getStatus();
+        g_at_processor->captureOscSample(status.duty_cycle, status.target_current, status.measured_current, status.measured_position);
     }
 }
 
@@ -207,6 +213,9 @@ int main(void)
         Error_Handler();
     }
 
+    static libecu::UartAtBridge at_processor(motor_controller);
+        g_at_processor = &at_processor;
+
     /* Configure interrupt priorities for real-time control
      * Lower preempt priority number = higher priority (can preempt higher numbers)
      * Priority 0: TIM1 (20kHz current loop) - highest priority, time-critical
@@ -251,6 +260,7 @@ int main(void)
                 libecu::CriticalSection cs;
                 status = motor_controller->getStatus();
             }
+#ifdef LEGACY_POT_CONTROL
             // Read potentiometer and update target speed (runs in main loop)
             if (status.control_mode == libecu::ControlMode::CLOSED_LOOP_VELOCITY ||
                     status.control_mode == libecu::ControlMode::OPEN_LOOP) {
@@ -265,23 +275,15 @@ int main(void)
                     motor_controller->setDutyCycle(target_duty_cycle);
                 }
             }
-            printf(PRINT_STRING,
-                        status.measured_position,
-                        status.target_position,
-                        status.target_speed_rps,
-                        status.current_speed_rps,
-                        status.duty_cycle,
-                        status.target_current,
-                        status.measured_current,
-                        status.bus_voltage);
+#endif
+
+            if (at_processor.isTelemetryEnabled()) {
+                at_processor.sendTelemetry(status);
+            }
         }
 
-#ifdef DEBUG_PWM_ISR
-        // Process debug buffer output (one sample per loop iteration)
-        if (motor_controller) {
-            motor_controller->processDebugOutput();
-        }
-#endif
+        at_processor.process();
+        at_processor.processOscOutput();
     }
 }
 
