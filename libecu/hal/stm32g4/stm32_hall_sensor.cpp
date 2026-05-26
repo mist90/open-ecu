@@ -30,6 +30,20 @@ Stm32TimHallSensor::Stm32TimHallSensor(const HallGpioConfig& config) noexcept
 }
 
 bool Stm32TimHallSensor::initialize() {
+    GPIO_InitTypeDef GPIO_InitStruct = {0};
+
+    /* Peripheral clock enable */
+    __HAL_RCC_TIM4_CLK_ENABLE();
+
+    /* TIM4 GPIO Configuration: PB6(CH1), PB7(CH2), PB8(CH3) -> AF2_TIM4 */
+    __HAL_RCC_GPIOB_CLK_ENABLE();
+    GPIO_InitStruct.Pin = GPIO_PIN_6|GPIO_PIN_7|GPIO_PIN_8;
+    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+    GPIO_InitStruct.Alternate = GPIO_AF2_TIM4;
+    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+    
     htim4 = {0};
 
     htim4.Instance = TIM4;
@@ -48,6 +62,10 @@ bool Stm32TimHallSensor::initialize() {
     if (HAL_TIMEx_HallSensor_Init(&htim4, &hall_config) != HAL_OK) {
         return false;
     }
+
+    /* TIM4 interrupt - priority 1 (Hall sensor) */
+    HAL_NVIC_SetPriority(TIM4_IRQn, 1, 0);
+    HAL_NVIC_EnableIRQ(TIM4_IRQn);
 
     if (HAL_TIMEx_HallSensor_Start_IT(&htim4) != HAL_OK) {
         return false;
