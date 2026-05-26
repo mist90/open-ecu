@@ -1,6 +1,0 @@
-mkdir -p build
-g++ -std=c++17 -Wall -Wextra -O2 -fPIC -Iinclude -c src/bldc_controller.cpp -o build/bldc_controller.o
-g++ -std=c++17 -Wall -Wextra -O2 -fPIC -Iinclude -c src/commutation_controller.cpp -o build/commutation_controller.o
-g++ -std=c++17 -Wall -Wextra -O2 -fPIC -Iinclude -c src/pid_controller.cpp -o build/pid_controller.o
-mkdir -p lib
-ar rcs lib/liblibecu.a build/bldc_controller.o build/commutation_controller.o build/pid_controller.o
