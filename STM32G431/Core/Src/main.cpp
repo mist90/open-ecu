@@ -40,6 +40,10 @@ TIM_HandleTypeDef htim4;  /* For TIM4 Hall Sensor Interface IRQ handler */
 
 UART_HandleTypeDef huart2;
 
+DMA_HandleTypeDef hdma_usart2_rx;
+uint8_t dma_rx_buffer[256];
+volatile uint16_t dma_rx_index = 0;
+
 static libecu::Stm32Pwm pwm_driver(&htim1);
 static libecu::HallGpioConfig hall_config{A__GPIO_Port, A__Pin, B__Pin, Z__Pin};
 static libecu::Stm32TimHallSensor hall_sensor(hall_config);
@@ -53,6 +57,7 @@ void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_TIM2_Init(void);
+static void MX_DMA_USART2_Init(void);
 
 extern "C" {
 int __io_putchar(int ch)
@@ -63,12 +68,23 @@ int __io_putchar(int ch)
 
 int __io_getchar(void)
 {
-    uint8_t byte;
+    int ch = EOF;
 
-    if (HAL_UART_Receive(&huart2, &byte, 1, 0) == HAL_OK)
-        return (int)byte;
-    else
-        return (int)EOF;
+    disable_interrupts();
+
+    /* Read DMA write position from CNDTR (bytes remaining) */
+    uint16_t cndtr = hdma_usart2_rx.Instance->CNDTR;
+    uint16_t write_pos = 256 - cndtr;
+
+    /* Check if new data is available */
+    if (dma_rx_index != write_pos) {
+        ch = (int)dma_rx_buffer[dma_rx_index];
+        dma_rx_index = (dma_rx_index + 1) % 256;
+    }
+
+    enable_interrupts();
+
+    return ch;
 }
 }
 
@@ -366,6 +382,39 @@ static void MX_TIM2_Init(void)
 }
 
 /**
+  * @brief USART2 DMA Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_DMA_USART2_Init(void)
+{
+    /* DMA controller clock enable */
+    __HAL_RCC_DMA1_CLK_ENABLE();
+
+    /* USART2 DMA Init */
+    /* USART2_RX Init */
+    hdma_usart2_rx.Instance = DMA1_Channel6;
+    hdma_usart2_rx.Init.Request = DMA_REQUEST_USART2_RX;
+    hdma_usart2_rx.Init.Direction = DMA_PERIPH_TO_MEMORY;
+    hdma_usart2_rx.Init.PeriphInc = DMA_PINC_DISABLE;
+    hdma_usart2_rx.Init.MemInc = DMA_MINC_ENABLE;
+    hdma_usart2_rx.Init.PeriphDataAlignment = DMA_PDATAALIGN_BYTE;
+    hdma_usart2_rx.Init.MemDataAlignment = DMA_MDATAALIGN_BYTE;
+    hdma_usart2_rx.Init.Mode = DMA_CIRCULAR;
+    hdma_usart2_rx.Init.Priority = DMA_PRIORITY_LOW;
+    if (HAL_DMA_Init(&hdma_usart2_rx) != HAL_OK) {
+        Error_Handler();
+    }
+
+    __HAL_LINKDMA(&huart2, hdmarx, hdma_usart2_rx);
+
+    /* Start DMA reception */
+    if (HAL_UART_Receive_DMA(&huart2, dma_rx_buffer, 256) != HAL_OK) {
+        Error_Handler();
+    }
+}
+
+/**
   * @brief USART2 Initialization Function
   * @param None
   * @retval None
@@ -395,6 +444,9 @@ static void MX_USART2_UART_Init(void)
     if (HAL_UARTEx_DisableFifoMode(&huart2) != HAL_OK) {
         Error_Handler();
     }
+
+    /* Initialize USART2 DMA for RX */
+    MX_DMA_USART2_Init();
 }
 
 /**

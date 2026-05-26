@@ -5,6 +5,13 @@
 #include "../Inc/main.h"
 
 extern UART_HandleTypeDef huart2;
+extern DMA_HandleTypeDef hdma_usart2_rx;
+extern uint8_t dma_rx_buffer[256];
+extern volatile uint16_t dma_rx_index;
+
+// Forward declarations for interrupt control functions
+extern "C" void disable_interrupts();
+extern "C" void enable_interrupts();
 
 namespace libecu {
 
@@ -14,14 +21,21 @@ public:
         : AtCommandProcessor(controller) {}
 
     int32_t read() override {
-        uint8_t byte;
-        // Using same pattern as __io_getchar in main.cpp
-        // HAL_UART_Receive with 0 timeout = non-blocking
-        // Returns -1 if no data available
-        if (HAL_UART_Receive(&huart2, &byte, 1, 0) == HAL_OK) {
-            return static_cast<int32_t>(byte);
+        int32_t ch = -1;
+
+        disable_interrupts();
+
+        uint16_t cndtr = hdma_usart2_rx.Instance->CNDTR;
+        uint16_t write_pos = 256 - cndtr;
+
+        if (dma_rx_index != write_pos) {
+            ch = static_cast<int32_t>(dma_rx_buffer[dma_rx_index]);
+            dma_rx_index = (dma_rx_index + 1) % 256;
         }
-        return -1;
+
+        enable_interrupts();
+
+        return ch;
     }
 
     void write(const char* str, std::size_t len) override {
