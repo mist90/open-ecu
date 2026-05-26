@@ -15,6 +15,7 @@ extern void motor_controller_pwm_interrupt_handler(void);
 void HAL_SYSTICK_Callback(void);
 
 extern TIM_HandleTypeDef htim1;
+extern TIM_HandleTypeDef htim4;
 extern DMA_HandleTypeDef hdma_adc1;
 
 /******************************************************************************/
@@ -103,25 +104,20 @@ void SysTick_Handler(void)
 /******************************************************************************/
 
 /**
-  * @brief This function handles EXTI line[9:5] interrupts.
-  *        Handles Hall sensor GPIO interrupts (PB6, PB7, PB8)
+  * @brief This function handles TIM4 interrupt.
   */
-void EXTI9_5_IRQHandler(void)
+void TIM4_IRQHandler(void)
 {
-    HAL_GPIO_EXTI_IRQHandler(A__Pin);
-    HAL_GPIO_EXTI_IRQHandler(B__Pin);
-    HAL_GPIO_EXTI_IRQHandler(Z__Pin);
+    HAL_TIM_IRQHandler(&htim4);
 }
 
 /**
-  * @brief GPIO EXTI callback for Hall sensor state changes
-  * @param GPIO_Pin: Pin that triggered the interrupt
+  * @brief TIM Input Capture callback
+  * @param htim: Timer handle
   */
-void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim)
 {
-    /* Check if interrupt is from Hall sensor pins */
-    if ((GPIO_Pin == A__Pin) || (GPIO_Pin == B__Pin) || (GPIO_Pin == Z__Pin)) {
-        // Call the motor controller's Hall sensor interrupt handler
+    if (htim->Instance == TIM4) {
         motor_controller_hall_interrupt_handler();
     }
 }

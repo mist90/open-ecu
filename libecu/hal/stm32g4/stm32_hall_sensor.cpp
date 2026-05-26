@@ -1,56 +1,70 @@
 /**
  * @file stm32_hall_sensor.cpp
- * @brief STM32G4 GPIO-based Hall sensor implementation
+ * @brief STM32G4 TIM4 Hall Sensor Interface implementation
  */
 
 #include "stm32_hall_sensor.hpp"
 #include "../../Core/Inc/main.h"
+#include <cstdint>
+
+// Global TIM4 handle (shared with IRQ handler via extern in stm32g4xx_it.c)
+extern TIM_HandleTypeDef htim4;
 
 namespace libecu {
 
 // Hall state to motor position lookup table
-const uint8_t Stm32HallSensor::POSITION_TABLE[8] = {
-    0xFF,    // 000
-    0, // 001
-    2, // 010
-    1, // 011
-    4, // 100
-    5, // 101
-    3, // 110
-    0xFF     // 111
+const uint8_t Stm32TimHallSensor::POSITION_TABLE[8] = {
+    0xFF,    // 000 - invalid
+    0,       // 001
+    2,       // 010
+    1,       // 011
+    4,       // 100
+    5,       // 101
+    3,       // 110
+    0xFF     // 111 - invalid
 };
 
-Stm32HallSensor::Stm32HallSensor(const HallGpioConfig& config) noexcept
-    : config_(config) {
+Stm32TimHallSensor::Stm32TimHallSensor(const HallGpioConfig& config) noexcept
+    : config_(config)
+{
 }
 
-bool Stm32HallSensor::initialize() {
-    GPIO_InitTypeDef GPIO_InitStruct = {0};
+bool Stm32TimHallSensor::initialize() {
+    htim4 = {0};
 
-    /* GPIO Ports Clock Enable */
-    __HAL_RCC_GPIOB_CLK_ENABLE();
+    htim4.Instance = TIM4;
+    htim4.Init.Prescaler = 0;
+    htim4.Init.CounterMode = TIM_COUNTERMODE_UP;
+    htim4.Init.Period = 0xFFFF;
+    htim4.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+    htim4.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
 
-    /*Configure GPIO pins : A__Pin B__Pin Z__Pin */
-    GPIO_InitStruct.Pin = config_.hall_a_pin | config_.hall_b_pin | config_.hall_c_pin;
-    GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING_FALLING;
-    GPIO_InitStruct.Pull = GPIO_PULLUP;
-    HAL_GPIO_Init(static_cast<GPIO_TypeDef*>(config_.gpio_port), &GPIO_InitStruct);
+    TIM_HallSensor_InitTypeDef hall_config = {0};
+    hall_config.IC1Polarity = TIM_ICPOLARITY_RISING;
+    hall_config.IC1Prescaler = TIM_ICPSC_DIV1;
+    hall_config.IC1Filter = 0x0C;  // FDIV16_N8: ~752ns debounce at fDTS=170MHz
+    hall_config.Commutation_Delay = 0;
+
+    if (HAL_TIMEx_HallSensor_Init(&htim4, &hall_config) != HAL_OK) {
+        return false;
+    }
+
+    if (HAL_TIMEx_HallSensor_Start_IT(&htim4) != HAL_OK) {
+        return false;
+    }
 
     return true;
 }
 
-uint8_t Stm32HallSensor::getPosition() {
-    uint8_t state;
+uint8_t Stm32TimHallSensor::getPosition() {
+    uint8_t state = 0;
 
-    state = readGpioPin(config_.gpio_port, config_.hall_a_pin) & 0x1;
-    state |= (readGpioPin(config_.gpio_port, config_.hall_b_pin) & 0x1) << 1;
-    state |= (readGpioPin(config_.gpio_port, config_.hall_c_pin) & 0x1) << 2;
+    // Pin mapping: A=PB6 (bit 0), B=PB7 (bit 1), C=PB8 (bit 2)
+    if (GPIOB->IDR & A__Pin)       state |= (1 << 0);
+    if (GPIOB->IDR & B__Pin)       state |= (1 << 1);
+    if (GPIOB->IDR & Z__Pin)       state |= (1 << 2);
 
     return POSITION_TABLE[state & 0x07];
-}
-
-bool Stm32HallSensor::readGpioPin(void* port, uint16_t pin) noexcept {
-    return HAL_GPIO_ReadPin(static_cast<GPIO_TypeDef*>(port), pin) == GPIO_PIN_SET;
 }
 
 } // namespace libecu

@@ -1,0 +1,39 @@
+[0;32mBuilding for platform: STM32G431[0m
+
+[1;33mSTM32 BLDC ECU Build Script[0m
+================================
+[0;32mToolchain Information:[0m
+arm-none-eabi-gcc (15:13.2.rel1-2) 13.2.1 20231009
+cmake version 3.28.3
+
+[0;32mBuild Configuration:[0m
+  Build Type: Debug
+  Build Directory: build
+  Clean Build: false
+  PWM ISR Debug: true
+
+[1;33mConfiguring with CMake...[0m
+-- PWM ISR debug capture enabled (uses ~8KB RAM)
+-- Core sources: /home/user/src/open-ecu/STM32G431/Core/Src/main.cpp;/home/user/src/open-ecu/STM32G431/Core/Src/stm32g4xx_hal_msp.c;/home/user/src/open-ecu/STM32G431/Core/Src/stm32g4xx_it.c;/home/user/src/open-ecu/STM32G431/Core/Src/syscalls.c;/home/user/src/open-ecu/STM32G431/Core/Src/sysmem.c;/home/user/src/open-ecu/STM32G431/Core/Src/system_stm32g4xx.c
+-- HAL sources: /home/user/src/open-ecu/STM32G431/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal.c;/home/user/src/open-ecu/STM32G431/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_adc.c;/home/user/src/open-ecu/STM32G431/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_adc_ex.c;/home/user/src/open-ecu/STM32G431/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_cortex.c;/home/user/src/open-ecu/STM32G431/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_dma.c;/home/user/src/open-ecu/STM32G431/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_dma_ex.c;/home/user/src/open-ecu/STM32G431/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_exti.c;/home/user/src/open-ecu/STM32G431/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_flash.c;/home/user/src/open-ecu/STM32G431/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_flash_ex.c;/home/user/src/open-ecu/STM32G431/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_gpio.c;/home/user/src/open-ecu/STM32G431/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_opamp.c;/home/user/src/open-ecu/STM32G431/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_opamp_ex.c;/home/user/src/open-ecu/STM32G431/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_pwr.c;/home/user/src/open-ecu/STM32G431/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_pwr_ex.c;/home/user/src/open-ecu/STM32G431/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_rcc.c;/home/user/src/open-ecu/STM32G431/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_rcc_ex.c;/home/user/src/open-ecu/STM32G431/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_tim.c;/home/user/src/open-ecu/STM32G431/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_tim_ex.c;/home/user/src/open-ecu/STM32G431/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_uart.c;/home/user/src/open-ecu/STM32G431/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_uart_ex.c
+-- CMSIS sources: 
+-- Startup file: /home/user/src/open-ecu/STM32G431/Core/Startup/startup_stm32g431cbux.s
+-- libecu sources: /home/user/src/open-ecu/STM32G431/../libecu/src/bldc_controller.cpp;/home/user/src/open-ecu/STM32G431/../libecu/src/commutation_controller.cpp;/home/user/src/open-ecu/STM32G431/../libecu/src/pid_controller.cpp;/home/user/src/open-ecu/STM32G431/../libecu/hal/stm32g4/stm32_adc.cpp;/home/user/src/open-ecu/STM32G431/../libecu/hal/stm32g4/stm32_hall_sensor.cpp;/home/user/src/open-ecu/STM32G431/../libecu/hal/stm32g4/stm32_pwm.cpp
+-- Build type: Debug
+-- MCU Family: STM32G4xx
+-- MCU Model: STM32G431xx
+-- C Compiler: /usr/bin/arm-none-eabi-gcc
+-- CXX Compiler: /usr/bin/arm-none-eabi-g++
+-- Configuring done (0.0s)
+-- Generating done (0.0s)
+-- Build files have been written to: /home/user/src/open-ecu/STM32G431/build
+[1;33mBuilding project...[0m
+[100%] Built target open-ecu.elf
+[0;32mBuild completed successfully![0m
+
+[0;32mGenerated files:[0m
+  Firmware: open-ecu.elf
+  Intel HEX: open-ecu.hex
+  Binary: open-ecu.bin
+
+Flash command: st-flash write open-ecu.bin 0x8000000

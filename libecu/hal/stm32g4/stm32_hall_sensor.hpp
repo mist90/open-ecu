@@ -1,12 +1,13 @@
 /**
  * @file stm32_hall_sensor.hpp
- * @brief STM32G4 GPIO-based Hall sensor implementation
+ * @brief STM32G4 TIM4 Hall Sensor Interface implementation
  */
 
 #ifndef LIBECU_STM32_HALL_SENSOR_HPP
 #define LIBECU_STM32_HALL_SENSOR_HPP
 
 #include "../../include/interfaces/hall_interface.hpp"
+#include "stm32g4xx_hal.h"
 
 namespace libecu {
 
@@ -21,15 +22,15 @@ struct HallGpioConfig {
 };
 
 /**
- * @brief STM32G4 Hall sensor implementation using GPIO
+ * @brief STM32G4 Hall sensor implementation using TIM4
  */
-class Stm32HallSensor : public HallInterface {
+class Stm32TimHallSensor : public HallInterface {
 public:
     /**
      * @brief Constructor
      * @param config GPIO configuration
      */
-    explicit Stm32HallSensor(const HallGpioConfig& config) noexcept;
+    explicit Stm32TimHallSensor(const HallGpioConfig& config) noexcept;
 
     // HallInterface implementation
     bool initialize() override;
@@ -40,14 +41,6 @@ private:
 
     // Hall state to motor position lookup table
     static const uint8_t POSITION_TABLE[8];
-
-    /**
-     * @brief Read GPIO pin state
-     * @param port GPIO port
-     * @param pin GPIO pin
-     * @return Pin state (true/false)
-     */
-    bool readGpioPin(void* port, uint16_t pin) noexcept;
 };
 
 } // namespace libecu

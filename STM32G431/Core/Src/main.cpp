@@ -33,12 +33,13 @@
 
 TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
+TIM_HandleTypeDef htim4;  /* For TIM4 Hall Sensor Interface IRQ handler */
 
 UART_HandleTypeDef huart2;
 
 static libecu::Stm32Pwm pwm_driver(&htim1);
 static libecu::HallGpioConfig hall_config{A__GPIO_Port, A__Pin, B__Pin, Z__Pin};
-static libecu::Stm32HallSensor hall_sensor(hall_config);
+static libecu::Stm32TimHallSensor hall_sensor(hall_config);
 static libecu::Stm32Adc adc_driver;
 static libecu::CommutationController* commutation_controller = nullptr;
 static libecu::BldcController* motor_controller = nullptr;

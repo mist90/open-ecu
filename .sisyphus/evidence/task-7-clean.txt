@@ -1,0 +1,82 @@
+[0;32mBuilding for platform: STM32G431[0m
+
+[1;33mSTM32 BLDC ECU Build Script[0m
+================================
+[0;32mToolchain Information:[0m
+arm-none-eabi-gcc (15:13.2.rel1-2) 13.2.1 20231009
+cmake version 3.28.3
+
+[0;32mBuild Configuration:[0m
+  Build Type: Debug
+  Build Directory: build
+  Clean Build: true
+  PWM ISR Debug: true
+
+[1;33mCleaning build directory...[0m
+[1;33mConfiguring with CMake...[0m
+-- The C compiler identification is GNU 13.2.1
+-- The CXX compiler identification is GNU 13.2.1
+-- The ASM compiler identification is GNU
+-- Found assembler: /usr/bin/arm-none-eabi-gcc
+-- PWM ISR debug capture enabled (uses ~8KB RAM)
+-- Core sources: /home/user/src/open-ecu/STM32G431/Core/Src/main.cpp;/home/user/src/open-ecu/STM32G431/Core/Src/stm32g4xx_hal_msp.c;/home/user/src/open-ecu/STM32G431/Core/Src/stm32g4xx_it.c;/home/user/src/open-ecu/STM32G431/Core/Src/syscalls.c;/home/user/src/open-ecu/STM32G431/Core/Src/sysmem.c;/home/user/src/open-ecu/STM32G431/Core/Src/system_stm32g4xx.c
+-- HAL sources: /home/user/src/open-ecu/STM32G431/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal.c;/home/user/src/open-ecu/STM32G431/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_adc.c;/home/user/src/open-ecu/STM32G431/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_adc_ex.c;/home/user/src/open-ecu/STM32G431/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_cortex.c;/home/user/src/open-ecu/STM32G431/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_dma.c;/home/user/src/open-ecu/STM32G431/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_dma_ex.c;/home/user/src/open-ecu/STM32G431/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_exti.c;/home/user/src/open-ecu/STM32G431/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_flash.c;/home/user/src/open-ecu/STM32G431/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_flash_ex.c;/home/user/src/open-ecu/STM32G431/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_gpio.c;/home/user/src/open-ecu/STM32G431/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_opamp.c;/home/user/src/open-ecu/STM32G431/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_opamp_ex.c;/home/user/src/open-ecu/STM32G431/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_pwr.c;/home/user/src/open-ecu/STM32G431/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_pwr_ex.c;/home/user/src/open-ecu/STM32G431/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_rcc.c;/home/user/src/open-ecu/STM32G431/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_rcc_ex.c;/home/user/src/open-ecu/STM32G431/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_tim.c;/home/user/src/open-ecu/STM32G431/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_tim_ex.c;/home/user/src/open-ecu/STM32G431/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_uart.c;/home/user/src/open-ecu/STM32G431/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_uart_ex.c
+-- CMSIS sources: 
+-- Startup file: /home/user/src/open-ecu/STM32G431/Core/Startup/startup_stm32g431cbux.s
+-- libecu sources: /home/user/src/open-ecu/STM32G431/../libecu/src/bldc_controller.cpp;/home/user/src/open-ecu/STM32G431/../libecu/src/commutation_controller.cpp;/home/user/src/open-ecu/STM32G431/../libecu/src/pid_controller.cpp;/home/user/src/open-ecu/STM32G431/../libecu/hal/stm32g4/stm32_adc.cpp;/home/user/src/open-ecu/STM32G431/../libecu/hal/stm32g4/stm32_hall_sensor.cpp;/home/user/src/open-ecu/STM32G431/../libecu/hal/stm32g4/stm32_pwm.cpp
+-- Build type: Debug
+-- MCU Family: STM32G4xx
+-- MCU Model: STM32G431xx
+-- C Compiler: /usr/bin/arm-none-eabi-gcc
+-- CXX Compiler: /usr/bin/arm-none-eabi-g++
+-- Configuring done (0.3s)
+-- Generating done (0.0s)
+-- Build files have been written to: /home/user/src/open-ecu/STM32G431/build
+[1;33mBuilding project...[0m
+[ 26%] Building C object CMakeFiles/open-ecu.elf.dir/Core/Src/stm32g4xx_hal_msp.c.obj
+[ 26%] Building C object CMakeFiles/open-ecu.elf.dir/Core/Src/stm32g4xx_it.c.obj
+[ 32%] Building C object CMakeFiles/open-ecu.elf.dir/Core/Src/sysmem.c.obj
+[ 32%] Building C object CMakeFiles/open-ecu.elf.dir/Core/Src/syscalls.c.obj
+[ 26%] Building CXX object CMakeFiles/open-ecu.elf.dir/Core/Src/main.cpp.obj
+[ 26%] Building C object CMakeFiles/open-ecu.elf.dir/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal.c.obj
+[ 26%] Building C object CMakeFiles/open-ecu.elf.dir/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_cortex.c.obj
+[ 26%] Building C object CMakeFiles/open-ecu.elf.dir/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_adc_ex.c.obj
+[ 26%] Building C object CMakeFiles/open-ecu.elf.dir/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_adc.c.obj
+[ 47%] Building C object CMakeFiles/open-ecu.elf.dir/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_opamp_ex.c.obj
+[ 32%] Building C object CMakeFiles/open-ecu.elf.dir/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_dma.c.obj
+[ 32%] Building C object CMakeFiles/open-ecu.elf.dir/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_flash_ex.c.obj
+[ 47%] Building C object CMakeFiles/open-ecu.elf.dir/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_gpio.c.obj
+[ 47%] Building C object CMakeFiles/open-ecu.elf.dir/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_exti.c.obj
+[ 50%] Building C object CMakeFiles/open-ecu.elf.dir/Core/Src/system_stm32g4xx.c.obj
+[ 47%] Building C object CMakeFiles/open-ecu.elf.dir/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_pwr_ex.c.obj
+[ 58%] Building C object CMakeFiles/open-ecu.elf.dir/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_rcc.c.obj
+[ 64%] Building C object CMakeFiles/open-ecu.elf.dir/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_dma_ex.c.obj
+[ 64%] Building C object CMakeFiles/open-ecu.elf.dir/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_flash.c.obj
+[ 64%] Building C object CMakeFiles/open-ecu.elf.dir/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_tim.c.obj
+[ 64%] Building C object CMakeFiles/open-ecu.elf.dir/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_tim_ex.c.obj
+[ 64%] Building C object CMakeFiles/open-ecu.elf.dir/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_rcc_ex.c.obj
+[ 67%] Building C object CMakeFiles/open-ecu.elf.dir/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_uart_ex.c.obj
+[ 70%] Building C object CMakeFiles/open-ecu.elf.dir/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_pwr.c.obj
+[ 73%] Building C object CMakeFiles/open-ecu.elf.dir/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_opamp.c.obj
+[ 76%] Building C object CMakeFiles/open-ecu.elf.dir/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_uart.c.obj
+[ 82%] Building ASM object CMakeFiles/open-ecu.elf.dir/Core/Startup/startup_stm32g431cbux.s.obj
+[ 82%] Building CXX object CMakeFiles/open-ecu.elf.dir/home/user/src/open-ecu/libecu/src/bldc_controller.cpp.obj
+[ 85%] Building CXX object CMakeFiles/open-ecu.elf.dir/home/user/src/open-ecu/libecu/src/commutation_controller.cpp.obj
+[ 88%] Building CXX object CMakeFiles/open-ecu.elf.dir/home/user/src/open-ecu/libecu/src/pid_controller.cpp.obj
+[ 91%] Building CXX object CMakeFiles/open-ecu.elf.dir/home/user/src/open-ecu/libecu/hal/stm32g4/stm32_adc.cpp.obj
+[ 94%] Building CXX object CMakeFiles/open-ecu.elf.dir/home/user/src/open-ecu/libecu/hal/stm32g4/stm32_hall_sensor.cpp.obj
+[ 97%] Building CXX object CMakeFiles/open-ecu.elf.dir/home/user/src/open-ecu/libecu/hal/stm32g4/stm32_pwm.cpp.obj
+[100%] Linking CXX executable open-ecu.elf
+Building open-ecu.hex and open-ecu.bin
+Size information:
+   text	   data	    bss	    dec	    hex	filename
+  74848	    480	   2768	  78096	  13110	/home/user/src/open-ecu/STM32G431/build/open-ecu.elf
+[100%] Built target open-ecu.elf
+[0;32mBuild completed successfully![0m
+
+[0;32mGenerated files:[0m
+  Firmware: open-ecu.elf
+  Intel HEX: open-ecu.hex
+  Binary: open-ecu.bin
+
+Flash command: st-flash write open-ecu.bin 0x8000000

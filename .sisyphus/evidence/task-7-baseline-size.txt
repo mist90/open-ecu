@@ -1,0 +1,2 @@
+   text	   data	    bss	    dec	    hex	filename
+  74848	    480	   2768	  78096	  13110	STM32G431/build/open-ecu.elf

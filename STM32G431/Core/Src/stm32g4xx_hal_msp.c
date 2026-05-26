@@ -118,3 +118,49 @@ void HAL_UART_MspDeInit(UART_HandleTypeDef* huart)
         HAL_GPIO_DeInit(GPIOB, GPIO_PIN_3|GPIO_PIN_4);
     }
 }
+
+/**
+  * @brief TIM Hall Sensor MSP Initialization
+  * @param htim_hall: TIM Hall Sensor handle pointer
+  * @retval None
+  */
+void HAL_TIMEx_HallSensor_MspInit(TIM_HandleTypeDef* htim_hall)
+{
+    GPIO_InitTypeDef GPIO_InitStruct = {0};
+    if(htim_hall->Instance==TIM4) {
+        /* Peripheral clock enable */
+        __HAL_RCC_TIM4_CLK_ENABLE();
+
+        /* TIM4 GPIO Configuration: PB6(CH1), PB7(CH2), PB8(CH3) -> AF2_TIM4 */
+        __HAL_RCC_GPIOB_CLK_ENABLE();
+        GPIO_InitStruct.Pin = GPIO_PIN_6|GPIO_PIN_7|GPIO_PIN_8;
+        GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+        GPIO_InitStruct.Pull = GPIO_NOPULL;
+        GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+        GPIO_InitStruct.Alternate = GPIO_AF2_TIM4;
+        HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+        /* TIM4 interrupt - priority 1 (Hall sensor) */
+        HAL_NVIC_SetPriority(TIM4_IRQn, 1, 0);
+        HAL_NVIC_EnableIRQ(TIM4_IRQn);
+    }
+}
+
+/**
+  * @brief TIM Hall Sensor MSP De-Initialization
+  * @param htim_hall: TIM Hall Sensor handle pointer
+  * @retval None
+  */
+void HAL_TIMEx_HallSensor_MspDeInit(TIM_HandleTypeDef* htim_hall)
+{
+    if(htim_hall->Instance==TIM4) {
+        /* Disable TIM4 clock */
+        __HAL_RCC_TIM4_CLK_DISABLE();
+
+        /* Deinit TIM4 GPIO: PB6, PB7, PB8 */
+        HAL_GPIO_DeInit(GPIOB, GPIO_PIN_6|GPIO_PIN_7|GPIO_PIN_8);
+
+        /* Disable TIM4 interrupt */
+        HAL_NVIC_DisableIRQ(TIM4_IRQn);
+    }
+}
