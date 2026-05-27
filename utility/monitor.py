@@ -572,11 +572,17 @@ class MonitorWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Open ECU Monitor")
-        self.resize(1200, 900)
+        self.resize(1400, 900)
 
         self.worker_thread: QThread | None = None
         self.worker: SerialWorker | None = None
         self._connected = False
+        self.control_panel: ControlPanel | None = None
+        self._maxvals_received = False
+        self._max_speed = 200.0
+        self._max_current = 6.0
+        self._min_current = -6.0
+        self._maxvals_timer: QTimer | None = None
 
         self.tab_continuous = ContinuousTab()
         self.tab_waveform = CurrentWaveformTab(self._send_data)
@@ -590,7 +596,6 @@ class MonitorWindow(QMainWindow):
         root = QVBoxLayout(central)
 
         top_bar = QHBoxLayout()
-
         top_bar.addWidget(QLabel("Port:"))
         self.port_input = QLineEdit("/dev/ttyACM0")
         self.port_input.setMinimumWidth(140)
@@ -617,10 +622,6 @@ class MonitorWindow(QMainWindow):
         top_bar.addWidget(self.status_label)
 
         top_bar.addStretch()
-
-        self.speed_ctrl = SpeedController(self._send_data)
-        top_bar.addWidget(self.speed_ctrl, stretch=1)
-
         root.addLayout(top_bar)
 
         sep = QFrame()
@@ -628,10 +629,23 @@ class MonitorWindow(QMainWindow):
         sep.setFrameShadow(QFrame.Shadow.Sunken)
         root.addWidget(sep)
 
+        content_layout = QHBoxLayout()
+        
         tabs = QTabWidget()
         tabs.addTab(self.tab_continuous, "Continuous")
         tabs.addTab(self.tab_waveform, "Current Waveform")
-        root.addWidget(tabs, stretch=1)
+        content_layout.addWidget(tabs, stretch=3)
+        
+        separator = QFrame()
+        separator.setFrameShape(QFrame.Shape.VLine)
+        separator.setFrameShadow(QFrame.Shadow.Sunken)
+        content_layout.addWidget(separator)
+        
+        self.control_panel = ControlPanel(self._send_data)
+        self.control_panel.setMinimumWidth(250)
+        content_layout.addWidget(self.control_panel, stretch=1)
+        
+        root.addLayout(content_layout)
 
     def _send_data(self, data: bytes):
         if self.worker is not None:
@@ -693,8 +707,18 @@ class MonitorWindow(QMainWindow):
         self.btn_connect.setStyleSheet("background-color: #ff4444; color: white;")
         self.tab_continuous.reset()
         self.tab_waveform.reset()
-        self.speed_ctrl.set_enabled(True)
+        if self.control_panel is not None:
+            self.control_panel.set_enabled(True)
         self._populate_ports()
+        
+        # Request max values from firmware for slider scaling
+        self._maxvals_received = False
+        self._send_data(format_at_command("AT+MAXVALS").encode("ascii"))
+        # Set 5-second timeout for fallback to defaults
+        self._maxvals_timer = QTimer(self)
+        self._maxvals_timer.setSingleShot(True)
+        self._maxvals_timer.timeout.connect(self._on_maxvals_timeout)
+        self._maxvals_timer.start(5000)
 
     def _stop(self):
         if self.worker is not None:
@@ -705,7 +729,8 @@ class MonitorWindow(QMainWindow):
         self.btn_connect.setStyleSheet("")
         self.status_label.setText("Disconnected")
         self.status_label.setStyleSheet("color: #888;")
-        self.speed_ctrl.set_enabled(False)
+        if self.control_panel is not None:
+            self.control_panel.set_enabled(False)
         self.tab_waveform._osc_active = False
         if hasattr(self.tab_waveform, 'btn_capture'):
             self.tab_waveform.btn_capture.setText("Start OSC")
@@ -733,9 +758,59 @@ class MonitorWindow(QMainWindow):
                 self.tab_waveform.add_line("")
             else:
                 self.tab_waveform.add_line(line)
+        elif line.startswith("+MAXVALS:"):
+            self._parse_maxvals(line)
+        elif line.startswith("+MODE:"):
+            self._handle_mode_prefix(line, "MODE")
+        elif line.startswith("+DMODE:"):
+            self._handle_mode_prefix(line, "DMODE")
         elif line.startswith("OK") or line.startswith("ERROR"):
             pass
 
+    def _handle_mode_prefix(self, line: str, prefix: str) -> None:
+        """Handle +MODE:N or +DMODE:N responses from firmware query."""
+        try:
+            val = int(line.split(":")[1])
+            if self.control_panel is not None:
+                if prefix == "MODE":
+                    self.control_panel._set_control_mode_from_firmware(val)
+                elif prefix == "DMODE":
+                    self.control_panel._set_drive_mode_from_firmware(val)
+        except (ValueError, IndexError):
+            pass
+
+
+    def _parse_maxvals(self, line: str) -> None:
+        """Parse +MAXVALS:max_spd,min_cur,max_cur,max_volt,max_duty response."""
+        try:
+            prefix = "+MAXVALS:"
+            if not line.startswith(prefix):
+                return
+            rest = line[len(prefix):]
+            parts = rest.split(",")
+            if len(parts) != 5:
+                return
+            self._max_speed = float(parts[0])
+            self._min_current = float(parts[1])
+            self._max_current = float(parts[2])
+            # parts[3] = max_voltage, parts[4] = max_duty (stored but not used for sliders)
+            if self.control_panel is not None:
+                self.control_panel.set_max_speed(self._max_speed)
+                self.control_panel.set_max_current(self._max_current)
+            self._maxvals_received = True
+            if self._maxvals_timer is not None:
+                self._maxvals_timer.stop()
+        except (ValueError, IndexError) as exc:
+            # Silently use defaults on parse failure
+            pass
+
+    def _on_maxvals_timeout(self) -> None:
+        """Fallback to default max values if firmware doesn't respond."""
+        if not self._maxvals_received:
+            # Defaults already set in __init__, just log (no print needed)
+            if self.control_panel is not None:
+                self.control_panel.set_max_speed(self._max_speed)
+                self.control_panel.set_max_current(self._max_current)
 
 def main():
     pg.setConfigOptions(antialias=True, leftButtonPan=False)
