@@ -25,7 +25,7 @@
 
 #define COMPACT_PRINTF
 
-#define LEGACY_POT_CONTROL
+//#define LEGACY_POT_CONTROL
 
 TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
@@ -67,7 +67,10 @@ int __io_getchar(void)
 
     /* Read DMA write position from CNDTR (bytes remaining) */
     uint16_t cndtr = hdma_usart2_rx.Instance->CNDTR;
-    uint16_t write_pos = 256 - cndtr;
+    uint16_t write_pos = (256 - cndtr) % 256;
+
+    /* Clear overrun error flag to prevent RX stall at high baud rates */
+    __HAL_UART_CLEAR_FLAG(&huart2, UART_FLAG_ORE);
 
     /* Check if new data is available */
     if (dma_rx_index != write_pos) {
@@ -383,6 +386,9 @@ static void MX_DMA_USART2_Init(void)
 {
     /* DMA controller clock enable */
     __HAL_RCC_DMA1_CLK_ENABLE();
+
+    /* DMAMUX1 clock enable - required for DMA request routing on STM32G4 */
+    __HAL_RCC_DMAMUX1_CLK_ENABLE();
 
     /* USART2 DMA Init */
     /* USART2_RX Init */
