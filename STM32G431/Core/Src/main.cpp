@@ -16,12 +16,12 @@
 
 #define PERIODIC_TIMER_FREQ 1000
 #define PWM_TIMER_FREQ 40000
-#define BLDC_NUM_POLES  8
-#define BLDC_MAX_CURRENT   6.0f
+#define BLDC_NUM_POLES 40 // 8
+#define BLDC_MAX_CURRENT 18.0f //  6.0f
 #define BLDC_MIN_CURRENT  -6.0f
-#define BLDC_MAX_SPEED  200.0f
-#define BLDC_MAX_ACCELERATION  100.0f
-#define BLDC_INVERTION  false
+#define BLDC_MAX_SPEED 20.0f // 200.0f
+#define BLDC_MAX_ACCELERATION 5.0f // 100.0f
+#define BLDC_INVERTION true // false
 
 #define COMPACT_PRINTF
 
