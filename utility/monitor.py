@@ -171,6 +171,162 @@ class SpeedController(QWidget):
         self._write(cmd.encode("ascii"))
 
 
+class CurrentController(QWidget):
+    """Current regulator widget that sends AT+CUR commands."""
+
+    def __init__(self, write_callback):
+        super().__init__()
+        self._write = write_callback
+        self._suppress_signal = False
+        self._init_ui()
+
+    def _init_ui(self):
+        group = QGroupBox("Current Control")
+        layout = QHBoxLayout(group)
+
+        layout.addWidget(QLabel("Target Current:"))
+
+        self.slider = QSlider(Qt.Orientation.Horizontal)
+        self.slider.setRange(-60, 60)
+        self.slider.setValue(0)
+        self.slider.setTickInterval(5)
+        self.slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self.slider.valueChanged.connect(self._on_slider_changed)
+        layout.addWidget(self.slider, stretch=2)
+
+        self.spinbox = QDoubleSpinBox()
+        self.spinbox.setRange(-6.0, 6.0)
+        self.spinbox.setDecimals(1)
+        self.spinbox.setSingleStep(0.5)
+        self.spinbox.setValue(0)
+        self.spinbox.setSuffix(" A")
+        self.spinbox.setMinimumWidth(100)
+        self.spinbox.valueChanged.connect(self._on_spinbox_changed)
+        layout.addWidget(self.spinbox)
+
+        self.group = group
+        self.setLayout(layout)
+
+    def set_enabled(self, enabled: bool):
+        self.group.setEnabled(enabled)
+
+    def _on_slider_changed(self, value: int):
+        if self._suppress_signal:
+            return
+        self._suppress_signal = True
+        self.spinbox.setValue(float(value) / 10.0)
+        self._suppress_signal = False
+        self._send_command()
+
+    def _on_spinbox_changed(self, value: float):
+        if self._suppress_signal:
+            return
+        self._suppress_signal = True
+        self.slider.setValue(int(value * 10))
+        self._suppress_signal = False
+        self._send_command()
+
+    def _send_command(self):
+        current = self.spinbox.value()
+        cmd = format_at_command(f"AT+CUR={current:.1f}")
+        self._write(cmd.encode("ascii"))
+
+
+class ControlPanel(QWidget):
+    """Control panel widget with speed/current controllers and mode selectors."""
+
+    def __init__(self, write_callback):
+        super().__init__()
+        self._write = write_callback
+        self._suppress_mode_signal = False
+        self._init_ui()
+
+    def _init_ui(self):
+        group = QGroupBox("Control Panel")
+        layout = QVBoxLayout(group)
+
+        self.speed_ctrl = SpeedController(self._write)
+        layout.addWidget(self.speed_ctrl)
+
+        self.current_ctrl = CurrentController(self._write)
+        layout.addWidget(self.current_ctrl)
+
+        # Control mode selector
+        ctrl_mode_layout = QHBoxLayout()
+        ctrl_mode_layout.addWidget(QLabel("Control Mode:"))
+        self.control_mode_combo = QComboBox()
+        self.control_mode_combo.addItems(["OPEN_LOOP", "VELOCITY", "TORQUE"])
+        self.control_mode_combo.setCurrentIndex(1)  # VELOCITY
+        self.control_mode_combo.currentIndexChanged.connect(self._on_control_mode_changed)
+        ctrl_mode_layout.addWidget(self.control_mode_combo)
+        layout.addLayout(ctrl_mode_layout)
+
+        # Drive mode selector
+        drive_mode_layout = QHBoxLayout()
+        drive_mode_layout.addWidget(QLabel("Drive Mode:"))
+        self.drive_mode_combo = QComboBox()
+        self.drive_mode_combo.addItems(["FORWARD", "REVERSE", "NEUTRAL"])
+        self.drive_mode_combo.setCurrentIndex(0)  # FORWARD
+        self.drive_mode_combo.currentIndexChanged.connect(self._on_drive_mode_changed)
+        drive_mode_layout.addWidget(self.drive_mode_combo)
+        layout.addLayout(drive_mode_layout)
+
+        self.group = group
+        self.setLayout(layout)
+        self._update_enabled_states()
+
+    def set_enabled(self, enabled: bool):
+        self.control_mode_combo.setEnabled(enabled)
+        self.drive_mode_combo.setEnabled(enabled)
+        self._update_enabled_states()
+
+    def set_max_speed(self, max_rps: float):
+        self.speed_ctrl.slider.setRange(0, int(max_rps))
+        self.speed_ctrl.spinbox.setRange(0, max_rps)
+
+    def set_max_current(self, max_a: float):
+        self.current_ctrl.slider.setRange(int(-max_a * 10), int(max_a * 10))
+        self.current_ctrl.spinbox.setRange(-max_a, max_a)
+
+    def _on_control_mode_changed(self, index: int):
+        if self._suppress_mode_signal:
+            return
+        cmd = format_at_command(f"AT+MODE={index}")
+        self._write(cmd.encode("ascii"))
+        self._update_enabled_states()
+
+    def _on_drive_mode_changed(self, index: int):
+        if self._suppress_mode_signal:
+            return
+        cmd = format_at_command(f"AT+DMODE={index}")
+        self._write(cmd.encode("ascii"))
+        self._update_enabled_states()
+
+    def _update_enabled_states(self):
+        control_mode = self.control_mode_combo.currentIndex()
+        drive_mode = self.drive_mode_combo.currentIndex()
+
+        # Speed enabled: only when control_mode=VELOCITY(1) AND drive_mode != NEUTRAL(2)
+        speed_enabled = (control_mode == 1) and (drive_mode != 2)
+        # Current enabled: only when control_mode=TORQUE(2) AND drive_mode != NEUTRAL(2)
+        current_enabled = (control_mode == 2) and (drive_mode != 2)
+
+        self.speed_ctrl.set_enabled(speed_enabled)
+        self.current_ctrl.set_enabled(current_enabled)
+
+    def _set_control_mode_from_firmware(self, index: int):
+        self._suppress_mode_signal = True
+        self.control_mode_combo.setCurrentIndex(index)
+        self._update_enabled_states()
+        self._suppress_mode_signal = False
+
+    def _set_drive_mode_from_firmware(self, index: int):
+        self._suppress_mode_signal = True
+        self.drive_mode_combo.setCurrentIndex(index)
+        self._update_enabled_states()
+        self._suppress_mode_signal = False
+
+
 class ContinuousTab(QWidget):
 
     UPDATE_INTERVAL_MS = 16
