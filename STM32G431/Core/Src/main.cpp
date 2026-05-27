@@ -27,13 +27,6 @@
 
 #define LEGACY_POT_CONTROL
 
-#ifndef COMPACT_PRINTF
-#define PRINT_STRING "%u->%u: RPS target:% 6.2f   meas:% 6.2f   D:% 6.2f   I target:% 6.2f   meas:% 6.2f   Vbus:% 6.2f\n"
-#else
-/* This format is for monitor.py */
-#define PRINT_STRING "%u;%u;%.2f;%.2f;%.2f;%.2f;%.2f;%.2f\n"
-#endif
-
 TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
 TIM_HandleTypeDef htim4;  /* For TIM4 Hall Sensor Interface IRQ handler */
