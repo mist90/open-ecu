@@ -108,17 +108,6 @@ public:
      */
     void swapOscBuffers() noexcept;
 
-    /**
-     * @brief Read next oscilloscope sample
-     * @param first_sample True if this is the first sample (resets counter)
-     * @param out_duty Output duty cycle
-     * @param out_target Output target current
-     * @param out_current Output measured current
-     * @param out_position Output rotor position
-     * @return True if sample was read successfully
-     */
-    bool readNextOscSample(bool first_sample, float* out_duty, float* out_target, float* out_current, uint8_t* out_position) noexcept;
-
     // Configuration constants
     static constexpr std::size_t MAX_COMMAND_LENGTH = 64;
     static constexpr std::size_t OSC_BUFFER_SIZE = 256;
@@ -202,9 +191,8 @@ private:
 
     OscSample osc_buffers_[OSC_NUM_BUFFERS][OSC_BUFFER_SIZE];
     volatile std::size_t osc_write_buffer_;
-    volatile std::size_t osc_read_buffer_;
-    volatile std::size_t osc_write_index_;
-    volatile std::size_t osc_read_index_;
+    std::size_t osc_write_index_;
+    std::size_t osc_read_index_;
     volatile bool osc_buffers_swapped_;
     std::int32_t osc_sample_counter_;
     uint8_t crc_index_;  ///< Index for accumulating CRC hex digits

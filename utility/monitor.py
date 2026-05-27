@@ -325,14 +325,23 @@ class ContinuousTab(QWidget):
 class CurrentWaveformTab(QWidget):
     """Captures +OSC bursts from AT oscilloscope output."""
 
-    def __init__(self):
+    def __init__(self, write_callback=None):
         super().__init__()
         self._osc_samples: list[tuple[int, int]] = []
+        self._osc_active = False
+        self._write = write_callback
         self._init_ui()
 
     def _init_ui(self):
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("Oscilloscope burst from +OSC stream"), alignment=Qt.AlignmentFlag.AlignCenter)
+
+        ctrl = QHBoxLayout()
+        self.btn_capture = QPushButton("Start OSC")
+        self.btn_capture.clicked.connect(self._toggle_capture)
+        ctrl.addWidget(self.btn_capture)
+        ctrl.addWidget(QLabel("Oscilloscope burst from +OSC stream"))
+        ctrl.addStretch()
+        layout.addLayout(ctrl)
 
         self.plot_currents = pg.PlotWidget()
         _style_plot(self.plot_currents, "Oscilloscope - Current", bottom_label="Sample Index")
@@ -342,6 +351,24 @@ class CurrentWaveformTab(QWidget):
         self.label_status = QLabel("Waiting for +OSC burst...")
         self.label_status.setStyleSheet("color: #888;")
         layout.addWidget(self.label_status, alignment=Qt.AlignmentFlag.AlignCenter)
+
+    def _toggle_capture(self):
+        if not self._osc_active:
+            self._osc_active = True
+            self.btn_capture.setText("Stop OSC")
+            self.btn_capture.setStyleSheet("background-color: #ff4444; color: white;")
+            self.label_status.setText("Capturing oscilloscope...")
+            if self._write is not None:
+                cmd = format_at_command("AT+OSC=1")
+                self._write(cmd.encode("ascii"))
+        else:
+            self._osc_active = False
+            self.btn_capture.setText("Start OSC")
+            self.btn_capture.setStyleSheet("")
+            if self._write is not None:
+                cmd = format_at_command("AT+OSC=0")
+                self._write(cmd.encode("ascii"))
+
 
     def reset(self):
         self._osc_samples.clear()
@@ -396,7 +423,7 @@ class MonitorWindow(QMainWindow):
         self._connected = False
 
         self.tab_continuous = ContinuousTab()
-        self.tab_waveform = CurrentWaveformTab()
+        self.tab_waveform = CurrentWaveformTab(self._send_data)
 
         self._init_ui()
         self._populate_ports()
@@ -523,6 +550,10 @@ class MonitorWindow(QMainWindow):
         self.status_label.setText("Disconnected")
         self.status_label.setStyleSheet("color: #888;")
         self.speed_ctrl.set_enabled(False)
+        self.tab_waveform._osc_active = False
+        if hasattr(self.tab_waveform, 'btn_capture'):
+            self.tab_waveform.btn_capture.setText("Start OSC")
+            self.tab_waveform.btn_capture.setStyleSheet("")
 
     def _cleanup_thread(self):
         if self.worker_thread is not None:
