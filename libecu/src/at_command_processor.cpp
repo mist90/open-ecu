@@ -173,10 +173,11 @@ namespace {
 /** Command IDs for AT command dispatch */
 enum class CommandId : uint8_t {
     Unknown,
-    Spd, Cur, Dut, Mode, EMode, DMode, Pid, Ver, Status, Tm, Osc
+    Spd, Cur, Dut, Mode, EMode, DMode, Pid, Ver, Status, Tm, Osc, Maxvals
 };
 
 CommandId matchCommand(const char* cmd) noexcept {
+    if (std::strncmp(cmd, "MAXVALS", 7) == 0) return CommandId::Maxvals;
     if (std::strncmp(cmd, "DMODE", 5) == 0) return CommandId::DMode;
     if (std::strncmp(cmd, "EMODE", 5) == 0) return CommandId::EMode;
     if (std::strncmp(cmd, "STATUS", 6) == 0) return CommandId::Status;
@@ -380,6 +381,11 @@ void AtCommandProcessor::processCommand() noexcept {
 
     case CommandId::Ver: {
         sendResponse("VER", "1.0.0");
+        break;
+    }
+
+    case CommandId::Maxvals: {
+        sendResponse("MAXVALS", "200.0,-6.0,6.0,36.0,0.95");
         break;
     }
 
