@@ -330,7 +330,7 @@ class ControlPanel(QWidget):
 class ContinuousTab(QWidget):
 
     UPDATE_INTERVAL_MS = 16
-    CONTROL_FREQ_HZ = 1000
+    CONTROL_FREQ_HZ = 100
 
     def __init__(self):
         super().__init__()

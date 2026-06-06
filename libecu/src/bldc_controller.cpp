@@ -369,7 +369,7 @@ float BldcController::calculateSpeed() noexcept
 
         // ROTATING state: we have received at least one pulse
         period_us = end_time - start_time;
-        if (pulse_count > 0) {
+        if (pulse_count != 0) {
             last_period_us_ = period_us;
             speed_start_time_us_ = end_time;
             speed_pulse_count_ = 0;
@@ -377,7 +377,7 @@ float BldcController::calculateSpeed() noexcept
     }
 
     // If we have new pulses, calculate speed from measured period
-    if (pulse_count > 0) {
+    if (pulse_count != 0) {
         // Avoid division by zero
         if (period_us == 0) {
             return 0.0f;
@@ -535,7 +535,7 @@ void BldcController::hallSensorInterruptHandler() noexcept
     // Update last Hall state
     last_hall_state_ = hall_state;
 
-    if (delta > 0) {
+    if (delta != 0) {
         // Initialize measurement on first valid transition (transition to ROTATING state)
         if (speed_measurement_active_) {
             speed_pulse_count_ += delta;

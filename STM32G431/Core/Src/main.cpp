@@ -14,7 +14,7 @@
 #include <stdio.h>
 #include "uart_at_bridge.hpp"
 
-#define PERIODIC_TIMER_FREQ 1000
+#define PERIODIC_TIMER_FREQ 100
 #define PWM_TIMER_FREQ 40000
 #define BLDC_NUM_POLES 40 // 8
 #define BLDC_MAX_CURRENT 18.0f //  6.0f
