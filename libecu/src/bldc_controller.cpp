@@ -31,7 +31,7 @@ BldcController::BldcController(
     , pid_speed_controller_()
     , current_controller_()
     , params_(params)
-    , dmode_(DriveMode::FORWARD)
+    , dmode_(DriveMode::NEUTRAL)
     , initialized_(false)
     , speed_measurement_active_(false)
     , speed_start_time_us_(0)

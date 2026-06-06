@@ -12,8 +12,9 @@ from PyQt6.QtCore import QObject, QThread, QTimer, pyqtSignal, Qt
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QLineEdit, QComboBox, QDoubleSpinBox, QTabWidget,
-    QMessageBox, QFrame, QSlider, QGroupBox
+    QMessageBox, QFrame, QSlider, QGroupBox, QTextEdit, QCheckBox
 )
+from PyQt6.QtGui import QColor, QTextCharFormat, QTextCursor, QFont
 
 import pyqtgraph as pg
 
@@ -149,6 +150,12 @@ class SpeedController(QWidget):
     def set_enabled(self, enabled: bool):
         self.group.setEnabled(enabled)
 
+    def set_value_from_firmware(self, value: float):
+        self._suppress_signal = True
+        self.spinbox.setValue(value)
+        self.slider.setValue(int(value))
+        self._suppress_signal = False
+
     def _on_slider_changed(self, value: int):
         if self._suppress_signal:
             return
@@ -209,6 +216,12 @@ class CurrentController(QWidget):
 
     def set_enabled(self, enabled: bool):
         self.group.setEnabled(enabled)
+
+    def set_value_from_firmware(self, value: float):
+        self._suppress_signal = True
+        self.spinbox.setValue(value)
+        self.slider.setValue(int(value * 10))
+        self._suppress_signal = False
 
     def _on_slider_changed(self, value: int):
         if self._suppress_signal:
@@ -325,6 +338,12 @@ class ControlPanel(QWidget):
         self.drive_mode_combo.setCurrentIndex(index)
         self._update_enabled_states()
         self._suppress_mode_signal = False
+
+    def _set_target_speed_from_firmware(self, value: float):
+        self.speed_ctrl.set_value_from_firmware(value)
+
+    def _set_target_current_from_firmware(self, value: float):
+        self.current_ctrl.set_value_from_firmware(value)
 
 
 class ContinuousTab(QWidget):
@@ -567,6 +586,119 @@ class CurrentWaveformTab(QWidget):
                     pass
 
 
+class ATConsoleTab(QWidget):
+    _COLOR_SENT = "#4a9eff"      # TX — blue
+    _COLOR_RECV = "#44ff44"      # RX — green
+    _COLOR_ERR  = "#ff4444"      # RX ERROR — red
+
+    MAX_LINES = 2000
+
+    def __init__(self, write_callback):
+        super().__init__()
+        self._write = write_callback
+        self._line_count = 0
+        self._logging = False
+        self._init_ui()
+
+    def _init_ui(self):
+        layout = QVBoxLayout(self)
+
+        toolbar = QHBoxLayout()
+        self.btn_log = QPushButton("Log: OFF")
+        self.btn_log.setFixedWidth(90)
+        self.btn_log.setCheckable(True)
+        self.btn_log.setChecked(False)
+        self.btn_log.clicked.connect(self._on_log_toggled)
+        toolbar.addWidget(self.btn_log)
+        self.chk_autoscroll = QCheckBox("Auto-scroll")
+        self.chk_autoscroll.setChecked(True)
+        toolbar.addWidget(self.chk_autoscroll)
+        self.btn_clear = QPushButton("Clear")
+        self.btn_clear.setFixedWidth(70)
+        self.btn_clear.clicked.connect(self._clear)
+        toolbar.addWidget(self.btn_clear)
+        toolbar.addStretch()
+        layout.addLayout(toolbar)
+
+        self.log = QTextEdit()
+        self.log.setReadOnly(True)
+        self.log.setFont(QFont("Monospace", 9))
+        self.log.setStyleSheet(
+            "QTextEdit { background: #1a1a1a; color: #cccccc; border: 1px solid #444; }"
+        )
+        layout.addWidget(self.log, stretch=1)
+
+        send_layout = QHBoxLayout()
+        self.input = QLineEdit()
+        self.input.setPlaceholderText("AT command (e.g. AT+SPD=10.0 — CRC appended automatically)")
+        self.input.setFont(QFont("Monospace", 9))
+        self.input.returnPressed.connect(self._on_send)
+        send_layout.addWidget(self.input, stretch=1)
+        self.btn_send = QPushButton("Send")
+        self.btn_send.setFixedWidth(70)
+        self.btn_send.clicked.connect(self._on_send)
+        send_layout.addWidget(self.btn_send)
+        layout.addLayout(send_layout)
+
+    def set_enabled(self, enabled: bool):
+        self.input.setEnabled(enabled)
+        self.btn_send.setEnabled(enabled)
+
+    def log_sent(self, text: str):
+        if not self._logging:
+            return
+        ts = time.strftime("%H:%M:%S")
+        self._append(f"[{ts}] TX: {text.strip()}", self._COLOR_SENT)
+
+    def log_received(self, line: str):
+        if not self._logging or not line:
+            return
+        ts = time.strftime("%H:%M:%S")
+        color = self._COLOR_ERR if line.startswith("ERROR") else self._COLOR_RECV
+        self._append(f"[{ts}] RX: {line}", color)
+
+    def _on_log_toggled(self, checked: bool):
+        self._logging = checked
+        if checked:
+            self.btn_log.setText("Log: ON")
+            self.btn_log.setStyleSheet("background-color: #44aa44; color: white;")
+        else:
+            self.btn_log.setText("Log: OFF")
+            self.btn_log.setStyleSheet("")
+
+    def _append(self, text: str, color: str):
+        cursor = self.log.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        fmt = QTextCharFormat()
+        fmt.setForeground(QColor(color))
+        cursor.setCharFormat(fmt)
+        cursor.insertText(text + "\n")
+        self._line_count += 1
+        if self._line_count > self.MAX_LINES:
+            cursor2 = QTextCursor(self.log.document())
+            cursor2.movePosition(QTextCursor.MoveOperation.Start)
+            cursor2.select(QTextCursor.SelectionType.LineUnderCursor)
+            cursor2.removeSelectedText()
+            cursor2.deleteChar()
+            self._line_count -= 1
+        if self.chk_autoscroll.isChecked():
+            sb = self.log.verticalScrollBar()
+            sb.setValue(sb.maximum())
+
+    def _on_send(self):
+        raw = self.input.text().strip()
+        if not raw:
+            return
+        cmd = format_at_command(raw)
+        self.log_sent(cmd)
+        self._write(cmd.encode("ascii"))
+        self.input.clear()
+
+    def _clear(self):
+        self.log.clear()
+        self._line_count = 0
+
+
 class MonitorWindow(QMainWindow):
 
     def __init__(self):
@@ -586,9 +718,11 @@ class MonitorWindow(QMainWindow):
 
         self.tab_continuous = ContinuousTab()
         self.tab_waveform = CurrentWaveformTab(self._send_data)
+        self.tab_at_console = ATConsoleTab(self._send_data)
 
         self._init_ui()
         self._populate_ports()
+        self.tab_at_console.set_enabled(False)
 
     def _init_ui(self):
         central = QWidget()
@@ -634,6 +768,7 @@ class MonitorWindow(QMainWindow):
         tabs = QTabWidget()
         tabs.addTab(self.tab_continuous, "Continuous")
         tabs.addTab(self.tab_waveform, "Current Waveform")
+        tabs.addTab(self.tab_at_console, "AT Console")
         content_layout.addWidget(tabs, stretch=3)
         
         separator = QFrame()
@@ -650,6 +785,7 @@ class MonitorWindow(QMainWindow):
     def _send_data(self, data: bytes):
         if self.worker is not None:
             self.worker.write(data)
+            self.tab_at_console.log_sent(data.decode("ascii", errors="replace"))
 
     def _populate_ports(self):
         self.port_combo.clear()
@@ -707,18 +843,21 @@ class MonitorWindow(QMainWindow):
         self.btn_connect.setStyleSheet("background-color: #ff4444; color: white;")
         self.tab_continuous.reset()
         self.tab_waveform.reset()
+        self.tab_at_console.set_enabled(True)
         if self.control_panel is not None:
             self.control_panel.set_enabled(True)
         self._populate_ports()
         
-        # Request max values from firmware for slider scaling
         self._maxvals_received = False
         self._send_data(format_at_command("AT+MAXVALS").encode("ascii"))
-        # Set 5-second timeout for fallback to defaults
         self._maxvals_timer = QTimer(self)
         self._maxvals_timer.setSingleShot(True)
         self._maxvals_timer.timeout.connect(self._on_maxvals_timeout)
         self._maxvals_timer.start(5000)
+
+        self._send_data(format_at_command("AT+STATUS").encode("ascii"))
+        self._send_data(format_at_command("AT+DMODE?").encode("ascii"))
+        self._send_data(format_at_command("AT+SPD?").encode("ascii"))
 
     def _stop(self):
         if self.worker is not None:
@@ -729,6 +868,7 @@ class MonitorWindow(QMainWindow):
         self.btn_connect.setStyleSheet("")
         self.status_label.setText("Disconnected")
         self.status_label.setStyleSheet("color: #888;")
+        self.tab_at_console.set_enabled(False)
         if self.control_panel is not None:
             self.control_panel.set_enabled(False)
         self.tab_waveform._osc_active = False
@@ -751,6 +891,7 @@ class MonitorWindow(QMainWindow):
             self.status_label.setStyleSheet("color: #888;")
 
     def _on_line(self, line: str):
+        self.tab_at_console.log_received(line)
         if line.startswith("+TM:") or ("+TM:" in line and ";" in line):
             self.tab_continuous.add_sample(line.split(";"))
         elif line.startswith("+OSC:"):
@@ -760,11 +901,45 @@ class MonitorWindow(QMainWindow):
                 self.tab_waveform.add_line(line)
         elif line.startswith("+MAXVALS:"):
             self._parse_maxvals(line)
+        elif line.startswith("+STATUS:"):
+            self._parse_status(line)
+        elif line.startswith("+SPD:"):
+            self._parse_float_response(line, "+SPD:", self._apply_target_speed)
+        elif line.startswith("+CUR:"):
+            self._parse_float_response(line, "+CUR:", self._apply_target_current)
         elif line.startswith("+MODE:"):
             self._handle_mode_prefix(line, "MODE")
         elif line.startswith("+DMODE:"):
             self._handle_mode_prefix(line, "DMODE")
-        elif line.startswith("OK") or line.startswith("ERROR"):
+
+    def _parse_float_response(self, line: str, prefix: str, apply) -> None:
+        try:
+            apply(float(line[len(prefix):]))
+        except ValueError:
+            pass
+
+    def _apply_target_speed(self, value: float) -> None:
+        if self.control_panel is not None:
+            self.control_panel._set_target_speed_from_firmware(value)
+
+    def _apply_target_current(self, value: float) -> None:
+        if self.control_panel is not None:
+            self.control_panel._set_target_current_from_firmware(value)
+
+    def _parse_status(self, line: str) -> None:
+        try:
+            rest = line[len("+STATUS:"):]
+            parts = rest.split(",")
+            if len(parts) < 3:
+                return
+            control_mode = int(parts[0])
+            target_speed = float(parts[2])
+            target_current = float(parts[3]) if len(parts) > 3 else 0.0
+            if self.control_panel is not None:
+                self.control_panel._set_control_mode_from_firmware(control_mode)
+                self.control_panel._set_target_speed_from_firmware(target_speed)
+                self.control_panel._set_target_current_from_firmware(target_current)
+        except (ValueError, IndexError):
             pass
 
     def _handle_mode_prefix(self, line: str, prefix: str) -> None:

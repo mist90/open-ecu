@@ -202,7 +202,7 @@ private:
 
     // State variables
     MotorStatus status_;
-    DriveMode dmode_;
+    volatile DriveMode dmode_;
     bool initialized_;
 
     // Speed measurement state (interrupt-driven)
