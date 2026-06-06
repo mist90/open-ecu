@@ -177,9 +177,12 @@ private:
 
     // Locally-tracked state (mirrors BldcController, avoids private access)
     uint8_t tracked_drive_mode_;  // 0=FORWARD, 1=REVERSE, 2=NEUTRAL
-    float tracked_pid_kp_;
-    float tracked_pid_ki_;
-    float tracked_pid_kd_;
+    float tracked_spid_kp_;
+    float tracked_spid_ki_;
+    float tracked_spid_kd_;
+    float tracked_cpid_kp_;
+    float tracked_cpid_ki_;
+    float tracked_cpid_kd_;
 
     // Oscilloscope double buffering
     struct OscSample {

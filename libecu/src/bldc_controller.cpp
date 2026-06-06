@@ -271,6 +271,26 @@ void BldcController::setDriveMode(DriveMode mode) noexcept
     }
 }
 
+void BldcController::setSpeedPid(float kp, float ki, float kd) noexcept
+{
+    PidParameters p = pid_speed_controller_.getParameters();
+    p.kp = kp;
+    p.ki = ki;
+    p.kd = kd;
+    pid_speed_controller_.setParameters(p);
+    pid_speed_controller_.reset();
+}
+
+void BldcController::setCurrentPid(float kp, float ki, float kd) noexcept
+{
+    PidParameters p = current_controller_.getParameters();
+    p.kp = kp;
+    p.ki = ki;
+    p.kd = kd;
+    current_controller_.setParameters(p);
+    current_controller_.reset();
+}
+
 void BldcController::start() noexcept
 {
     status_.is_running = true;
@@ -547,6 +567,8 @@ void BldcController::moveNextPosition(uint8_t position) noexcept
             break;
         case DriveMode::REVERSE:
             next_position = params_.useInverseCommTable? (position + 1) % 6 : (position + 5) % 6;
+            break;
+        default:
             break;
     }
 

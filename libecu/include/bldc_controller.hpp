@@ -153,6 +153,26 @@ public:
     void setDriveMode(DriveMode mode) noexcept;
 
     /**
+     * @brief Set speed PID controller gains (kp, ki, kd)
+     * @param kp Proportional gain
+     * @param ki Integral gain
+     * @param kd Derivative gain
+     *
+     * Preserves existing output limits and sample time.
+     */
+    void setSpeedPid(float kp, float ki, float kd) noexcept;
+
+    /**
+     * @brief Set current PID controller gains (kp, ki, kd)
+     * @param kp Proportional gain
+     * @param ki Integral gain
+     * @param kd Derivative gain
+     *
+     * Preserves existing output limits and sample time.
+     */
+    void setCurrentPid(float kp, float ki, float kd) noexcept;
+
+    /**
      * @brief Start motor
      */
     void start() noexcept;

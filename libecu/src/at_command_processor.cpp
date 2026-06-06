@@ -16,9 +16,12 @@ AtCommandProcessor::AtCommandProcessor(BldcController* controller) noexcept
       telemetry_enabled_(true),
       osc_streaming_(false),
       tracked_drive_mode_(2),    // NEUTRAL
-      tracked_pid_kp_(0.01f),     // from main.cpp pid_voltage_mode
-      tracked_pid_ki_(0.1f),
-      tracked_pid_kd_(0.0f),
+      tracked_spid_kp_(0.01f),
+      tracked_spid_ki_(0.1f),
+      tracked_spid_kd_(0.0f),
+      tracked_cpid_kp_(0.01f),
+      tracked_cpid_ki_(0.1f),
+      tracked_cpid_kd_(0.0f),
       osc_write_buffer_(0),
       osc_write_index_(0),
       osc_read_index_(0),
@@ -173,7 +176,7 @@ namespace {
 /** Command IDs for AT command dispatch */
 enum class CommandId : uint8_t {
     Unknown,
-    Spd, Cur, Dut, Mode, EMode, DMode, Pid, Ver, Status, Tm, Osc, Maxvals
+    Spd, Cur, Dut, Mode, EMode, DMode, Spid, Cpid, Ver, Status, Tm, Osc, Maxvals
 };
 
 CommandId matchCommand(const char* cmd) noexcept {
@@ -181,11 +184,12 @@ CommandId matchCommand(const char* cmd) noexcept {
     if (std::strncmp(cmd, "DMODE", 5) == 0) return CommandId::DMode;
     if (std::strncmp(cmd, "EMODE", 5) == 0) return CommandId::EMode;
     if (std::strncmp(cmd, "STATUS", 6) == 0) return CommandId::Status;
+    if (std::strncmp(cmd, "SPID", 4) == 0) return CommandId::Spid;
+    if (std::strncmp(cmd, "CPID", 4) == 0) return CommandId::Cpid;
     if (std::strncmp(cmd, "SPD", 3) == 0) return CommandId::Spd;
     if (std::strncmp(cmd, "CUR", 3) == 0) return CommandId::Cur;
     if (std::strncmp(cmd, "DUT", 3) == 0) return CommandId::Dut;
     if (std::strncmp(cmd, "MODE", 4) == 0) return CommandId::Mode;
-    if (std::strncmp(cmd, "PID", 3) == 0) return CommandId::Pid;
     if (std::strncmp(cmd, "VER", 3) == 0) return CommandId::Ver;
     if (std::strncmp(cmd, "TM", 2) == 0) return CommandId::Tm;
     if (std::strncmp(cmd, "OSC", 3) == 0) return CommandId::Osc;
@@ -252,7 +256,8 @@ void AtCommandProcessor::processCommand() noexcept {
     bool needsController = (id == CommandId::Spd || id == CommandId::Cur ||
                             id == CommandId::Dut || id == CommandId::Mode ||
                             id == CommandId::EMode || id == CommandId::DMode ||
-                            id == CommandId::Pid || id == CommandId::Status);
+                            id == CommandId::Spid || id == CommandId::Cpid ||
+                            id == CommandId::Status);
     if (needsController && controller_ == nullptr) {
         sendError();
         return;
@@ -355,25 +360,53 @@ void AtCommandProcessor::processCommand() noexcept {
         break;
     }
 
-    case CommandId::Pid: {
+    case CommandId::Spid: {
         if (query) {
             char buf[64];
-            int len = std::snprintf(buf, sizeof(buf), "+PID:%.3f,%.3f\r\n", tracked_pid_kp_, tracked_pid_ki_);
+            int len = std::snprintf(buf, sizeof(buf), "+SPID:%.3f,%.3f,%.3f\r\n",
+                tracked_spid_kp_, tracked_spid_ki_, tracked_spid_kd_);
             if (len > 0) write(buf, static_cast<std::size_t>(len));
+            sendOk();
         } else {
-            float kp = 0.0f, ki = 0.0f, kd = 0.0f;
-            kp = std::strtof(valuePtr, nullptr);
+            if (!valuePtr) { sendError(); return; }
+            float kp = std::strtof(valuePtr, nullptr);
+            float ki = 0.0f, kd = 0.0f;
             const char* comma = std::strchr(valuePtr, ',');
             if (comma) {
                 ki = std::strtof(comma + 1, nullptr);
                 const char* comma2 = std::strchr(comma + 1, ',');
-                if (comma2) {
-                    kd = std::strtof(comma2 + 1, nullptr);
-                }
+                if (comma2) kd = std::strtof(comma2 + 1, nullptr);
             }
-            tracked_pid_kp_ = kp;
-            tracked_pid_ki_ = ki;
-            tracked_pid_kd_ = kd;
+            tracked_spid_kp_ = kp;
+            tracked_spid_ki_ = ki;
+            tracked_spid_kd_ = kd;
+            controller_->setSpeedPid(kp, ki, kd);
+            sendOk();
+        }
+        break;
+    }
+
+    case CommandId::Cpid: {
+        if (query) {
+            char buf[64];
+            int len = std::snprintf(buf, sizeof(buf), "+CPID:%.3f,%.3f,%.3f\r\n",
+                tracked_cpid_kp_, tracked_cpid_ki_, tracked_cpid_kd_);
+            if (len > 0) write(buf, static_cast<std::size_t>(len));
+            sendOk();
+        } else {
+            if (!valuePtr) { sendError(); return; }
+            float kp = std::strtof(valuePtr, nullptr);
+            float ki = 0.0f, kd = 0.0f;
+            const char* comma = std::strchr(valuePtr, ',');
+            if (comma) {
+                ki = std::strtof(comma + 1, nullptr);
+                const char* comma2 = std::strchr(comma + 1, ',');
+                if (comma2) kd = std::strtof(comma2 + 1, nullptr);
+            }
+            tracked_cpid_kp_ = kp;
+            tracked_cpid_ki_ = ki;
+            tracked_cpid_kd_ = kd;
+            controller_->setCurrentPid(kp, ki, kd);
             sendOk();
         }
         break;

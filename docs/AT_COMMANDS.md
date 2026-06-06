@@ -256,32 +256,49 @@ Set or read the motor rotation direction.
 | 1 | REVERSE | Reverse rotation |
 | 2 | NEUTRAL | Coast, no drive |
 
-### PID Parameters (AT+PID)
+### Speed PID Parameters (AT+SPID)
 
-Set or read PID controller tuning parameters.
+Set or read the speed (outer-loop) PID controller gains. Changes take effect immediately and reset the integrator.
 
 | | |
 |---|---|
-| **Set** | `AT+PID=<kp>,<ki>[,<kd>]*<CRC>\r\n` |
-| **Query** | `AT+PID?*<CRC>\r\n` |
+| **Set** | `AT+SPID=<kp>,<ki>[,<kd>]*<CRC>\r\n` |
+| **Query** | `AT+SPID?*<CRC>\r\n` |
 | **Set response** | `OK\r\n` |
-| **Query response** | `+PID:0.050,1.000\r\nOK\r\n` |
+| **Query response** | `+SPID:0.010,0.100,0.000\r\nOK\r\n` |
 
-The `kd` parameter is optional. If omitted, it defaults to 0.0.
-
-**Known limitation:** PID values are tracked locally within the AT command processor. They cannot directly write to `BldcController::pid_speed_controller_`. The values are stored and returned by `AT+PID?`, but changing them at runtime requires rebuilding or additional integration.
+The `kd` parameter is optional. If omitted, it defaults to 0.0. Output limits and sample time are preserved.
 
 **Examples:**
 
 ```
-> AT+PID=0.05,1.0*1234\r\n
+> AT+SPID=0.05,1.0*XXXX\r\n
 < OK\r\n
 
-> AT+PID=0.1,2.0,0.01*5678\r\n
+> AT+SPID?*XXXX\r\n
+< +SPID:0.050,1.000,0.000\r\n
+< OK\r\n
+```
+
+### Current PID Parameters (AT+CPID)
+
+Set or read the current (inner-loop) PID controller gains. Changes take effect immediately and reset the integrator.
+
+| | |
+|---|---|
+| **Set** | `AT+CPID=<kp>,<ki>[,<kd>]*<CRC>\r\n` |
+| **Query** | `AT+CPID?*<CRC>\r\n` |
+| **Set response** | `OK\r\n` |
+| **Query response** | `+CPID:0.010,0.100,0.000\r\nOK\r\n` |
+
+**Examples:**
+
+```
+> AT+CPID=0.1,2.0,0.01*XXXX\r\n
 < OK\r\n
 
-> AT+PID?*9ABC\r\n
-< +PID:0.100,2.000\r\n
+> AT+CPID?*XXXX\r\n
+< +CPID:0.100,2.000,0.010\r\n
 < OK\r\n
 ```
 
@@ -479,8 +496,10 @@ ERROR\r\n
 | `AT+EMODE?` | Query | -- | `+EMODE:1` |
 | `AT+DMODE=<val>` | Set | 0, 1, 2 | `OK` |
 | `AT+DMODE?` | Query | -- | `+DMODE:0` |
-| `AT+PID=<kp>,<ki>[,<kd>]` | Set | any float | `OK` |
-| `AT+PID?` | Query | -- | `+PID:0.050,1.000` |
+| `AT+SPID=<kp>,<ki>[,<kd>]` | Set | any float | `OK` |
+| `AT+SPID?` | Query | -- | `+SPID:0.050,1.000,0.000` |
+| `AT+CPID=<kp>,<ki>[,<kd>]` | Set | any float | `OK` |
+| `AT+CPID?` | Query | -- | `+CPID:0.050,1.000,0.000` |
 | `AT+VER?` | Query | -- | `+VER:1.0.0` |
 | `AT+STATUS?` | Query | -- | `+STATUS:1,1,23.45,...` |
 | `AT+TM=<0|1>` | Set | 0, 1 | `OK` |

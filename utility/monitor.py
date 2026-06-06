@@ -245,6 +245,51 @@ class CurrentController(QWidget):
         self._write(cmd.encode("ascii"))
 
 
+class PidTuningWidget(QWidget):
+
+    def __init__(self, label: str, at_command: str, write_callback):
+        super().__init__()
+        self._write = write_callback
+        self._at_command = at_command
+        self._init_ui(label)
+
+    def _init_ui(self, label: str):
+        group = QGroupBox(label)
+        row = QHBoxLayout(group)
+
+        for name in ("Kp", "Ki", "Kd"):
+            row.addWidget(QLabel(f"{name}:"))
+            spin = QDoubleSpinBox()
+            spin.setDecimals(4)
+            spin.setRange(0.0, 100.0)
+            spin.setSingleStep(0.001)
+            spin.setMinimumWidth(80)
+            setattr(self, f"spin_{name.lower()}", spin)
+            row.addWidget(spin)
+
+        btn = QPushButton("Apply")
+        btn.setFixedWidth(60)
+        btn.clicked.connect(self._on_apply)
+        row.addWidget(btn)
+
+        self.group = group
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(group)
+
+    def set_values(self, kp: float, ki: float, kd: float):
+        self.spin_kp.setValue(kp)
+        self.spin_ki.setValue(ki)
+        self.spin_kd.setValue(kd)
+
+    def _on_apply(self):
+        kp = self.spin_kp.value()
+        ki = self.spin_ki.value()
+        kd = self.spin_kd.value()
+        cmd = format_at_command(f"{self._at_command}={kp:.4f},{ki:.4f},{kd:.4f}")
+        self._write(cmd.encode("ascii"))
+
+
 class ControlPanel(QWidget):
     """Control panel widget with speed/current controllers and mode selectors."""
 
@@ -284,6 +329,12 @@ class ControlPanel(QWidget):
         drive_mode_layout.addWidget(self.drive_mode_combo)
         layout.addLayout(drive_mode_layout)
 
+        self.spid_widget = PidTuningWidget("Speed PID (AT+SPID)", "AT+SPID", self._write)
+        layout.addWidget(self.spid_widget)
+
+        self.cpid_widget = PidTuningWidget("Current PID (AT+CPID)", "AT+CPID", self._write)
+        layout.addWidget(self.cpid_widget)
+
         self.group = group
         self.setLayout(layout)
         self._update_enabled_states()
@@ -291,6 +342,8 @@ class ControlPanel(QWidget):
     def set_enabled(self, enabled: bool):
         self.control_mode_combo.setEnabled(enabled)
         self.drive_mode_combo.setEnabled(enabled)
+        self.spid_widget.setEnabled(enabled)
+        self.cpid_widget.setEnabled(enabled)
         self._update_enabled_states()
 
     def set_max_speed(self, max_rps: float):
@@ -307,6 +360,7 @@ class ControlPanel(QWidget):
         cmd = format_at_command(f"AT+MODE={index}")
         self._write(cmd.encode("ascii"))
         self._update_enabled_states()
+        self._query_pid_params()
 
     def _on_drive_mode_changed(self, index: int):
         if self._suppress_mode_signal:
@@ -327,6 +381,10 @@ class ControlPanel(QWidget):
         self.speed_ctrl.set_enabled(speed_enabled)
         self.current_ctrl.set_enabled(current_enabled)
 
+    def _query_pid_params(self):
+        self._write(format_at_command("AT+SPID?").encode("ascii"))
+        self._write(format_at_command("AT+CPID?").encode("ascii"))
+
     def _set_control_mode_from_firmware(self, index: int):
         self._suppress_mode_signal = True
         self.control_mode_combo.setCurrentIndex(index)
@@ -344,6 +402,12 @@ class ControlPanel(QWidget):
 
     def _set_target_current_from_firmware(self, value: float):
         self.current_ctrl.set_value_from_firmware(value)
+
+    def _set_spid_from_firmware(self, kp: float, ki: float, kd: float):
+        self.spid_widget.set_values(kp, ki, kd)
+
+    def _set_cpid_from_firmware(self, kp: float, ki: float, kd: float):
+        self.cpid_widget.set_values(kp, ki, kd)
 
 
 class ContinuousTab(QWidget):
@@ -858,6 +922,8 @@ class MonitorWindow(QMainWindow):
         self._send_data(format_at_command("AT+STATUS").encode("ascii"))
         self._send_data(format_at_command("AT+DMODE?").encode("ascii"))
         self._send_data(format_at_command("AT+SPD?").encode("ascii"))
+        self._send_data(format_at_command("AT+SPID?").encode("ascii"))
+        self._send_data(format_at_command("AT+CPID?").encode("ascii"))
 
     def _stop(self):
         if self.worker is not None:
@@ -911,6 +977,10 @@ class MonitorWindow(QMainWindow):
             self._handle_mode_prefix(line, "MODE")
         elif line.startswith("+DMODE:"):
             self._handle_mode_prefix(line, "DMODE")
+        elif line.startswith("+SPID:"):
+            self._parse_pid_response(line, "+SPID:", self._apply_spid)
+        elif line.startswith("+CPID:"):
+            self._parse_pid_response(line, "+CPID:", self._apply_cpid)
 
     def _parse_float_response(self, line: str, prefix: str, apply) -> None:
         try:
@@ -954,6 +1024,24 @@ class MonitorWindow(QMainWindow):
         except (ValueError, IndexError):
             pass
 
+
+    def _parse_pid_response(self, line: str, prefix: str, apply) -> None:
+        try:
+            parts = line[len(prefix):].split(",")
+            if len(parts) >= 3:
+                apply(float(parts[0]), float(parts[1]), float(parts[2]))
+            elif len(parts) == 2:
+                apply(float(parts[0]), float(parts[1]), 0.0)
+        except ValueError:
+            pass
+
+    def _apply_spid(self, kp: float, ki: float, kd: float) -> None:
+        if self.control_panel is not None:
+            self.control_panel._set_spid_from_firmware(kp, ki, kd)
+
+    def _apply_cpid(self, kp: float, ki: float, kd: float) -> None:
+        if self.control_panel is not None:
+            self.control_panel._set_cpid_from_firmware(kp, ki, kd)
 
     def _parse_maxvals(self, line: str) -> None:
         """Parse +MAXVALS:max_spd,min_cur,max_cur,max_volt,max_duty response."""

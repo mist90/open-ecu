@@ -23,8 +23,6 @@
 #define BLDC_MAX_ACCELERATION 5.0f // 100.0f
 #define BLDC_INVERTION false // true
 
-#define COMPACT_PRINTF
-
 //#define LEGACY_POT_CONTROL
 
 TIM_HandleTypeDef htim1;
