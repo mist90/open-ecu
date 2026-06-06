@@ -21,7 +21,7 @@
 #define BLDC_MIN_CURRENT  -6.0f
 #define BLDC_MAX_SPEED 20.0f // 200.0f
 #define BLDC_MAX_ACCELERATION 5.0f // 100.0f
-#define BLDC_INVERTION true // false
+#define BLDC_INVERTION false // true
 
 #define COMPACT_PRINTF
 

@@ -15,7 +15,7 @@ AtCommandProcessor::AtCommandProcessor(BldcController* controller) noexcept
       cmd_index_(0),
       telemetry_enabled_(true),
       osc_streaming_(false),
-      tracked_drive_mode_(0),    // FORWARD
+      tracked_drive_mode_(2),    // NEUTRAL
       tracked_pid_kp_(0.01f),     // from main.cpp pid_voltage_mode
       tracked_pid_ki_(0.1f),
       tracked_pid_kd_(0.0f),

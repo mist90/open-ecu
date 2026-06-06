@@ -391,17 +391,8 @@ float BldcController::calculateSpeed() noexcept
         uint8_t num_poles = commutation_controller_.getNumPoles();
         uint32_t steps_per_revolution = num_poles * BLDC_NUM_PHASES;
 
-        float speed_rps = (static_cast<float>(pulse_count) * 1000000.0f) /
+        return (static_cast<float>(pulse_count) * 1000000.0f) /
                          (static_cast<float>(period_us) * steps_per_revolution);
-
-        // Account for direction setting
-        // Positive pulse_count with FORWARD = positive speed
-        // Negative pulse_count with FORWARD = negative speed (moving backwards)
-        // Invert sign for REVERSE
-        if (dmode_ == DriveMode::REVERSE) {
-            speed_rps = -speed_rps;
-        }
-        return speed_rps;
     }
 
     // No new pulses - extrapolate based on last measured period
@@ -427,15 +418,8 @@ float BldcController::calculateSpeed() noexcept
         uint8_t num_poles = commutation_controller_.getNumPoles();
         uint32_t steps_per_revolution = num_poles * BLDC_NUM_PHASES;
 
-        float speed_rps = 1000000.0f /
+        return 1000000.0f /
                          (static_cast<float>(extrapolation_time_us) * steps_per_revolution);
-
-        // Account for direction
-        if (dmode_ == DriveMode::REVERSE) {
-            speed_rps = -speed_rps;
-        }
-
-        return speed_rps;
     }
 
     // No measurements yet (first pulse received but no period calculated) - return 0
@@ -555,7 +539,17 @@ void BldcController::hallSensorInterruptHandler() noexcept
 void BldcController::moveNextPosition(uint8_t position) noexcept
 {
     CriticalSection cs;
-    uint8_t next_position = (dmode_ == DriveMode::FORWARD && params_.useInverseCommTable) ? (position + 1) % 6 : (position + 5) % 6;
+    uint8_t next_position = position;
+
+    switch (dmode_) {
+        case DriveMode::FORWARD:
+            next_position = !params_.useInverseCommTable? (position + 1) % 6 : (position + 5) % 6;
+            break;
+        case DriveMode::REVERSE:
+            next_position = params_.useInverseCommTable? (position + 1) % 6 : (position + 5) % 6;
+            break;
+    }
+
     status_.target_position = next_position;
     if (status_.electric_mode == ElectricMode::VOLTAGE_MODE) {
         commutation_controller_.update(next_position, status_.duty_cycle);
