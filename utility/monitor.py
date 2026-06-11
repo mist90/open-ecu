@@ -127,17 +127,17 @@ class SpeedController(QWidget):
         layout.addWidget(QLabel("Target Speed:"))
 
         self.slider = QSlider(Qt.Orientation.Horizontal)
-        self.slider.setRange(0, 200)
+        self.slider.setRange(0, 5000)
         self.slider.setValue(0)
-        self.slider.setTickInterval(10)
+        self.slider.setTickInterval(500)
         self.slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.slider.valueChanged.connect(self._on_slider_changed)
         layout.addWidget(self.slider, stretch=2)
 
         self.spinbox = QDoubleSpinBox()
-        self.spinbox.setRange(0, 200)
-        self.spinbox.setDecimals(1)
-        self.spinbox.setSingleStep(5)
+        self.spinbox.setRange(0, 50)
+        self.spinbox.setDecimals(2)
+        self.spinbox.setSingleStep(0.5)
         self.spinbox.setValue(0)
         self.spinbox.setSuffix(" RPS")
         self.spinbox.setMinimumWidth(100)
@@ -153,14 +153,14 @@ class SpeedController(QWidget):
     def set_value_from_firmware(self, value: float):
         self._suppress_signal = True
         self.spinbox.setValue(value)
-        self.slider.setValue(int(value))
+        self.slider.setValue(int(value * 100))
         self._suppress_signal = False
 
     def _on_slider_changed(self, value: int):
         if self._suppress_signal:
             return
         self._suppress_signal = True
-        self.spinbox.setValue(float(value))
+        self.spinbox.setValue(float(value) / 100.0)
         self._suppress_signal = False
         self._send_command()
 
@@ -168,13 +168,13 @@ class SpeedController(QWidget):
         if self._suppress_signal:
             return
         self._suppress_signal = True
-        self.slider.setValue(int(value))
+        self.slider.setValue(int(value * 100))
         self._suppress_signal = False
         self._send_command()
 
     def _send_command(self):
         speed = self.spinbox.value()
-        cmd = format_at_command(f"AT+SPD={speed:.1f}")
+        cmd = format_at_command(f"AT+SPD={speed:.2f}")
         self._write(cmd.encode("ascii"))
 
 
@@ -347,7 +347,7 @@ class ControlPanel(QWidget):
         self._update_enabled_states()
 
     def set_max_speed(self, max_rps: float):
-        self.speed_ctrl.slider.setRange(0, int(max_rps))
+        self.speed_ctrl.slider.setRange(0, int(max_rps * 100))
         self.speed_ctrl.spinbox.setRange(0, max_rps)
 
     def set_max_current(self, max_a: float):
@@ -775,7 +775,7 @@ class MonitorWindow(QMainWindow):
         self._connected = False
         self.control_panel: ControlPanel | None = None
         self._maxvals_received = False
-        self._max_speed = 200.0
+        self._max_speed = 50.0
         self._max_current = 6.0
         self._min_current = -6.0
         self._maxvals_timer: QTimer | None = None
