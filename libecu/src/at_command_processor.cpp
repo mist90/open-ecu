@@ -15,17 +15,16 @@ AtCommandProcessor::AtCommandProcessor(BldcController* controller) noexcept
       cmd_index_(0),
       telemetry_enabled_(true),
       osc_streaming_(false),
-      tracked_drive_mode_(2),    // NEUTRAL
+      tracked_drive_mode_(2),
       tracked_spid_kp_(0.01f),
       tracked_spid_ki_(0.1f),
       tracked_spid_kd_(0.0f),
       tracked_cpid_kp_(0.01f),
       tracked_cpid_ki_(0.1f),
       tracked_cpid_kd_(0.0f),
-      osc_write_buffer_(0),
       osc_write_index_(0),
       osc_read_index_(0),
-      osc_buffers_swapped_(false),
+      osc_phase_(OscPhase::Accumulating),
       osc_sample_counter_(0),
       crc_index_(0) {
 }
@@ -497,7 +496,7 @@ bool AtCommandProcessor::isTelemetryEnabled() const noexcept {
 void AtCommandProcessor::startOscilloscope() noexcept {
     CriticalSection cs;
     osc_streaming_ = true;
-    osc_buffers_swapped_ = false;
+    osc_phase_ = OscPhase::Accumulating;
     osc_write_index_ = 0;
     osc_read_index_ = 0;
     osc_sample_counter_ = 0;
@@ -505,30 +504,25 @@ void AtCommandProcessor::startOscilloscope() noexcept {
 
 void AtCommandProcessor::stopOscilloscope() noexcept {
     osc_streaming_ = false;
-    osc_buffers_swapped_ = false;
+    osc_phase_ = OscPhase::Accumulating;
 }
 
 void AtCommandProcessor::captureOscSample(float duty_cycle, float target_current, float measured_current, uint8_t position) noexcept {
-    // Consumer hasn't cleared yet → don't overwrite
-    if (osc_buffers_swapped_)
+    if (osc_phase_ != OscPhase::Accumulating)
         return;
-
-    std::size_t buf = osc_write_buffer_;
 
     if (osc_write_index_ >= OSC_BUFFER_SIZE)
         return;
 
-    osc_buffers_[buf][osc_write_index_].duty_cycle = duty_cycle;
-    osc_buffers_[buf][osc_write_index_].target_current = target_current;
-    osc_buffers_[buf][osc_write_index_].measured_current = measured_current;
-    osc_buffers_[buf][osc_write_index_].position = position;
+    osc_buffer_[osc_write_index_].duty_cycle = duty_cycle;
+    osc_buffer_[osc_write_index_].target_current = target_current;
+    osc_buffer_[osc_write_index_].measured_current = measured_current;
+    osc_buffer_[osc_write_index_].position = position;
 
     osc_write_index_++;
 
-    // Buffer full → signal ready, stop collecting until consumer clears flag
     if (osc_write_index_ >= OSC_BUFFER_SIZE) {
-        osc_write_index_ = 0;
-        osc_buffers_swapped_ = true;
+        osc_phase_ = OscPhase::Outputting;
     }
 }
 
@@ -536,39 +530,39 @@ void AtCommandProcessor::processOscOutput() noexcept {
     if (!osc_streaming_)
         return;
 
-    if (osc_read_index_ >= OSC_BUFFER_SIZE) {
-        if (osc_buffers_swapped_) {
-            CriticalSection cs;
-            // All samples sent — reset for next buffer
-            osc_buffers_swapped_ = false;
-            osc_read_index_ = 0;
-            osc_write_buffer_ = (osc_write_buffer_ + 1) % OSC_NUM_BUFFERS;
-            osc_sample_counter_ = 0;
-        } else
-            return;
-    }
+    if (osc_phase_ != OscPhase::Outputting)
+        return;
 
-    std::size_t buf = osc_write_buffer_;
-    const OscSample& sample = osc_buffers_[buf][osc_read_index_];
+    const OscSample& sample = osc_buffer_[osc_read_index_];
 
-    int32_t current_int = static_cast<int32_t>(sample.measured_current * 1000.0f);
+    int32_t meas_cur_int = static_cast<int32_t>(sample.measured_current * 1000.0f);
+    int32_t tgt_cur_int = static_cast<int32_t>(sample.target_current * 1000.0f);
+    int32_t duty_int = static_cast<int32_t>(sample.duty_cycle * 1000.0f);
 
-    char out_buf[32];
-    int len = std::snprintf(out_buf, sizeof(out_buf), "+OSC:%d,%ld\r\n",
+    char out_buf[64];
+    int len = std::snprintf(out_buf, sizeof(out_buf), "+OSC:%d,%ld,%ld,%ld,%u\r\n",
         static_cast<int>(osc_sample_counter_),
-        static_cast<long>(current_int));
+        static_cast<long>(meas_cur_int),
+        static_cast<long>(tgt_cur_int),
+        static_cast<long>(duty_int),
+        static_cast<unsigned>(sample.position));
 
     if (len > 0) {
         write(out_buf, static_cast<std::size_t>(len));
     }
 
     osc_read_index_++;
-
-    if (osc_read_index_ == OSC_BUFFER_SIZE) {
-        write("+OSC:\r\n", 7);
-    }
-
     osc_sample_counter_++;
+
+    if (osc_read_index_ >= OSC_BUFFER_SIZE) {
+        write("+OSC:\r\n", 7);
+
+        CriticalSection cs;
+        osc_read_index_ = 0;
+        osc_write_index_ = 0;
+        osc_sample_counter_ = 0;
+        osc_phase_ = OscPhase::Accumulating;
+    }
 }
 
 } // namespace libecu

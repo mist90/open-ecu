@@ -18,6 +18,8 @@ from PyQt6.QtGui import QColor, QTextCharFormat, QTextCursor, QFont
 
 import pyqtgraph as pg
 
+OSC_BUFFER_SIZE = 512
+
 
 def crc16_ccitt(data: bytes) -> int:
     crc = 0xFFFF
@@ -566,7 +568,7 @@ class CurrentWaveformTab(QWidget):
 
     def __init__(self, write_callback=None):
         super().__init__()
-        self._osc_samples: list[tuple[int, int]] = []
+        self._osc_samples: list[tuple[int, int, int, int, int]] = []
         self._osc_active = False
         self._write = write_callback
         self._init_ui()
@@ -583,9 +585,20 @@ class CurrentWaveformTab(QWidget):
         layout.addLayout(ctrl)
 
         self.plot_currents = pg.PlotWidget()
-        _style_plot(self.plot_currents, "Oscilloscope - Current", bottom_label="Sample Index")
-        self.curve_meas_cur = self.plot_currents.plot(name="measured_current", pen=pg.mkPen("#00ffff", width=2))
+        _style_plot(self.plot_currents, "Current", bottom_label="Sample Index")
+        self.curve_meas_cur = self.plot_currents.plot(name="measured", pen=pg.mkPen("#00ffff", width=2))
+        self.curve_tgt_cur = self.plot_currents.plot(name="target", pen=pg.mkPen("#aa00ff", width=2))
         layout.addWidget(self.plot_currents, stretch=2)
+
+        self.plot_duty = pg.PlotWidget()
+        _style_plot(self.plot_duty, "Duty Cycle", bottom_label="Sample Index")
+        self.curve_duty = self.plot_duty.plot(name="duty_cycle", pen=pg.mkPen("#ffff00", width=2))
+        layout.addWidget(self.plot_duty, stretch=1)
+
+        self.plot_position = pg.PlotWidget()
+        _style_plot(self.plot_position, "Position", bottom_label="Sample Index")
+        self.curve_position = self.plot_position.plot(name="position", pen=pg.mkPen("#44ff44", width=2))
+        layout.addWidget(self.plot_position, stretch=1)
 
         self.label_status = QLabel("Waiting for +OSC burst...")
         self.label_status.setStyleSheet("color: #888;")
@@ -612,12 +625,15 @@ class CurrentWaveformTab(QWidget):
     def reset(self):
         self._osc_samples.clear()
         self.curve_meas_cur.setData([], [])
+        self.curve_tgt_cur.setData([], [])
+        self.curve_duty.setData([], [])
+        self.curve_position.setData([], [])
         self.label_status.setText("Waiting for +OSC burst...")
 
-    def add_data(self, sample_idx: int, current_scaled: int):
-        self._osc_samples.append((sample_idx, current_scaled))
-        if len(self._osc_samples) > 1100:
-            self._osc_samples = self._osc_samples[-1000:]
+    def add_data(self, sample_idx: int, meas_cur: int, tgt_cur: int, duty: int, position: int):
+        self._osc_samples.append((sample_idx, meas_cur, tgt_cur, duty, position))
+        if len(self._osc_samples) > OSC_BUFFER_SIZE + 64:
+            self._osc_samples = self._osc_samples[-OSC_BUFFER_SIZE:]
 
     def finish_burst(self):
         if not self._osc_samples:
@@ -627,10 +643,20 @@ class CurrentWaveformTab(QWidget):
         self._osc_samples.sort(key=lambda x: x[0])
         n = len(self._osc_samples)
         x = np.array([s[0] for s in self._osc_samples], dtype=np.float64)
-        y = np.array([s[1] / 1000.0 for s in self._osc_samples], dtype=np.float64)
+        meas_cur = np.array([s[1] / 1000.0 for s in self._osc_samples], dtype=np.float64)
+        tgt_cur = np.array([s[2] / 1000.0 for s in self._osc_samples], dtype=np.float64)
+        duty = np.array([s[3] / 1000.0 for s in self._osc_samples], dtype=np.float64)
+        position = np.array([s[4] for s in self._osc_samples], dtype=np.float64)
 
-        self.curve_meas_cur.setData(x, y)
-        self.plot_currents.setXRange(x[0], x[-1] + 10)
+        self.curve_meas_cur.setData(x, meas_cur)
+        self.curve_tgt_cur.setData(x, tgt_cur)
+        self.curve_duty.setData(x, duty)
+        self.curve_position.setData(x, position)
+
+        x_range = (x[0], x[-1] + 10)
+        self.plot_currents.setXRange(*x_range)
+        self.plot_duty.setXRange(*x_range)
+        self.plot_position.setXRange(*x_range)
         self.label_status.setText(f"OSC burst: {n} samples")
 
     def add_line(self, line: str):
@@ -640,12 +666,15 @@ class CurrentWaveformTab(QWidget):
             return
         if line.startswith("+OSC:"):
             rest = line[5:]
-            if "," in rest:
-                parts = rest.split(",", 1)
+            parts = rest.split(",")
+            if len(parts) >= 5:
                 try:
                     idx = int(parts[0])
-                    cur = int(parts[1])
-                    self.add_data(idx, cur)
+                    meas_cur = int(parts[1])
+                    tgt_cur = int(parts[2])
+                    duty = int(parts[3])
+                    position = int(parts[4])
+                    self.add_data(idx, meas_cur, tgt_cur, duty, position)
                 except ValueError:
                     pass
 

@@ -103,15 +103,9 @@ public:
      */
     void processOscOutput() noexcept;
 
-    /**
-     * @brief Swap oscilloscope buffers (for ISR use)
-     */
-    void swapOscBuffers() noexcept;
-
     // Configuration constants
     static constexpr std::size_t MAX_COMMAND_LENGTH = 64;
-    static constexpr std::size_t OSC_BUFFER_SIZE = 256;
-    static constexpr std::size_t OSC_NUM_BUFFERS = 2;
+    static constexpr std::size_t OSC_BUFFER_SIZE = 512;
 
 private:
     /**
@@ -184,7 +178,12 @@ private:
     float tracked_cpid_ki_;
     float tracked_cpid_kd_;
 
-    // Oscilloscope double buffering
+    // Oscilloscope single buffer with two phases
+    enum class OscPhase : uint8_t {
+        Accumulating,  ///< ISR fills buffer, output blocked
+        Outputting     ///< Output drains buffer, capture blocked
+    };
+
     struct OscSample {
         float duty_cycle;
         float target_current;
@@ -192,11 +191,10 @@ private:
         uint8_t position;
     };
 
-    OscSample osc_buffers_[OSC_NUM_BUFFERS][OSC_BUFFER_SIZE];
-    volatile std::size_t osc_write_buffer_;
+    OscSample osc_buffer_[OSC_BUFFER_SIZE];
     std::size_t osc_write_index_;
     std::size_t osc_read_index_;
-    volatile bool osc_buffers_swapped_;
+    volatile OscPhase osc_phase_;
     std::int32_t osc_sample_counter_;
     uint8_t crc_index_;  ///< Index for accumulating CRC hex digits
 };
