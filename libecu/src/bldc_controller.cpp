@@ -108,7 +108,6 @@ void BldcController::update() noexcept
     {
         CriticalSection cs;
         status_.current_speed_rps = filtered_measured_speed_;
-        status_.measured_position = commutation_position;
         status = status_;
     }
 
@@ -191,7 +190,7 @@ void BldcController::update() noexcept
     }
 
     if (commutation_position != 0xFF && std::abs(status.current_speed_rps) < 0.01f) {
-        moveNextPosition(commutation_position);
+            moveNextPosition(commutation_position);
     }
 }
 
@@ -560,13 +559,14 @@ void BldcController::moveNextPosition(uint8_t position) noexcept
 {
     CriticalSection cs;
     uint8_t next_position = position;
+    status_.measured_position = position;
 
     switch (dmode_) {
         case DriveMode::FORWARD:
-            next_position = !params_.useInverseCommTable? (position + 1) % 6 : (position + 5) % 6;
+                next_position = !params_.useInverseCommTable? (position + 1) % 6 : (position + 5) % 6;
             break;
         case DriveMode::REVERSE:
-            next_position = params_.useInverseCommTable? (position + 1) % 6 : (position + 5) % 6;
+                next_position = params_.useInverseCommTable? (position + 1) % 6 : (position + 5) % 6;
             break;
         default:
             break;

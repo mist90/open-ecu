@@ -430,6 +430,8 @@ class ContinuousTab(QWidget):
         self.duty_cycle = []
         self.target_current = []
         self.measured_current = []
+        self.current_step = []
+        self.next_step = []
 
         self._update_timer = QTimer(self)
         self._update_timer.timeout.connect(self._update_plots)
@@ -469,10 +471,16 @@ class ContinuousTab(QWidget):
         _style_plot(self.plot_voltage, "Bus Voltage", bottom_label="Time (s)")
         self.curve_bus_volt = self.plot_voltage.plot(name="bus_voltage", pen=pg.mkPen("#ffaa00", width=2))
 
+        self.plot_steps = pg.PlotWidget()
+        _style_plot(self.plot_steps, "Commutation Step", bottom_label="Time (s)")
+        self.curve_cur_step  = self.plot_steps.plot(name="current_step", pen=pg.mkPen("#00ff88", width=2))
+        self.curve_next_step = self.plot_steps.plot(name="next_step",    pen=pg.mkPen("#ff8800", width=2))
+
         layout.addWidget(self.plot_speeds, stretch=2)
         layout.addWidget(self.plot_currents, stretch=2)
         layout.addWidget(self.plot_duty, stretch=1)
         layout.addWidget(self.plot_voltage, stretch=1)
+        layout.addWidget(self.plot_steps, stretch=1)
 
     def _on_window_changed(self, value: float):
         self._buffer_size = value
@@ -487,6 +495,8 @@ class ContinuousTab(QWidget):
         self.duty_cycle.clear()
         self.target_current.clear()
         self.measured_current.clear()
+        self.current_step.clear()
+        self.next_step.clear()
         self._dirty = True
 
     def add_sample(self, fields: list[str]):
@@ -495,6 +505,8 @@ class ContinuousTab(QWidget):
         try:
             if fields[0].startswith("+TM:"):
                 fields[0] = fields[0][4:]
+            cur_step = int(fields[0])
+            nxt_step = int(fields[1])
             ts = float(fields[2])
             cs = float(fields[3])
             dc = float(fields[4])
@@ -515,6 +527,8 @@ class ContinuousTab(QWidget):
         self.duty_cycle.append(dc)
         self.target_current.append(tc)
         self.measured_current.append(mc)
+        self.current_step.append(cur_step)
+        self.next_step.append(nxt_step)
         self._dirty = True
 
         self._trim_buffer()
@@ -532,6 +546,8 @@ class ContinuousTab(QWidget):
             self.duty_cycle = self.duty_cycle[idx:]
             self.target_current = self.target_current[idx:]
             self.measured_current = self.measured_current[idx:]
+            self.current_step = self.current_step[idx:]
+            self.next_step = self.next_step[idx:]
 
     def _update_plots(self):
         if not self._dirty:
@@ -545,6 +561,8 @@ class ContinuousTab(QWidget):
             self.curve_cur_meas.setData([], [])
             self.curve_bus_volt.setData([], [])
             self.curve_duty.setData([], [])
+            self.curve_cur_step.setData([], [])
+            self.curve_next_step.setData([], [])
             return
 
         tn = np.array(self.t_data, dtype=np.float64)
@@ -554,6 +572,8 @@ class ContinuousTab(QWidget):
         self.curve_cur_meas.setData(tn, np.array(self.measured_current, dtype=np.float64))
         self.curve_bus_volt.setData(tn, np.array(self.bus_voltage, dtype=np.float64))
         self.curve_duty.setData(tn, np.array(self.duty_cycle, dtype=np.float64))
+        self.curve_cur_step.setData(tn, np.array(self.current_step, dtype=np.float64))
+        self.curve_next_step.setData(tn, np.array(self.next_step, dtype=np.float64))
 
         t_min = max(0.0, self.t_data[-1] - self._buffer_size)
         t_max = self.t_data[-1] + 0.5
@@ -561,6 +581,7 @@ class ContinuousTab(QWidget):
         self.plot_currents.setXRange(t_min, t_max)
         self.plot_duty.setXRange(t_min, t_max)
         self.plot_voltage.setXRange(t_min, t_max)
+        self.plot_steps.setXRange(t_min, t_max)
 
 
 class CurrentWaveformTab(QWidget):
