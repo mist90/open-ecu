@@ -81,6 +81,18 @@ struct MotorStatus {
     ElectricMode electric_mode; ///< Current electric mode (electrical)
 };
 
+class MotorPLL {
+public:
+    MotorPLL() {}
+    void updateHall(uint8_t hall_state);
+    uint8_t getNextHall(float angle);
+private:
+    uint8_t hall_state_;
+    float angle_ = 0.0f;
+    float angle_per_second_ = 0.0f;
+    bool is_locked_ = false;
+};
+
 /**
  * @brief High-level BLDC motor controller
  */
