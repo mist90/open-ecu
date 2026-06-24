@@ -83,14 +83,25 @@ struct MotorStatus {
 
 class MotorPLL {
 public:
-    MotorPLL() {}
-    void updateHall(uint8_t hall_state);
-    uint8_t getNextHall(float angle);
+    MotorPLL(bool is_inverse_commutation_table = false) noexcept: is_inverse_commutation_table_(is_inverse_commutation_table) {
+    }
+    void updateHall(uint8_t hall_state) noexcept {
+        hall_state_ = hall_state;
+    }
+    uint8_t getNextHall(const volatile DriveMode &mode) noexcept {
+        if (mode == DriveMode::FORWARD)
+            return !is_inverse_commutation_table_? (hall_state_ + 1) % 6 : (hall_state_ + 5) % 6;
+        else if (mode == DriveMode::REVERSE)
+            return !is_inverse_commutation_table_? (hall_state_ + 5) % 6 : (hall_state_ + 1) % 6;
+        else
+            return hall_state_;
+    }
 private:
-    uint8_t hall_state_;
+    uint8_t hall_state_ = 0x0;
     float angle_ = 0.0f;
     float angle_per_second_ = 0.0f;
     bool is_locked_ = false;
+    bool is_inverse_commutation_table_ = false;
 };
 
 /**
@@ -226,6 +237,7 @@ private:
     AdcInterface* adc_interface_;
 
     // Owned components
+    MotorPLL motor_pll_;
     PidController pid_speed_controller_;     // Speed controller (outer loop)
     PidController current_controller_;       // Current controller (inner loop)
 
@@ -251,7 +263,6 @@ private:
     // Open-loop timing control
     uint8_t open_loop_step_;                 ///< Current step in open-loop mode (0-5)
     uint32_t open_loop_last_step_time_us_;   ///< Timestamp of last step change
-    bool open_loop_running_;                 ///< Open-loop timing initialized
 
     // Control loop timing
     uint32_t last_pid_update_time_us_;       ///< Timestamp of last successful PID update

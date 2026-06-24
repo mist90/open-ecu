@@ -28,6 +28,7 @@ BldcController::BldcController(
     , hall_interface_(hall_interface)
     , commutation_controller_(commutation_controller)
     , adc_interface_(adc_interface)
+    , motor_pll_(params.useInverseCommTable)
     , pid_speed_controller_()
     , current_controller_()
     , params_(params)
@@ -42,7 +43,6 @@ BldcController::BldcController(
     , prev_position_(0xFF)
     , open_loop_step_(0)
     , open_loop_last_step_time_us_(0)
-    , open_loop_running_(false)
     , last_pid_update_time_us_(0)
     , filtered_target_speed_(0.0f)
     , filtered_measured_speed_(0.0f)
@@ -64,7 +64,7 @@ BldcController::BldcController(
     // PID controller settings
     params_.pid_voltage_mode.sample_time_s = 1.0f / float(pwm_interface_.getFrequency());
     params_.pid_voltage_mode.min_output = 0.0f;
-    params_.pid_voltage_mode.min_output = 1.0f;
+    params_.pid_voltage_mode.max_output = 1.0f;
 
     params_.pid_current_mode.sample_time_s = 1.0f / float(pwm_interface_.getFrequency());
     params_.pid_current_mode.min_output = params_.min_current;
@@ -103,7 +103,6 @@ void BldcController::update() noexcept
         filtered_measured_speed_ = speed_rps;
     }
 
-    uint8_t commutation_position = commutation_controller_.getCurrentPosition();
     MotorStatus status;
     {
         CriticalSection cs;
@@ -115,17 +114,12 @@ void BldcController::update() noexcept
         switch (status.control_mode) {
             case ControlMode::OPEN_LOOP: {
                 uint32_t current_time_us = time_us();
-                if (!open_loop_running_) {
+                uint32_t step_interval_us = calculateOpenLoopStepInterval(status.target_speed_rps);
+                if (step_interval_us > 0 && (current_time_us - open_loop_last_step_time_us_) >= step_interval_us) {
+                    open_loop_step_ = (open_loop_step_ + 1) % 6;
                     open_loop_last_step_time_us_ = current_time_us;
-                    open_loop_running_ = true;
-                } else {
-                    uint32_t step_interval_us = calculateOpenLoopStepInterval(status.target_speed_rps);
-                    if (step_interval_us > 0 && (current_time_us - open_loop_last_step_time_us_) >= step_interval_us) {
-                        open_loop_step_ = (open_loop_step_ + 1) % 6;
-                        open_loop_last_step_time_us_ = current_time_us;
-                    }
                 }
-                commutation_position = open_loop_step_;
+                motor_pll_.updateHall(open_loop_step_);
                 break;
             }
 
@@ -185,12 +179,6 @@ void BldcController::update() noexcept
                 // No speed PID - user sets fixed torque/current command
                 break;
         }
-    } else {
-        open_loop_running_ = false;
-    }
-
-    if (commutation_position != 0xFF && std::abs(status.current_speed_rps) < 0.01f) {
-            moveNextPosition(commutation_position);
     }
 }
 
@@ -297,12 +285,14 @@ void BldcController::start() noexcept
 
     // Reset speed measurement on motor start
     CriticalSection cs;
+    open_loop_last_step_time_us_ = time_us();
     speed_measurement_active_ = false;
     speed_start_time_us_ = 0;
     speed_end_time_us_ = 0;
     speed_pulse_count_ = 0;
     last_hall_state_ = commutation_controller_.getCurrentPosition();
     last_period_us_ = 0;
+    motor_pll_.updateHall(last_hall_state_);
 
     // Reset PID timing and target speed filters
     last_pid_update_time_us_ = 0;
@@ -316,7 +306,6 @@ void BldcController::stop() noexcept
     CriticalSection cs;
     status_.is_running = false;
     status_.duty_cycle = 0.0f;
-    open_loop_running_ = false;
     open_loop_step_ = 0;
     commutation_controller_.update(0, 0.0f);
 
@@ -552,49 +541,31 @@ void BldcController::hallSensorInterruptHandler() noexcept
         speed_end_time_us_ = timestamp_us;
     }
 
-    moveNextPosition(hall_state);
-}
-
-void BldcController::moveNextPosition(uint8_t position) noexcept
-{
-    CriticalSection cs;
-    uint8_t next_position = position;
-    status_.measured_position = position;
-
-    switch (dmode_) {
-        case DriveMode::FORWARD:
-                next_position = !params_.useInverseCommTable? (position + 1) % 6 : (position + 5) % 6;
-            break;
-        case DriveMode::REVERSE:
-                next_position = params_.useInverseCommTable? (position + 1) % 6 : (position + 5) % 6;
-            break;
-        default:
-            break;
-    }
-
-    status_.target_position = next_position;
-    if (status_.electric_mode == ElectricMode::VOLTAGE_MODE) {
-        commutation_controller_.update(next_position, status_.duty_cycle);
-    } else if (status_.electric_mode == ElectricMode::CURRENT_MODE) {
-        if (position != prev_position_) {
-            commutation_controller_.update(next_position, 0.0f);
-            prev_position_ = position;
-        }
-    }
+    status_.measured_position = hall_state;
+    motor_pll_.updateHall(hall_state);
 }
 
 void BldcController::pwmInterruptHandler() noexcept {
     // Read shared data atomically (avoid torn reads from SysTick interrupt)
     ElectricMode electric_mode;
+    uint8_t new_position;
+    uint8_t target_position;
     float target_current;
     {
         CriticalSection cs;
         electric_mode = status_.electric_mode;
         target_current = status_.target_current;
+        new_position = motor_pll_.getNextHall(dmode_);
+        target_position = status_.target_position;
     }
 
-    // Only run current control loop in CURRENT_MODE
-    if (electric_mode != ElectricMode::CURRENT_MODE) {
+    if (electric_mode == ElectricMode::VOLTAGE_MODE) {
+        if (target_position != new_position) {
+            status_.target_position = new_position;
+            // Phase switching in VOLTAGE_MODE
+            commutation_controller_.update(target_position, status_.duty_cycle);
+        }
+        // Only run current control loop in CURRENT_MODE
         return;
     }
 
@@ -621,9 +592,14 @@ void BldcController::pwmInterruptHandler() noexcept {
         status_.measured_current = measured_current;
         status_.duty_cycle = duty_cycle;
         status_.bus_voltage = bus_voltage;
-        // Apply duty cycle without changing commutation step
-        // Phase switching is handled in hallSensorInterruptHandler
-        commutation_controller_.updateDutyCycle(duty_cycle);
+        if (target_position != new_position) {
+            // Phase switching in CURRENT_MODE
+            commutation_controller_.update(target_position, duty_cycle);
+            status_.target_position = new_position;
+        } else {
+            // Apply duty cycle without changing commutation step
+            commutation_controller_.updateDutyCycle(duty_cycle);
+        }
     }
 
 
