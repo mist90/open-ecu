@@ -291,8 +291,9 @@ void BldcController::start() noexcept
     speed_end_time_us_ = 0;
     speed_pulse_count_ = 0;
     last_hall_state_ = commutation_controller_.getCurrentPosition();
-    last_period_us_ = 0;
+    status_.measured_position = last_hall_state_;
     motor_pll_.updateHall(last_hall_state_);
+    last_period_us_ = 0;
 
     // Reset PID timing and target speed filters
     last_pid_update_time_us_ = 0;
@@ -563,7 +564,7 @@ void BldcController::pwmInterruptHandler() noexcept {
         if (target_position != new_position) {
             status_.target_position = new_position;
             // Phase switching in VOLTAGE_MODE
-            commutation_controller_.update(target_position, status_.duty_cycle);
+            commutation_controller_.update(new_position, status_.duty_cycle);
         }
         // Only run current control loop in CURRENT_MODE
         return;
