@@ -308,7 +308,7 @@ void BldcController::stop() noexcept
     status_.is_running = false;
     status_.duty_cycle = 0.0f;
     open_loop_step_ = 0;
-    commutation_controller_.update(0, 0.0f);
+    commutation_controller_.updateDutyCycle(0.0f);
 
     // Reset speed measurement on motor stop
     speed_measurement_active_ = false;
@@ -595,7 +595,7 @@ void BldcController::pwmInterruptHandler() noexcept {
         status_.bus_voltage = bus_voltage;
         if (target_position != new_position) {
             // Phase switching in CURRENT_MODE
-            commutation_controller_.update(target_position, duty_cycle);
+            commutation_controller_.update(new_position, duty_cycle);
             status_.target_position = new_position;
         } else {
             // Apply duty cycle without changing commutation step
