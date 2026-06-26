@@ -59,8 +59,8 @@ BldcController::BldcController(
     status_.target_position = 0xFF;
     status_.measured_position = 0xFF;
     status_.is_running = false;
-    status_.control_mode = ControlMode::OPEN_LOOP;
-    status_.electric_mode = ElectricMode::VOLTAGE_MODE;
+    status_.control_mode = ControlMode::CLOSED_LOOP_VELOCITY;
+    status_.electric_mode = ElectricMode::CURRENT_MODE;
     // PID controller settings
     params_.pid_voltage_mode.sample_time_s = 1.0f / float(pwm_interface_.getFrequency());
     params_.pid_voltage_mode.min_output = 0.0f;
@@ -75,7 +75,7 @@ BldcController::BldcController(
     params_.pid_current_regulator.max_output = 1.0f;
 
     current_controller_.setParameters(params_.pid_current_regulator);
-    pid_speed_controller_.setParameters(params_.pid_voltage_mode);
+    pid_speed_controller_.setParameters(params_.pid_current_mode);
 }
 
 bool BldcController::initialize() noexcept

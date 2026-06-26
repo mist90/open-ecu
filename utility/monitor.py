@@ -12,7 +12,8 @@ from PyQt6.QtCore import QObject, QThread, QTimer, pyqtSignal, Qt
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QLineEdit, QComboBox, QDoubleSpinBox, QTabWidget,
-    QMessageBox, QFrame, QSlider, QGroupBox, QTextEdit, QCheckBox
+    QMessageBox, QFrame, QSlider, QGroupBox, QTextEdit, QCheckBox,
+    QScrollArea
 )
 from PyQt6.QtGui import QColor, QTextCharFormat, QTextCursor, QFont
 
@@ -453,34 +454,54 @@ class ContinuousTab(QWidget):
         ctrl.addStretch()
         layout.addLayout(ctrl)
 
+        scroll = QScrollArea()
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setWidgetResizable(True)
+
+        container = QWidget()
+        plot_layout = QVBoxLayout(container)
+
         self.plot_speeds = pg.PlotWidget()
+        self.plot_speeds.setMinimumHeight(250)
         _style_plot(self.plot_speeds, "Speed", bottom_label="Time (s)")
         self.curve_spd_tgt  = self.plot_speeds.plot(name="target_speed",  pen=pg.mkPen("#ff0088", width=2))
         self.curve_spd_cur  = self.plot_speeds.plot(name="current_speed", pen=pg.mkPen("#ff4444", width=2))
 
         self.plot_currents = pg.PlotWidget()
+        self.plot_currents.setMinimumHeight(250)
         _style_plot(self.plot_currents, "Current", bottom_label="Time (s)")
         self.curve_cur_tgt  = self.plot_currents.plot(name="target_current",   pen=pg.mkPen("#aa00ff", width=2))
         self.curve_cur_meas = self.plot_currents.plot(name="measured_current", pen=pg.mkPen("#00ffff", width=2))
 
         self.plot_duty = pg.PlotWidget()
+        self.plot_duty.setMinimumHeight(180)
         _style_plot(self.plot_duty, "Duty Cycle", bottom_label="Time (s)")
+        self.plot_duty.setYRange(0, 1)
+        self.plot_duty.enableAutoRange(y=False)
         self.curve_duty = self.plot_duty.plot(name="duty_cycle", pen=pg.mkPen("#ffff00", width=2))
 
         self.plot_voltage = pg.PlotWidget()
+        self.plot_voltage.setMinimumHeight(180)
         _style_plot(self.plot_voltage, "Bus Voltage", bottom_label="Time (s)")
         self.curve_bus_volt = self.plot_voltage.plot(name="bus_voltage", pen=pg.mkPen("#ffaa00", width=2))
 
         self.plot_steps = pg.PlotWidget()
+        self.plot_steps.setMinimumHeight(180)
         _style_plot(self.plot_steps, "Commutation Step", bottom_label="Time (s)")
+        self.plot_steps.setYRange(0, 5)
+        self.plot_steps.enableAutoRange(y=False)
         self.curve_cur_step  = self.plot_steps.plot(name="current_step", pen=pg.mkPen("#00ff88", width=2))
         self.curve_next_step = self.plot_steps.plot(name="next_step",    pen=pg.mkPen("#ff8800", width=2))
 
-        layout.addWidget(self.plot_speeds, stretch=2)
-        layout.addWidget(self.plot_currents, stretch=2)
-        layout.addWidget(self.plot_duty, stretch=1)
-        layout.addWidget(self.plot_voltage, stretch=1)
-        layout.addWidget(self.plot_steps, stretch=1)
+        plot_layout.addWidget(self.plot_speeds)
+        plot_layout.addWidget(self.plot_currents)
+        plot_layout.addWidget(self.plot_duty)
+        plot_layout.addWidget(self.plot_voltage)
+        plot_layout.addWidget(self.plot_steps)
+
+        scroll.setWidget(container)
+        layout.addWidget(scroll, stretch=1)
 
     def _on_window_changed(self, value: float):
         self._buffer_size = value

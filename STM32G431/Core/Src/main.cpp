@@ -119,7 +119,7 @@ extern "C" void motor_controller_hall_interrupt_handler(void)
 
 /**
  * @brief C-linkage wrapper for PWM interrupt handler (current control loop)
- * This function is called from C code (stm32g4xx_it.c) at 20kHz for current control
+ * This function is called from C code (stm32g4xx_it.c) at PWM_TIMER_FREQ for current control
  */
 extern "C" void motor_controller_pwm_interrupt_handler(void)
 {
@@ -151,7 +151,7 @@ int main(void)
     MX_USART2_UART_Init();
 
     // Initialize motor control components
-    if (!pwm_driver.initialize(PWM_TIMER_FREQ, 200)) {  // 20kHz PWM, 200ns dead-time
+    if (!pwm_driver.initialize(PWM_TIMER_FREQ, 200)) {  // PWM_TIMER_FREQ PWM, 200ns dead-time
         Error_Handler();
     }
 
@@ -228,26 +228,16 @@ int main(void)
 
     /* Configure interrupt priorities for real-time control
      * Lower preempt priority number = higher priority (can preempt higher numbers)
-     * Priority 0: TIM1 (20kHz current loop) - highest priority, time-critical
+     * Priority 0: TIM1 (PWM_TIMER_FREQ current loop) - highest priority, time-critical
      * Priority 1: Hall sensors (EXTI9_5) - medium priority, already configured in MX_GPIO_Init
      * Priority 2: SysTick (control loop) - lowest priority
      */
     HAL_NVIC_SetPriority(TIM1_UP_TIM16_IRQn, 0, 0);
     HAL_NVIC_EnableIRQ(TIM1_UP_TIM16_IRQn);
 
-    // Enable TIM1 update interrupt for 20kHz current control loop
+    // Enable TIM1 update interrupt for PWM_TIMER_FREQ current control loop
     // (TIM1 base is already started earlier for ADC calibration)
     HAL_TIM_Base_Start_IT(&htim1);
-
-    // Set control mode (mechanical) and electric mode (electrical)
-    motor_controller->setControlMode(libecu::ControlMode::CLOSED_LOOP_VELOCITY);
-    motor_controller->setElectricMode(libecu::ElectricMode::CURRENT_MODE);
-
-    // This setting is for (CLOSED_LOOP_TORQUE or OPEN_LOOP) and VOLTAGE_MODE mode only
-    motor_controller->setDutyCycle(0.3f);
-
-    // This setting is for (CLOSED_LOOP_TORQUE or OPEN_LOOP) and CURRENT_MODE mode only
-    motor_controller->setCurrent(1.0f);
 
     motor_controller->start();
 
