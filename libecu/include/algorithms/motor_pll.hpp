@@ -1,0 +1,112 @@
+/**
+ * @file motor_pll.hpp
+ * @brief Phase-Locked Loop (PLL) for motor rotor angle estimation and virtual commutation
+ *
+ * Implements a PLL that tracks the motor rotor angle from Hall sensor interrupts,
+ * providing smooth angle estimation at PWM frequency (40 kHz) and generating
+ * virtual commutation steps with optional 90-degree field offset for maximum torque.
+ */
+
+#ifndef LIBECU_MOTOR_PLL_HPP
+#define LIBECU_MOTOR_PLL_HPP
+
+#include <cstdint>
+
+namespace libecu {
+
+// Forward declaration - full definition in bldc_controller.hpp
+enum class DriveMode : uint8_t;
+
+/**
+ * @brief Motor rotor angle PLL (Phase-Locked Loop)
+ *
+ * Tracks rotor angle from discrete Hall sensor events using a PI controller.
+ * The virtual angle is integrated at PWM frequency (40 kHz) and can generate
+ * commutation steps with a 90-degree stator field offset for maximum torque.
+ *
+ * Usage:
+ *  - Call updateHall() from Hall sensor EXTI interrupt
+ *  - Call updateTick() from TIM1 Update interrupt (40 kHz PWM)
+ *  - Call getNextHall() to get the next commutation step
+ */
+class MotorPLL {
+public:
+    static constexpr float MAX_ELECTRICAL_SPEED = 24000.0f; // Electrical speed limit (deg/sec)
+
+    /**
+     * @brief Constructor
+     * @param is_inverse_commutation_table Use inverse six-step commutation table
+     */
+    explicit MotorPLL(float freq_pwm, bool is_inverse_commutation_table = false) noexcept;
+
+    /**
+     * @brief Hall sensor interrupt handler (EXTI)
+     *
+     * Must be called from the real Hall sensor GPIO interrupt.
+     * Updates the PLL with the actual rotor position and timing information.
+     *
+     * @param hall_state Current Hall step (0-5). Pass 0xFF for sensor error.
+     * @param timestamp_us Current microsecond timer value (e.g., TIM2->CNT)
+     */
+    void updateHall(uint8_t hall_state, uint32_t timestamp_us) noexcept;
+
+    /**
+     * @brief Angle integrator
+     *
+     * Must be called from TIM1 Update interrupt (every PWM tick, 40 kHz)
+     * when PLL is enabled. Integrates the virtual rotor angle.
+     */
+    void updateTick() noexcept;
+
+    /**
+     * @brief Get next commutation step
+     *
+     * Call from PWM loop to update the inverter switches.
+     * When PLL is active, applies a 90-degree stator field offset
+     * relative to the rotor for maximum torque production.
+     *
+     * @param mode Current drive mode (FORWARD/REVERSE/NEUTRAL)
+     * @return Next commutation step (0-5), or 0xFF on Hall sensor error
+     */
+    uint8_t getNextHall(const volatile DriveMode &mode) noexcept;
+
+    /**
+     * @brief Enable or disable PLL mode
+     * @param use true = PLL-based commutation, false = discrete Hall table
+     */
+    void setUsePLL(bool use) noexcept;
+
+    /// @return true if PLL mode is active
+    bool isUsingPLL() const noexcept;
+
+    /// @brief Reset PLL state (angle, speed, integrator)
+    void reset() noexcept;
+
+    /// @return Current estimated rotor angle (degrees, 0-360)
+    float getAngle() const noexcept;
+
+    /// @return Current estimated electrical speed (deg/sec)
+    float getSpeedDegSec() const noexcept;
+
+private:
+    /// @brief Adapt PLL PI gains based on current speed
+    void updateAdaptiveGains() noexcept;
+
+    float DT;
+    uint8_t hall_state_ = 0x0;
+    float angle_ = 0.0f;
+    float angle_per_second_ = 0.0f;
+    bool is_locked_ = false;
+    bool is_inverse_commutation_table_ = false;
+
+    // PLL state and timing
+    bool use_pll_ = false;
+    uint32_t last_timestamp_us_ = 0;
+    float pll_kp_ = 15.0f;
+    float pll_ki_ = 80.0f;
+    float pll_integral_ = 0.0f;
+};
+
+} // namespace libecu
+
+#endif // LIBECU_MOTOR_PLL_HPP

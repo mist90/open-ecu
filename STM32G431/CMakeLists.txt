@@ -104,6 +104,7 @@ file(GLOB LIBECU_CORE_SOURCES
     "../libecu/src/bldc_controller.cpp"
     "../libecu/src/commutation_controller.cpp"
     "../libecu/src/pid_controller.cpp"
+    "../libecu/src/motor_pll.cpp"
     "../libecu/src/at_command_processor.cpp"
     "../libecu/src/platform/crc16.cpp"
 )

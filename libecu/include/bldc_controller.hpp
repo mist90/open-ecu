@@ -15,6 +15,7 @@
 #include "interfaces/adc_interface.hpp"
 #include "algorithms/commutation_controller.hpp"
 #include "algorithms/pid_controller.hpp"
+#include "algorithms/motor_pll.hpp"
 
 namespace libecu {
 
@@ -79,29 +80,6 @@ struct MotorStatus {
     bool is_running;          ///< Motor running status
     ControlMode control_mode;   ///< Current control mode (mechanical)
     ElectricMode electric_mode; ///< Current electric mode (electrical)
-};
-
-class MotorPLL {
-public:
-    MotorPLL(bool is_inverse_commutation_table = false) noexcept: is_inverse_commutation_table_(is_inverse_commutation_table) {
-    }
-    void updateHall(uint8_t hall_state) noexcept {
-        hall_state_ = hall_state;
-    }
-    uint8_t getNextHall(const volatile DriveMode &mode) noexcept {
-        if (mode == DriveMode::FORWARD)
-            return !is_inverse_commutation_table_? (hall_state_ + 1) % 6 : (hall_state_ + 5) % 6;
-        else if (mode == DriveMode::REVERSE)
-            return !is_inverse_commutation_table_? (hall_state_ + 5) % 6 : (hall_state_ + 1) % 6;
-        else
-            return hall_state_;
-    }
-private:
-    uint8_t hall_state_ = 0x0;
-    float angle_ = 0.0f;
-    float angle_per_second_ = 0.0f;
-    bool is_locked_ = false;
-    bool is_inverse_commutation_table_ = false;
 };
 
 /**

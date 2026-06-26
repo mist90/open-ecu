@@ -28,7 +28,7 @@ BldcController::BldcController(
     , hall_interface_(hall_interface)
     , commutation_controller_(commutation_controller)
     , adc_interface_(adc_interface)
-    , motor_pll_(params.useInverseCommTable)
+    , motor_pll_(1.0 / pwm_interface_.getFrequency(), params.useInverseCommTable)
     , pid_speed_controller_()
     , current_controller_()
     , params_(params)
@@ -119,7 +119,7 @@ void BldcController::update() noexcept
                     open_loop_step_ = (open_loop_step_ + 1) % 6;
                     open_loop_last_step_time_us_ = current_time_us;
                 }
-                motor_pll_.updateHall(open_loop_step_);
+                motor_pll_.updateHall(open_loop_step_, current_time_us);
                 break;
             }
 
@@ -292,7 +292,7 @@ void BldcController::start() noexcept
     speed_pulse_count_ = 0;
     last_hall_state_ = commutation_controller_.getCurrentPosition();
     status_.measured_position = last_hall_state_;
-    motor_pll_.updateHall(last_hall_state_);
+    motor_pll_.updateHall(last_hall_state_, open_loop_last_step_time_us_);
     last_period_us_ = 0;
 
     // Reset PID timing and target speed filters
@@ -528,22 +528,24 @@ void BldcController::hallSensorInterruptHandler() noexcept
     // Update last Hall state
     last_hall_state_ = hall_state;
 
-    if (delta != 0) {
-        // Initialize measurement on first valid transition (transition to ROTATING state)
-        if (speed_measurement_active_) {
-            speed_pulse_count_ += delta;
-        } else {
-            speed_measurement_active_ = true;
-            speed_start_time_us_ = timestamp_us;
-            speed_pulse_count_ = 0;
+    {
+        CriticalSection cs;
+        if (delta != 0) {
+            // Initialize measurement on first valid transition (transition to ROTATING state)
+            if (speed_measurement_active_) {
+                speed_pulse_count_ += delta;
+            } else {
+                speed_measurement_active_ = true;
+                speed_start_time_us_ = timestamp_us;
+                speed_pulse_count_ = 0;
+            }
+
+            // Update end timestamp and pulse counter
+            speed_end_time_us_ = timestamp_us;
         }
-
-        // Update end timestamp and pulse counter
-        speed_end_time_us_ = timestamp_us;
+        status_.measured_position = hall_state;
     }
-
-    status_.measured_position = hall_state;
-    motor_pll_.updateHall(hall_state);
+    motor_pll_.updateHall(hall_state, timestamp_us);
 }
 
 void BldcController::pwmInterruptHandler() noexcept {
@@ -556,6 +558,7 @@ void BldcController::pwmInterruptHandler() noexcept {
         CriticalSection cs;
         electric_mode = status_.electric_mode;
         target_current = status_.target_current;
+        motor_pll_.updateTick();
         new_position = motor_pll_.getNextHall(dmode_);
         target_position = status_.target_position;
     }
