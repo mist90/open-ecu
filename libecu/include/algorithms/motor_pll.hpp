@@ -102,8 +102,8 @@ private:
     // PLL state and timing
     bool use_pll_ = false;
     uint32_t last_timestamp_us_ = 0;
-    float pll_kp_ = 15.0f;
-    float pll_ki_ = 80.0f;
+    float pll_kp_ = 1.0f;
+    float pll_ki_ = 8.0f;
     float pll_integral_ = 0.0f;
 };
 

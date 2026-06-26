@@ -32,7 +32,7 @@ void MotorPLL::updateHall(uint8_t hall_state, uint32_t timestamp_us) noexcept {
     }
 
     // Exit if PLL disabled or Hall sensor error
-    if (!use_pll_ || hall_state_ == 0xFF || hall_state_ > 5) {
+    if (!use_pll_) {
         return;
     }
 
@@ -43,6 +43,7 @@ void MotorPLL::updateHall(uint8_t hall_state, uint32_t timestamp_us) noexcept {
     float angle_error = real_rotor_angle - angle_;
 
     // Wrap error across 0/360 boundary
+    angle_error = fmodf(angle_error, 360.0f);
     if (angle_error > 180.0f)  angle_error -= 360.0f;
     if (angle_error < -180.0f) angle_error += 360.0f;
 
@@ -65,8 +66,10 @@ void MotorPLL::updateTick() noexcept {
     angle_ += angle_per_second_ * DT;
 
     // Normalize virtual angle to [0.0, 360.0)
-    if (angle_ >= 360.0f) angle_ -= 360.0f;
-    if (angle_ < 0.0f)    angle_ += 360.0f;
+    angle_ = fmodf(angle_, 360.0f);
+    if (angle_ < 0.0f) {
+        angle_ += 360.0f;
+    }
 }
 
 uint8_t MotorPLL::getNextHall(const volatile DriveMode &mode) noexcept {
@@ -133,8 +136,8 @@ float MotorPLL::getSpeedDegSec() const noexcept {
 
 void MotorPLL::updateAdaptiveGains() noexcept {
     float abs_speed = std::abs(angle_per_second_);
-    float base_kp = 15.0f;
-    float base_ki = 80.0f;
+    float base_kp = 1.0f;
+    float base_ki = 8.0f;
 
     float speed_factor = abs_speed / MAX_ELECTRICAL_SPEED;
     if (speed_factor > 1.0f) speed_factor = 1.0f;

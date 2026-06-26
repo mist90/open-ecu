@@ -470,7 +470,7 @@ void AtCommandProcessor::sendTelemetry(const MotorStatus& status) noexcept {
     }
 
     char buf[128];
-    int len = std::snprintf(buf, sizeof(buf), "+TM:%u;%u;%.2f;%.2f;%.2f;%.2f;%.2f;%.2f\n",
+    int len = std::snprintf(buf, sizeof(buf), "+TM:%u;%u;%.2f;%.2f;%.2f;%.2f;%.2f;%.2f;%.1f\n",
             static_cast<unsigned>(status.measured_position),
             static_cast<unsigned>(status.target_position),
             status.target_speed_rps,
@@ -478,7 +478,8 @@ void AtCommandProcessor::sendTelemetry(const MotorStatus& status) noexcept {
             status.duty_cycle,
             status.target_current,
             status.measured_current,
-            status.bus_voltage);
+            status.bus_voltage,
+            status.pll_angle);
 
     if (len > 0 && static_cast<std::size_t>(len) < sizeof(buf)) {
         write(buf, static_cast<std::size_t>(len));

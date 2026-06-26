@@ -596,6 +596,7 @@ void BldcController::pwmInterruptHandler() noexcept {
         status_.measured_current = measured_current;
         status_.duty_cycle = duty_cycle;
         status_.bus_voltage = bus_voltage;
+        status_.pll_angle = motor_pll_.getAngle();
         if (target_position != new_position) {
             // Phase switching in CURRENT_MODE
             commutation_controller_.update(new_position, duty_cycle);
