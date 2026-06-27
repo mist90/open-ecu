@@ -42,7 +42,7 @@ enum class DriveMode : uint8_t {
  */
 class MotorPLL {
 public:
-    static constexpr float HALL_TIMEOUT_SEC = 0.15f;
+    static constexpr float HALL_TIMEOUT_SEC = 5.0f;
     static constexpr uint8_t ANGLE_MAX = 60;
 
     /**
@@ -94,7 +94,7 @@ public:
     /// @brief Reset PLL state (angle, speed, integrator)
     void reset() noexcept;
 
-    /// @return Current estimated rotor angle in steps (0-60)
+    /// @return Current estimated rotor angle in steps (0-5)
     float getAngle() const noexcept;
 
     /// @return Current estimated electrical speed in steps/sec

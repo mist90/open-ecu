@@ -111,7 +111,7 @@ void MotorPLL::reset() noexcept {
 }
 
 float MotorPLL::getAngle() const noexcept {
-    return angle_;
+    return fmodf(angle_, 6.0f);
 }
 
 float MotorPLL::getSpeedStepsSec() const noexcept {

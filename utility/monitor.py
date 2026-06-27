@@ -433,8 +433,7 @@ class ContinuousTab(QWidget):
         self.measured_current = []
         self.current_step = []
         self.next_step = []
-        self.rotor_angle = []
-        self.hall_angle = []
+        self.pll_step = []
 
         self._update_timer = QTimer(self)
         self._update_timer.timeout.connect(self._update_plots)
@@ -495,21 +494,13 @@ class ContinuousTab(QWidget):
         self.plot_steps.enableAutoRange(y=False)
         self.curve_cur_step  = self.plot_steps.plot(name="current_step", pen=pg.mkPen("#00ff88", width=2))
         self.curve_next_step = self.plot_steps.plot(name="next_step",    pen=pg.mkPen("#ff8800", width=2))
-
-        self.plot_angles = pg.PlotWidget()
-        self.plot_angles.setMinimumHeight(250)
-        _style_plot(self.plot_angles, "Rotor Angle", bottom_label="Time (s)")
-        self.plot_angles.setYRange(0, 360)
-        self.plot_angles.enableAutoRange(y=False)
-        self.curve_pll_angle  = self.plot_angles.plot(name="PLL angle",    pen=pg.mkPen("#ff4444", width=2))
-        self.curve_hall_angle = self.plot_angles.plot(name="Hall angle",   pen=pg.mkPen("#44ff44", width=2))
+        self.curve_pll_step  = self.plot_steps.plot(name="PLL step",     pen=pg.mkPen("#ff4444", width=2))
 
         plot_layout.addWidget(self.plot_speeds)
         plot_layout.addWidget(self.plot_currents)
         plot_layout.addWidget(self.plot_duty)
         plot_layout.addWidget(self.plot_voltage)
         plot_layout.addWidget(self.plot_steps)
-        plot_layout.addWidget(self.plot_angles)
 
         scroll.setWidget(container)
         layout.addWidget(scroll, stretch=1)
@@ -529,8 +520,7 @@ class ContinuousTab(QWidget):
         self.measured_current.clear()
         self.current_step.clear()
         self.next_step.clear()
-        self.rotor_angle.clear()
-        self.hall_angle.clear()
+        self.pll_step.clear()
         self._dirty = True
 
     def add_sample(self, fields: list[str]):
@@ -547,7 +537,7 @@ class ContinuousTab(QWidget):
             tc = float(fields[5])
             mc = float(fields[6])
             bv = float(fields[7])
-            pll_ang = float(fields[8])
+            pll_step = int(float(fields[8]))
         except ValueError:
             return
 
@@ -564,8 +554,7 @@ class ContinuousTab(QWidget):
         self.measured_current.append(mc)
         self.current_step.append(cur_step)
         self.next_step.append(nxt_step)
-        self.rotor_angle.append(pll_ang)
-        self.hall_angle.append(cur_step * 60.0)
+        self.pll_step.append(pll_step)
         self._dirty = True
 
         self._trim_buffer()
@@ -585,8 +574,7 @@ class ContinuousTab(QWidget):
             self.measured_current = self.measured_current[idx:]
             self.current_step = self.current_step[idx:]
             self.next_step = self.next_step[idx:]
-            self.rotor_angle = self.rotor_angle[idx:]
-            self.hall_angle = self.hall_angle[idx:]
+            self.pll_step = self.pll_step[idx:]
 
     def _update_plots(self):
         if not self._dirty:
@@ -602,8 +590,7 @@ class ContinuousTab(QWidget):
             self.curve_duty.setData([], [])
             self.curve_cur_step.setData([], [])
             self.curve_next_step.setData([], [])
-            self.curve_pll_angle.setData([], [])
-            self.curve_hall_angle.setData([], [])
+            self.curve_pll_step.setData([], [])
             return
 
         tn = np.array(self.t_data, dtype=np.float64)
@@ -615,8 +602,7 @@ class ContinuousTab(QWidget):
         self.curve_duty.setData(tn, np.array(self.duty_cycle, dtype=np.float64))
         self.curve_cur_step.setData(tn, np.array(self.current_step, dtype=np.float64))
         self.curve_next_step.setData(tn, np.array(self.next_step, dtype=np.float64))
-        self.curve_pll_angle.setData(tn, np.array(self.rotor_angle, dtype=np.float64))
-        self.curve_hall_angle.setData(tn, np.array(self.hall_angle, dtype=np.float64))
+        self.curve_pll_step.setData(tn, np.array(self.pll_step, dtype=np.float64))
 
         t_min = max(0.0, self.t_data[-1] - self._buffer_size)
         t_max = self.t_data[-1] + 0.5
@@ -625,7 +611,6 @@ class ContinuousTab(QWidget):
         self.plot_duty.setXRange(t_min, t_max)
         self.plot_voltage.setXRange(t_min, t_max)
         self.plot_steps.setXRange(t_min, t_max)
-        self.plot_angles.setXRange(t_min, t_max)
 
 
 class CurrentWaveformTab(QWidget):
