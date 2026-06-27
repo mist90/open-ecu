@@ -96,9 +96,6 @@ public:
     float getSpeedDegSec() const noexcept;
 
 private:
-    /// @brief Adapt PLL PI gains based on current speed
-    void updateAdaptiveGains() noexcept;
-
     float DT;
     uint8_t hall_state_ = 0x0;
     float angle_ = 0.0f;
@@ -106,12 +103,10 @@ private:
     bool is_locked_ = false;
     bool is_inverse_commutation_table_ = false;
 
-    // PLL state and timing
     bool use_pll_ = false;
     uint32_t last_timestamp_us_ = 0;
-    float pll_kp_ = 1.0f;
-    float pll_ki_ = 8.0f;
-    float pll_integral_ = 0.0f;
+    int32_t rotation_count_ = 0;
+    float last_absolute_real_angle_ = 0.0f;
 };
 
 } // namespace libecu

@@ -4,7 +4,7 @@
  */
 
 #include "../include/algorithms/motor_pll.hpp"
-#include "../include/bldc_controller.hpp" // DriveMode enum definition
+#include "../include/bldc_controller.hpp"
 #include <cmath>
 
 namespace libecu {
@@ -16,59 +16,52 @@ MotorPLL::MotorPLL(float freq_pwm, bool is_inverse_commutation_table) noexcept
 }
 
 void MotorPLL::updateHall(uint8_t hall_state, uint32_t timestamp_us) noexcept {
+    uint8_t prev_hall_state = hall_state_;
     hall_state_ = hall_state;
 
-    // Time delta between Hall interrupts.
-    // Unsigned arithmetic correctly handles timer overflow (0xFFFFFFFF → 0).
     uint32_t delta_us = timestamp_us - last_timestamp_us_;
     last_timestamp_us_ = timestamp_us;
 
-    // Convert microseconds to seconds (float)
     float est_dt_hall = static_cast<float>(delta_us) * 0.000001f;
 
-    // Guard against first call or abnormally long motor stall
     if (est_dt_hall > 0.5f || est_dt_hall <= 0.0f) {
-        est_dt_hall = 0.001f; // Safe default
+        est_dt_hall = 0.001f;
     }
 
-    // Exit if PLL disabled or Hall sensor error
     if (!use_pll_) {
         return;
     }
 
-    // 1. Convert Hall step (0..5) to electrical rotor angle
-    float real_rotor_angle = static_cast<float>(hall_state_) * 60.0f;
+    int8_t delta = (hall_state_ - prev_hall_state + 9) % 6 - 3;
+    rotation_count_ += delta;
 
-    // 2. Phase error between reality and virtual model
-    float angle_error = real_rotor_angle - angle_;
-
-    // Wrap error across 0/360 boundary
-    angle_error = fmodf(angle_error, 360.0f);
-    if (angle_error > 180.0f)  angle_error -= 360.0f;
-    if (angle_error < -180.0f) angle_error += 360.0f;
-
-    // 3. Adapt PLL gains to current speed
-    updateAdaptiveGains();
-
-    // 4. PLL PI controller
-    pll_integral_ += angle_error * pll_ki_ * est_dt_hall;
-
-    // Anti-windup: clamp integrator to speed limits
-    if (pll_integral_ > MAX_ELECTRICAL_SPEED)  pll_integral_ = MAX_ELECTRICAL_SPEED;
-    if (pll_integral_ < -MAX_ELECTRICAL_SPEED) pll_integral_ = -MAX_ELECTRICAL_SPEED;
-
-    angle_per_second_ = (angle_error * pll_kp_) + pll_integral_;
+    float measured_speed = (static_cast<float>(delta) * 60.0f) / est_dt_hall;
+    angle_per_second_ = measured_speed;
+    
+    float absolute_real_angle = static_cast<float>(rotation_count_) * 60.0f;
+    angle_ = absolute_real_angle;
+    last_absolute_real_angle_ = absolute_real_angle;
 }
 
 void MotorPLL::updateTick() noexcept {
     if (!use_pll_) return;
 
     angle_ += angle_per_second_ * DT;
-
-    // Normalize virtual angle to [0.0, 360.0)
-    angle_ = fmodf(angle_, 360.0f);
-    if (angle_ < 0.0f) {
-        angle_ += 360.0f;
+    
+    // Check if PLL lost sync (when motor stops but hall doesn't change)
+    // Use modular arithmetic to compare angles correctly
+    float normalized_angle = fmodf(angle_, 360.0f);
+    if (normalized_angle < 0.0f) normalized_angle += 360.0f;
+    
+    float normalized_real = fmodf(last_absolute_real_angle_, 360.0f);
+    if (normalized_real < 0.0f) normalized_real += 360.0f;
+    
+    float angle_diff = std::abs(normalized_angle - normalized_real);
+    if (angle_diff > 180.0f) angle_diff = 360.0f - angle_diff;
+    
+    if (angle_diff > 90.0f) {
+        angle_ = last_absolute_real_angle_;
+        angle_per_second_ = 0.0f;
     }
 }
 
@@ -91,14 +84,18 @@ uint8_t MotorPLL::getNextHall(const volatile DriveMode &mode) noexcept {
     if (mode == DriveMode::FORWARD)  direction = !is_inverse_commutation_table_ ? 1.0f : -1.0f;
     if (mode == DriveMode::REVERSE)  direction = !is_inverse_commutation_table_ ? -1.0f : 1.0f;
 
+    // Normalize angle to [0, 360) for sector calculation
+    float normalized_angle = fmodf(angle_, 360.0f);
+    if (normalized_angle < 0.0f) normalized_angle += 360.0f;
+
     // IDLE/stop: hold current sector (zero torque vector)
     if (direction == 0.0f) {
-        uint8_t current_rotor_sector = static_cast<uint8_t>(angle_ / 60.0f);
+        uint8_t current_rotor_sector = static_cast<uint8_t>(normalized_angle / 60.0f);
         return current_rotor_sector > 5 ? 5 : current_rotor_sector;
     }
 
     // Offset stator field by 90 degrees relative to rotor for maximum torque
-    float field_angle = angle_ + (90.0f * direction);
+    float field_angle = normalized_angle + (90.0f * direction);
 
     // Normalize field angle
     if (field_angle >= 360.0f) field_angle -= 360.0f;
@@ -123,27 +120,18 @@ bool MotorPLL::isUsingPLL() const noexcept {
 void MotorPLL::reset() noexcept {
     angle_ = static_cast<float>(hall_state_ == 0xFF ? 0 : hall_state_) * 60.0f;
     angle_per_second_ = 0.0f;
-    pll_integral_ = 0.0f;
+    rotation_count_ = 0;
 }
 
 float MotorPLL::getAngle() const noexcept {
-    return angle_;
+    // Return normalized angle in [0, 360) range
+    float normalized = fmodf(angle_, 360.0f);
+    if (normalized < 0.0f) normalized += 360.0f;
+    return normalized;
 }
 
 float MotorPLL::getSpeedDegSec() const noexcept {
     return angle_per_second_;
-}
-
-void MotorPLL::updateAdaptiveGains() noexcept {
-    float abs_speed = std::abs(angle_per_second_);
-    float base_kp = 1.0f;
-    float base_ki = 8.0f;
-
-    float speed_factor = abs_speed / MAX_ELECTRICAL_SPEED;
-    if (speed_factor > 1.0f) speed_factor = 1.0f;
-
-    pll_kp_ = base_kp + (60.0f * speed_factor);
-    pll_ki_ = base_ki + (300.0f * speed_factor);
 }
 
 } // namespace libecu

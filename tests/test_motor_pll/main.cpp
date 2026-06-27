@@ -23,7 +23,8 @@ int main() {
     const uint32_t TOTAL_STEPS = static_cast<uint32_t>(TOTAL_TIME / SIM_DT);
 
     // Экземпляр тестируемого класса
-    libecu::MotorPLL pll(false);
+    const float PWM_FREQ = 40000.0f;  // 40 kHz PWM frequency
+    libecu::MotorPLL pll(PWM_FREQ, false);
     pll.setUsePLL(true);
 
     // Открываем CSV файл для записи результатов
@@ -100,9 +101,30 @@ int main() {
             }
         }
 
-        // Передаем данные в класс, только если датчик исправен и сработал фронт
-        if (trigger_hall_update) {
-            pll.updateHall(current_hall_step, timestamp_us);
+        // Передаем данные в класс — генерируем ВСЕ промежуточные переходы Холла
+        // (в реальном устройстве каждый переход вызывает прерывание)
+        if (current_hall_step != last_hall_step && !is_hall_completely_dead) {
+            // Определяем направление и генерируем промежуточные шаги
+            int8_t direction = (real_speed >= 0.0f) ? 1 : -1;
+            uint8_t step = last_hall_step;
+            
+            // Сценарий Б: одиночный пропуск шага (помеха)
+            bool skip_next = SIMULATE_SINGLE_STEP_DROP && 
+                             current_time >= FAILURE_TRIGGER_TIME && 
+                             !is_single_drop_executed;
+            
+            while (step != current_hall_step) {
+                step = (step + direction + 6) % 6;
+                
+                if (skip_next) {
+                    std::cout << "[ПОМЕХА] Пропуск шага Холла на " << current_time << " сек!" << std::endl;
+                    is_single_drop_executed = true;
+                    skip_next = false;
+                    continue;
+                }
+                
+                pll.updateHall(step, timestamp_us);
+            }
             last_hall_step = current_hall_step;
         }
 
