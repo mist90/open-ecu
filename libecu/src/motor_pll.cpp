@@ -12,62 +12,51 @@
 
 namespace libecu {
 
-MotorPLL::MotorPLL(float freq_pwm, bool is_inverse_commutation_table) noexcept
+MotorPLL::MotorPLL(float freq_pwm, float max_electrical_speed, bool is_inverse_commutation_table) noexcept
     : is_inverse_commutation_table_(is_inverse_commutation_table)
 {
     DT_ = 1.0f / freq_pwm;
+    max_electrical_speed_ = max_electrical_speed;
 }
 
-void MotorPLL::updateHall(uint8_t hall_state, uint32_t timestamp_us) noexcept {
-    if (hall_state == 0xFF || hall_state > 5) {
-        hall_state_ = 0xFF;
-        return;
-    }
-
-    uint32_t delta_us = timestamp_us - last_timestamp_us_;
-    last_timestamp_us_ = timestamp_us;
-    float est_dt_hall = static_cast<float>(delta_us) * 0.000001f;
-
-    time_since_last_hall_ = 0.0f;
-
-    float target_base_angle = static_cast<float>(hall_state);
-
-    if (est_dt_hall > HALL_TIMEOUT_SEC || est_dt_hall <= 0.0f) {
+void MotorPLL::updateHall(uint8_t hall_state) noexcept {
+    if (!use_pll_)
         hall_state_ = hall_state;
-        angle_ = target_base_angle;
-        angle_per_second_ = 0.0f;
-        pll_integral_ = 0.0f;
-        return;
+    else {
+        int8_t diff = (hall_state - (hall_state_ % 6) + 9) % 6 - 3;
+        int8_t next_state = int8_t(hall_state_) + diff;
+
+        if (next_state < 0) {
+            hall_state_ = next_state + 60;
+        } else if (next_state >= 60) {
+            hall_state_ = next_state % 60;
+        } else {
+            hall_state_ = (uint8_t)next_state;
+        }
     }
-
-    if (!use_pll_) {
-        hall_state_ = hall_state;
-        return;
-    }
-
-    float current_period_base = std::floor(angle_ / 6.0f) * 6.0f;
-    float real_rotor_angle = current_period_base + target_base_angle;
-
-    float angle_error = real_rotor_angle - angle_;
-
-    if (angle_error > 3.0f)  angle_error -= 6.0f;
-    if (angle_error < -3.0f) angle_error += 6.0f;
-
-    updateAdaptiveGains();
-
-    pll_integral_ += angle_error * pll_ki_ * est_dt_hall;
-    
-    if (pll_integral_ > MAX_ELECTRICAL_SPEED)  pll_integral_ = MAX_ELECTRICAL_SPEED;
-    if (pll_integral_ < -MAX_ELECTRICAL_SPEED) pll_integral_ = -MAX_ELECTRICAL_SPEED;
-
-    angle_per_second_ = (angle_error * pll_kp_) + pll_integral_;
-    
-    hall_state_ = hall_state;
+    time_since_last_hall_ = 0;
 }
 
 void MotorPLL::updateTick() noexcept {
-    if (!use_pll_) return;
+    if (!use_pll_)
+        return;
 
+    /* PID */
+    float angle_error = static_cast<float>(hall_state_) - angle_;
+
+    if (angle_error < 0.0f)
+        angle_error += 60.0f;
+
+    updateAdaptiveGains();
+
+    pll_integral_ += angle_error * pll_ki_ * DT_;
+    
+    if (pll_integral_ > max_electrical_speed_)  pll_integral_ = max_electrical_speed_;
+    if (pll_integral_ < -max_electrical_speed_) pll_integral_ = -max_electrical_speed_;
+
+    angle_per_second_ = (angle_error * pll_kp_) + pll_integral_;
+
+    /* Integration */
     time_since_last_hall_ += DT_;
 
     if (time_since_last_hall_ >= HALL_TIMEOUT_SEC) {
@@ -78,16 +67,13 @@ void MotorPLL::updateTick() noexcept {
 
     angle_ += angle_per_second_ * DT_;
     
-    if (angle_ >= ANGLE_MAX) {
-        angle_ -= ANGLE_MAX;
-    } else if (angle_ < 0.0f) {
-        angle_ += ANGLE_MAX;
+    angle_ = fmodf(angle_, 60.0f);
+    if (angle_ < 0.0f) {
+        angle_ += 60.0f;
     }
 }
 
 uint8_t MotorPLL::getNextHall(const volatile DriveMode &mode) noexcept {
-    if (hall_state_ == 0xFF) return 0xFF;
-
     if (!use_pll_) {
         if (mode == DriveMode::FORWARD)
             return !is_inverse_commutation_table_ ? (hall_state_ + 1) % 6 : (hall_state_ + 5) % 6;
@@ -98,24 +84,14 @@ uint8_t MotorPLL::getNextHall(const volatile DriveMode &mode) noexcept {
     }
 
     float direction = 0.0f;
-    if (mode == DriveMode::FORWARD)  direction = !is_inverse_commutation_table_ ? 1.0f : -1.0f;
-    if (mode == DriveMode::REVERSE)  direction = !is_inverse_commutation_table_ ? -1.0f : 1.0f;
+    if (mode == DriveMode::FORWARD)
+        direction = !is_inverse_commutation_table_ ? 1.0f : -1.0f;
+    if (mode == DriveMode::REVERSE)
+        direction = !is_inverse_commutation_table_ ? -1.0f : 1.0f;
 
-    if (direction == 0.0f) {
-        float clamped_angle = angle_ - std::floor(angle_ / 6.0f) * 6.0f;
-        uint8_t sector = static_cast<uint8_t>(clamped_angle);
-        return sector > 5 ? 5 : sector;
-    }
+    float next_angle = angle_ + (1.5f * direction); 
 
-    float field_angle = angle_ + (1.5f * direction);
-
-    field_angle = field_angle - std::floor(field_angle / 6.0f) * 6.0f;
-    if (field_angle < 0.0f) field_angle += 6.0f;
-
-    uint8_t sector = static_cast<uint8_t>(field_angle);
-    if (sector > 5) sector = 5; 
-
-    return sector;
+    return static_cast<uint8_t>(std::round(next_angle)) % 6;
 }
 
 void MotorPLL::setUsePLL(bool use) noexcept {
@@ -128,7 +104,7 @@ bool MotorPLL::isUsingPLL() const noexcept {
 }
 
 void MotorPLL::reset() noexcept {
-    angle_ = static_cast<float>(hall_state_ == 0xFF ? 0 : hall_state_);
+    angle_ = hall_state_;
     angle_per_second_ = 0.0f;
     pll_integral_ = 0.0f;
     time_since_last_hall_ = 0.0f;
@@ -142,21 +118,17 @@ float MotorPLL::getSpeedStepsSec() const noexcept {
     return angle_per_second_;
 }
 
-float MotorPLL::getMechanicalRPS() const noexcept {
-    return (angle_per_second_ / 6.0f) / 20.0f;
-}
-
 void MotorPLL::updateAdaptiveGains() noexcept {
     float abs_speed = std::abs(angle_per_second_);
     
     float base_kp = 15.0f;
-    float base_ki = 180.0f;
+    float base_ki = 0.0f;
 
-    float speed_factor = abs_speed / MAX_ELECTRICAL_SPEED; 
+    float speed_factor = abs_speed / max_electrical_speed_; 
     if (speed_factor > 1.0f) speed_factor = 1.0f;
 
     pll_kp_ = base_kp + (45.0f * speed_factor);  
-    pll_ki_ = base_ki + (2500.0f * speed_factor); 
+    pll_ki_ = base_ki + (0.0f * speed_factor); 
 }
 
 } // namespace libecu

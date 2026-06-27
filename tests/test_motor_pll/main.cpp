@@ -24,7 +24,7 @@ int main() {
 
     // Экземпляр тестируемого класса
     const float PWM_FREQ = 40000.0f;
-    libecu::MotorPLL pll(PWM_FREQ, false);
+    libecu::MotorPLL pll(PWM_FREQ, MAX_SPEED, false);
     pll.setUsePLL(true);
 
     // Открываем CSV файл для записи результатов
@@ -75,7 +75,7 @@ int main() {
         if (real_angle < 0.0f) real_angle += 60.0f;
 
         // Физическое состояние датчиков Холла (0..5)
-        uint8_t current_hall_step = static_cast<uint8_t>(real_angle);
+        uint8_t current_hall_step = static_cast<uint8_t>(fmodf(real_angle, 6.0f));
         if (current_hall_step > 5) current_hall_step = 5;
 
         // 2. ЛОГИКА АВАРИИ ДАТЧИКОВ ХОЛЛА
@@ -123,7 +123,7 @@ int main() {
                     continue;
                 }
                 
-                pll.updateHall(step, timestamp_us);
+                pll.updateHall(step);
             }
             last_hall_step = current_hall_step;
         }
@@ -135,16 +135,14 @@ int main() {
         uint8_t next_comm_step = pll.getNextHall(mode);
 
         // 4. ЗАПИСЬ РЕЗУЛЬТАТОВ (дискретность 1 мс)
-        if (step % 40 == 0) {
-            csv_file << std::fixed << std::setprecision(4)
-                     << current_time << ","
-                     << real_angle << ","
-                     << real_speed << ","
-                     << static_cast<int>(current_hall_step) << ","
-                     << pll.getAngle() << ","
-                     << pll.getSpeedStepsSec() << ","
-                     << static_cast<int>(next_comm_step) << "\n";
-        }
+        csv_file << std::fixed << std::setprecision(4)
+                 << current_time << ","
+                 << real_angle << ","
+                 << real_speed << ","
+                 << static_cast<int>(current_hall_step) << ","
+                 << pll.getAngle() << ","
+                 << pll.getSpeedStepsSec() << ","
+                 << static_cast<int>(next_comm_step) << "\n";
     }
 
     csv_file.close();

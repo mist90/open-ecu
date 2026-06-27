@@ -28,7 +28,7 @@ BldcController::BldcController(
     , hall_interface_(hall_interface)
     , commutation_controller_(commutation_controller)
     , adc_interface_(adc_interface)
-    , motor_pll_(1.0 / pwm_interface_.getFrequency(), params.useInverseCommTable)
+    , motor_pll_(1.0 / pwm_interface_.getFrequency(), params.max_speed_rps * commutation_controller.getNumPoles(), params.useInverseCommTable)
     , pid_speed_controller_()
     , current_controller_()
     , params_(params)
@@ -119,7 +119,7 @@ void BldcController::update() noexcept
                     open_loop_step_ = (open_loop_step_ + 1) % 6;
                     open_loop_last_step_time_us_ = current_time_us;
                 }
-                motor_pll_.updateHall(open_loop_step_, current_time_us);
+                motor_pll_.updateHall(open_loop_step_);
                 break;
             }
 
@@ -292,7 +292,7 @@ void BldcController::start() noexcept
     speed_pulse_count_ = 0;
     last_hall_state_ = commutation_controller_.getCurrentPosition();
     status_.measured_position = last_hall_state_;
-    motor_pll_.updateHall(last_hall_state_, open_loop_last_step_time_us_);
+    motor_pll_.updateHall(last_hall_state_);
     last_period_us_ = 0;
 
     // Reset PID timing and target speed filters
@@ -545,7 +545,7 @@ void BldcController::hallSensorInterruptHandler() noexcept
         }
         status_.measured_position = hall_state;
     }
-    motor_pll_.updateHall(hall_state, timestamp_us);
+    motor_pll_.updateHall(hall_state);
 }
 
 void BldcController::pwmInterruptHandler() noexcept {

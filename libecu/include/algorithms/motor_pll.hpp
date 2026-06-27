@@ -42,16 +42,15 @@ enum class DriveMode : uint8_t {
  */
 class MotorPLL {
 public:
-    static constexpr float MAX_ELECTRICAL_SPEED = 2400.0f;
     static constexpr float HALL_TIMEOUT_SEC = 0.15f;
-    static constexpr float ANGLE_MAX = 60.0f;
+    static constexpr uint8_t ANGLE_MAX = 60;
 
     /**
      * @brief Constructor
      * @param freq_pwm PWM frequency in Hz (e.g., 40000.0f for 40 kHz)
      * @param is_inverse_commutation_table Use inverse six-step commutation table
      */
-    explicit MotorPLL(float freq_pwm, bool is_inverse_commutation_table = false) noexcept;
+    explicit MotorPLL(float freq_pwm, float max_electrical_speed, bool is_inverse_commutation_table = false) noexcept;
 
     /**
      * @brief Hall sensor interrupt handler (EXTI)
@@ -59,10 +58,9 @@ public:
      * Must be called from the real Hall sensor GPIO interrupt.
      * Updates the PLL with the actual rotor position and timing information.
      *
-     * @param hall_state Current Hall step (0-5). Pass 0xFF for sensor error.
-     * @param timestamp_us Current microsecond timer value (e.g., TIM2->CNT)
+     * @param hall_state Current Hall step (0-5).
      */
-    void updateHall(uint8_t hall_state, uint32_t timestamp_us) noexcept;
+    void updateHall(uint8_t hall_state) noexcept;
 
     /**
      * @brief Angle integrator
@@ -80,7 +78,7 @@ public:
      * relative to the rotor for maximum torque production.
      *
      * @param mode Current drive mode (FORWARD/REVERSE/NEUTRAL)
-     * @return Next commutation step (0-5), or 0xFF on Hall sensor error
+     * @return Next commutation step (0-5)
      */
     uint8_t getNextHall(const volatile DriveMode &mode) noexcept;
 
@@ -102,14 +100,11 @@ public:
     /// @return Current estimated electrical speed in steps/sec
     float getSpeedStepsSec() const noexcept;
 
-    /// @return Current mechanical speed in RPS (revolutions per second)
-    float getMechanicalRPS() const noexcept;
-
 private:
     /// @brief Adapt PLL PI gains based on current speed
     void updateAdaptiveGains() noexcept;
 
-    uint8_t hall_state_ = 0x0;
+    uint8_t hall_state_ = 0x0;   // [0..ANGLE_MAX]
     float angle_ = 0.0f;
     float angle_per_second_ = 0.0f;
     bool is_locked_ = false;
@@ -118,10 +113,11 @@ private:
     bool use_pll_ = false;
     uint32_t last_timestamp_us_ = 0;
     float time_since_last_hall_ = 0.0f;
-    float pll_kp_ = 15.0f;
-    float pll_ki_ = 180.0f;
+    float pll_kp_ = 0.0f;
+    float pll_ki_ = 0.0f;
     float pll_integral_ = 0.0f;
     float DT_;
+    float max_electrical_speed_;
 };
 
 } // namespace libecu
