@@ -14,8 +14,15 @@
 
 namespace libecu {
 
-// Forward declaration - full definition in bldc_controller.hpp
-enum class DriveMode : uint8_t;
+/**
+ * @brief Motor rotation mode
+ */
+enum class DriveMode : uint8_t {
+    FORWARD = 0,
+    REVERSE = 1,
+    NEUTRAL = 2
+    // PARKING = 3
+};
 
 /**
  * @brief Motor rotor angle PLL (Phase-Locked Loop)

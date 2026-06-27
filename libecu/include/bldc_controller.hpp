@@ -37,16 +37,6 @@ enum class ElectricMode : uint8_t {
 };
 
 /**
- * @brief Motor rotation mode
- */
-enum class DriveMode : uint8_t {
-    FORWARD = 0,
-    REVERSE = 1,
-    NEUTRAL = 2
-    // PARKING = 3
-};
-
-/**
  * @brief Motor control parameters
  */
 struct MotorControlParams {
