@@ -5,6 +5,10 @@
  * Implements a PLL that tracks the motor rotor angle from Hall sensor interrupts,
  * providing smooth angle estimation at PWM frequency (40 kHz) and generating
  * virtual commutation steps with optional 90-degree field offset for maximum torque.
+ * 
+ * The angle is measured in "steps" where one electrical period = 6.0 steps.
+ * The working range is expanded to 60.0 steps (10 electrical periods) to prevent
+ * phase wrap-around issues during rapid acceleration/deceleration.
  */
 
 #ifndef LIBECU_MOTOR_PLL_HPP
@@ -38,10 +42,13 @@ enum class DriveMode : uint8_t {
  */
 class MotorPLL {
 public:
-    static constexpr float MAX_ELECTRICAL_SPEED = 24000.0f; // Electrical speed limit (deg/sec)
+    static constexpr float MAX_ELECTRICAL_SPEED = 2400.0f;
+    static constexpr float HALL_TIMEOUT_SEC = 0.15f;
+    static constexpr float ANGLE_MAX = 60.0f;
 
     /**
      * @brief Constructor
+     * @param freq_pwm PWM frequency in Hz (e.g., 40000.0f for 40 kHz)
      * @param is_inverse_commutation_table Use inverse six-step commutation table
      */
     explicit MotorPLL(float freq_pwm, bool is_inverse_commutation_table = false) noexcept;
@@ -89,14 +96,19 @@ public:
     /// @brief Reset PLL state (angle, speed, integrator)
     void reset() noexcept;
 
-    /// @return Current estimated rotor angle (degrees, 0-360)
+    /// @return Current estimated rotor angle in steps (0-60)
     float getAngle() const noexcept;
 
-    /// @return Current estimated electrical speed (deg/sec)
-    float getSpeedDegSec() const noexcept;
+    /// @return Current estimated electrical speed in steps/sec
+    float getSpeedStepsSec() const noexcept;
+
+    /// @return Current mechanical speed in RPS (revolutions per second)
+    float getMechanicalRPS() const noexcept;
 
 private:
-    float DT;
+    /// @brief Adapt PLL PI gains based on current speed
+    void updateAdaptiveGains() noexcept;
+
     uint8_t hall_state_ = 0x0;
     float angle_ = 0.0f;
     float angle_per_second_ = 0.0f;
@@ -105,8 +117,11 @@ private:
 
     bool use_pll_ = false;
     uint32_t last_timestamp_us_ = 0;
-    int32_t rotation_count_ = 0;
-    float last_absolute_real_angle_ = 0.0f;
+    float time_since_last_hall_ = 0.0f;
+    float pll_kp_ = 15.0f;
+    float pll_ki_ = 180.0f;
+    float pll_integral_ = 0.0f;
+    float DT_;
 };
 
 } // namespace libecu

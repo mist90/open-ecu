@@ -14,8 +14,8 @@ int main() {
     const float FAILURE_TRIGGER_TIME       = 3.5f;  // Время аварии (в секундах)
 
     // Параметры профиля движения
-    const float MAX_SPEED = 24000.0f;       // Макс. скорость (град/сек)
-    const float ACCELERATION = 8000.0f;     // Ускорение (град/сек^2)
+    const float MAX_SPEED = 2400.0f;        // Макс. скорость (шагов/сек)
+    const float ACCELERATION = 800.0f;      // Ускорение (шагов/сек^2)
     const float TOTAL_TIME = 8.0f;          // Общая длительность теста: 8 секунд
     
     // Временная сетка
@@ -23,7 +23,7 @@ int main() {
     const uint32_t TOTAL_STEPS = static_cast<uint32_t>(TOTAL_TIME / SIM_DT);
 
     // Экземпляр тестируемого класса
-    const float PWM_FREQ = 40000.0f;  // 40 kHz PWM frequency
+    const float PWM_FREQ = 40000.0f;
     libecu::MotorPLL pll(PWM_FREQ, false);
     pll.setUsePLL(true);
 
@@ -69,13 +69,13 @@ int main() {
             }
         }
 
-        // Физическое вращение ротора
+        // Физическое вращение ротора (в шагах)
         real_angle += real_speed * SIM_DT;
-        real_angle = fmodf(real_angle, 360.0f);
-        if (real_angle < 0.0f) real_angle += 360.0f;
+        real_angle = fmodf(real_angle, 60.0f);
+        if (real_angle < 0.0f) real_angle += 60.0f;
 
         // Физическое состояние датчиков Холла (0..5)
-        uint8_t current_hall_step = static_cast<uint8_t>(real_angle / 60.0f);
+        uint8_t current_hall_step = static_cast<uint8_t>(real_angle);
         if (current_hall_step > 5) current_hall_step = 5;
 
         // 2. ЛОГИКА АВАРИИ ДАТЧИКОВ ХОЛЛА
@@ -142,7 +142,7 @@ int main() {
                      << real_speed << ","
                      << static_cast<int>(current_hall_step) << ","
                      << pll.getAngle() << ","
-                     << pll.getSpeedDegSec() << ","
+                     << pll.getSpeedStepsSec() << ","
                      << static_cast<int>(next_comm_step) << "\n";
         }
     }
