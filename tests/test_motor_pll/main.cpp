@@ -44,7 +44,7 @@ int main() {
     
     // Переменные для логики симуляции аварии
     bool is_hall_completely_dead = false;
-    bool is_single_drop_executed = false;
+    bool is_single_drop_executed = true;
 
     std::cout << "Запуск теста ФАПЧ с имитацией аварии датчиков..." << std::endl;
 

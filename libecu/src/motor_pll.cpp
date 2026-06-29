@@ -27,9 +27,9 @@ void MotorPLL::updateHall(uint8_t hall_state) noexcept {
         int8_t next_state = int8_t(hall_state_) + diff;
 
         if (next_state < 0) {
-            hall_state_ = next_state + 60;
-        } else if (next_state >= 60) {
-            hall_state_ = next_state % 60;
+            hall_state_ = next_state + ANGLE_MAX;
+        } else if (next_state >= ANGLE_MAX) {
+            hall_state_ = next_state % ANGLE_MAX;
         } else {
             hall_state_ = (uint8_t)next_state;
         }
@@ -42,10 +42,12 @@ void MotorPLL::updateTick() noexcept {
         return;
 
     /* PID */
-    float angle_error = static_cast<float>(hall_state_) - angle_;
+    float angle_error = fmodf(static_cast<float>(hall_state_) - angle_, static_cast<float>(ANGLE_MAX));
 
-    if (angle_error < 0.0f)
-        angle_error += 60.0f;
+    if (angle_error > static_cast<float>(ANGLE_MAX)/2.0f)
+        angle_error -= static_cast<float>(ANGLE_MAX);
+    if (angle_error < -static_cast<float>(ANGLE_MAX)/2.0f)
+        angle_error += static_cast<float>(ANGLE_MAX);
 
     updateAdaptiveGains();
 
@@ -67,9 +69,9 @@ void MotorPLL::updateTick() noexcept {
 
     angle_ += angle_per_second_ * DT_;
     
-    angle_ = fmodf(angle_, 60.0f);
+    angle_ = fmodf(angle_, static_cast<float>(ANGLE_MAX));
     if (angle_ < 0.0f) {
-        angle_ += 60.0f;
+        angle_ += static_cast<float>(ANGLE_MAX);
     }
 }
 
@@ -121,14 +123,14 @@ float MotorPLL::getSpeedStepsSec() const noexcept {
 void MotorPLL::updateAdaptiveGains() noexcept {
     float abs_speed = std::abs(angle_per_second_);
     
-    float base_kp = 15.0f;
-    float base_ki = 0.0f;
+    float base_kp = 50.0f;
+    float base_ki = 600.0f;
 
     float speed_factor = abs_speed / max_electrical_speed_; 
     if (speed_factor > 1.0f) speed_factor = 1.0f;
 
-    pll_kp_ = base_kp + (45.0f * speed_factor);  
-    pll_ki_ = base_ki + (0.0f * speed_factor); 
+    pll_kp_ = base_kp + (20.0f * speed_factor);  
+    pll_ki_ = base_ki + (400.0f * speed_factor); 
 }
 
 } // namespace libecu
