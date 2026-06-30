@@ -210,8 +210,8 @@ int main(void)
     motor_params.target_speed_lpf_alpha = 0.0f;  // LPF smoothing for noisy potentiometer input
     motor_params.measured_speed_lpf_alpha = 0.5f; // LPF smoothing for noisy velocity measurement
     motor_params.control_frequency = PERIODIC_TIMER_FREQ;
-    motor_params.pid_voltage_mode = {0.01f, 0.01f}; // Speed PID controller parameters for VOLTAGE_MODE (outputs duty cycle 0.0-1.0)
-    motor_params.pid_current_mode = {0.05f, 0.1f}; // Speed PID controller parameters for CURRENT_MODE (outputs current from negative to positive values)
+    motor_params.pid_voltage_mode = {0.005f, 0.005f}; // Speed PID controller parameters for VOLTAGE_MODE (outputs duty cycle 0.0-1.0)
+    motor_params.pid_current_mode = {0.025f, 0.05f}; // Speed PID controller parameters for CURRENT_MODE (outputs current from negative to positive values)
     motor_params.pid_current_regulator = {0.1f, 50.0f}; // Current PID controller parameters for CURRENT_MODE (outputs duty cycle 0..1.0)
     motor_params.useInverseCommTable = BLDC_INVERTION;
 

@@ -35,13 +35,6 @@ public:
     CommutationController(PwmInterface& pwm_interface, HallInterface& hall_interface, uint8_t num_poles = 2) noexcept;
 
     /**
-     * @brief Initialize commutation controller
-     * @param pwm_frequency PWM frequency in Hz
-     * @return true if initialization successful
-     */
-    bool initialize(uint32_t pwm_frequency = 20000) noexcept;
-
-    /**
      * @brief Update commutation based on rotor position
      * @param position Rotor position (0-5 range, corresponding to 6-step commutation)
      * @param duty_cycle Motor duty cycle (0.0 to 1.0)

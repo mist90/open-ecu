@@ -82,11 +82,6 @@ BldcController::BldcController(
 
 bool BldcController::initialize() noexcept
 {
-    // Initialize commutation controller (includes PWM and Hall sensor)
-    if (!commutation_controller_.initialize()) {
-        return false;
-    }
-
     // Reset PID controller
     pid_speed_controller_.reset();
 

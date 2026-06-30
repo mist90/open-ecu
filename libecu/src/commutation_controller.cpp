@@ -25,19 +25,6 @@ CommutationController::CommutationController(PwmInterface& pwm_interface, HallIn
 {
 }
 
-bool CommutationController::initialize(uint32_t pwm_frequency) noexcept
-{
-    // Initialize PWM with dead-time (100ns is typical for power MOSFETs)
-    if (!pwm_interface_.initialize(pwm_frequency, 100)) {
-        return false;
-    }
-
-    // Set all phases to neutral
-    pwm_interface_.setNeutral();
-
-    return true;
-}
-
 uint8_t CommutationController::getCurrentPosition() noexcept
 {
     return hall_interface_.getPosition();

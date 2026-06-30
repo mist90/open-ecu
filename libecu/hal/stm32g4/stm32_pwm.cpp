@@ -157,6 +157,7 @@ bool Stm32Pwm::initialize(uint32_t frequency, uint16_t dead_time_ns) {
     if (HAL_TIMEx_ConfigCommutEvent(tim_handle, TIM_TS_NONE, TIM_COMMUTATION_SOFTWARE) != HAL_OK) {
         return false;
     }
+    setNeutral();
 
     return true;
 }
