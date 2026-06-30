@@ -28,7 +28,7 @@ BldcController::BldcController(
     , hall_interface_(hall_interface)
     , commutation_controller_(commutation_controller)
     , adc_interface_(adc_interface)
-    , motor_pll_(1.0 / pwm_interface_.getFrequency(), params.max_speed_rps * commutation_controller.getNumPoles(), params.useInverseCommTable)
+    , motor_pll_(1.0 / pwm_interface_.getFrequency(), params.max_speed_rps * commutation_controller.getNumPoles() * 6, params.useInverseCommTable)
     , pid_speed_controller_()
     , current_controller_()
     , params_(params)
@@ -76,6 +76,8 @@ BldcController::BldcController(
 
     current_controller_.setParameters(params_.pid_current_regulator);
     pid_speed_controller_.setParameters(params_.pid_current_mode);
+
+    //motor_pll_.setUsePLL(true);
 }
 
 bool BldcController::initialize() noexcept
@@ -552,7 +554,6 @@ void BldcController::pwmInterruptHandler() noexcept {
     // Read shared data atomically (avoid torn reads from SysTick interrupt)
     ElectricMode electric_mode;
     uint8_t new_position;
-    uint8_t target_position;
     float target_current;
     {
         CriticalSection cs;
@@ -560,11 +561,11 @@ void BldcController::pwmInterruptHandler() noexcept {
         target_current = status_.target_current;
         motor_pll_.updateTick();
         new_position = motor_pll_.getNextHall(dmode_);
-        target_position = status_.target_position;
     }
 
     if (electric_mode == ElectricMode::VOLTAGE_MODE) {
-        if (target_position != new_position) {
+        if (status_.target_position != new_position) {
+            CriticalSection cs;
             status_.target_position = new_position;
             // Phase switching in VOLTAGE_MODE
             commutation_controller_.update(new_position, status_.duty_cycle);
@@ -597,7 +598,7 @@ void BldcController::pwmInterruptHandler() noexcept {
         status_.duty_cycle = duty_cycle;
         status_.bus_voltage = bus_voltage;
         status_.pll_angle = motor_pll_.getAngle();
-        if (target_position != new_position) {
+        if (status_.target_position != new_position) {
             // Phase switching in CURRENT_MODE
             commutation_controller_.update(new_position, duty_cycle);
             status_.target_position = new_position;
