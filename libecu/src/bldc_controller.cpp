@@ -82,6 +82,8 @@ BldcController::BldcController(
 
 bool BldcController::initialize() noexcept
 {
+    pwm_interface_.setNeutral();
+
     // Reset PID controller
     pid_speed_controller_.reset();
 
