@@ -77,7 +77,7 @@ BldcController::BldcController(
     current_controller_.setParameters(params_.pid_current_regulator);
     pid_speed_controller_.setParameters(params_.pid_current_mode);
 
-    //motor_pll_.setUsePLL(true);
+    motor_pll_.setUsePLL(true);
 }
 
 bool BldcController::initialize() noexcept
@@ -275,6 +275,16 @@ void BldcController::setCurrentPid(float kp, float ki, float kd) noexcept
     p.kd = kd;
     current_controller_.setParameters(p);
     current_controller_.reset();
+}
+
+MotorPLL::PllInfo BldcController::getPllInfo() const noexcept {
+    CriticalSection cs;
+    return motor_pll_.getInfo();
+}
+
+void BldcController::setPllGains(float kp, float ki) noexcept {
+    CriticalSection cs;
+    motor_pll_.setGains(kp, ki);
 }
 
 void BldcController::start() noexcept

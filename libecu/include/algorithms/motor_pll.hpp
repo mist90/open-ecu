@@ -100,6 +100,35 @@ public:
     /// @return Current estimated electrical speed in steps/sec
     float getSpeedStepsSec() const noexcept;
 
+    /**
+     * @brief Snapshot of PLL internal state for telemetry
+     */
+    struct PllInfo {
+        bool use_pll;              ///< PLL enabled flag
+        uint8_t hall_state;        ///< Raw Hall tracking counter [0..ANGLE_MAX)
+        float angle;               ///< PLL-estimated angle in steps [0..ANGLE_MAX)
+        float angle_per_second;    ///< PLL-estimated speed in steps/sec
+        float pll_integral;        ///< PI integrator term in steps/sec
+        float time_since_last_hall;///< Seconds since last Hall edge
+        float kp;                  ///< Current effective proportional gain (after adaptive)
+        float ki;                  ///< Current effective integral gain (after adaptive)
+    };
+
+    /**
+     * @brief Get a snapshot of PLL internal state (for telemetry)
+     * @return PllInfo struct with current values
+     * @note Caller must hold a CriticalSection if reading from a different interrupt priority
+     */
+    PllInfo getInfo() const noexcept;
+
+    /**
+     * @brief Set base PI gains (used by adaptive gain schedule)
+     * @param kp_base Base proportional gain (at zero speed)
+     * @param ki_base Base integral gain (at zero speed)
+     * @note Adaptive schedule: kp = kp_base + 20*speed_factor, ki = ki_base + 400*speed_factor
+     */
+    void setGains(float kp_base, float ki_base) noexcept;
+
 private:
     /// @brief Adapt PLL PI gains based on current speed
     void updateAdaptiveGains() noexcept;
@@ -118,6 +147,8 @@ private:
     float pll_integral_ = 0.0f;
     float DT_;
     float max_electrical_speed_;
+    float base_kp_ = 200.0f;   ///< Base proportional gain (tunable via AT+PLLID)
+    float base_ki_ = 10000.0f;  ///< Base integral gain (tunable via AT+PLLID)
 };
 
 } // namespace libecu

@@ -165,6 +165,19 @@ public:
     void setCurrentPid(float kp, float ki, float kd) noexcept;
 
     /**
+     * @brief Get PLL internal state snapshot (for telemetry)
+     * @return PllInfo struct snapshot, taken atomically under CriticalSection
+     */
+    MotorPLL::PllInfo getPllInfo() const noexcept;
+
+    /**
+     * @brief Set PLL base PI gains (kp_base, ki_base)
+     * @param kp Base proportional gain
+     * @param ki Base integral gain
+     */
+    void setPllGains(float kp, float ki) noexcept;
+
+    /**
      * @brief Start motor
      */
     void start() noexcept;

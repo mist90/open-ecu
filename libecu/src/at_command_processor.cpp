@@ -15,6 +15,7 @@ AtCommandProcessor::AtCommandProcessor(BldcController* controller) noexcept
       cmd_index_(0),
       telemetry_enabled_(true),
       osc_streaming_(false),
+      pll_telemetry_enabled_(true),
       tracked_drive_mode_(2),
       tracked_spid_kp_(0.01f),
       tracked_spid_ki_(0.1f),
@@ -22,6 +23,8 @@ AtCommandProcessor::AtCommandProcessor(BldcController* controller) noexcept
       tracked_cpid_kp_(0.01f),
       tracked_cpid_ki_(0.1f),
       tracked_cpid_kd_(0.0f),
+      tracked_pll_kp_(200.0f),
+      tracked_pll_ki_(10000.0f),
       osc_write_index_(0),
       osc_read_index_(0),
       osc_phase_(OscPhase::Accumulating),
@@ -175,7 +178,7 @@ namespace {
 /** Command IDs for AT command dispatch */
 enum class CommandId : uint8_t {
     Unknown,
-    Spd, Cur, Dut, Mode, EMode, DMode, Spid, Cpid, Ver, Status, Tm, Osc, Maxvals
+    Spd, Cur, Dut, Mode, EMode, DMode, Spid, Cpid, PllId, Pll, Ver, Status, Tm, Osc, Maxvals
 };
 
 CommandId matchCommand(const char* cmd) noexcept {
@@ -185,6 +188,7 @@ CommandId matchCommand(const char* cmd) noexcept {
     if (std::strncmp(cmd, "STATUS", 6) == 0) return CommandId::Status;
     if (std::strncmp(cmd, "SPID", 4) == 0) return CommandId::Spid;
     if (std::strncmp(cmd, "CPID", 4) == 0) return CommandId::Cpid;
+    if (std::strncmp(cmd, "PLLID", 5) == 0) return CommandId::PllId;
     if (std::strncmp(cmd, "SPD", 3) == 0) return CommandId::Spd;
     if (std::strncmp(cmd, "CUR", 3) == 0) return CommandId::Cur;
     if (std::strncmp(cmd, "DUT", 3) == 0) return CommandId::Dut;
@@ -192,6 +196,7 @@ CommandId matchCommand(const char* cmd) noexcept {
     if (std::strncmp(cmd, "VER", 3) == 0) return CommandId::Ver;
     if (std::strncmp(cmd, "TM", 2) == 0) return CommandId::Tm;
     if (std::strncmp(cmd, "OSC", 3) == 0) return CommandId::Osc;
+    if (std::strncmp(cmd, "PLL", 3) == 0) return CommandId::Pll;
     return CommandId::Unknown;
 }
 
@@ -256,6 +261,7 @@ void AtCommandProcessor::processCommand() noexcept {
                             id == CommandId::Dut || id == CommandId::Mode ||
                             id == CommandId::EMode || id == CommandId::DMode ||
                             id == CommandId::Spid || id == CommandId::Cpid ||
+                            id == CommandId::PllId ||
                             id == CommandId::Status);
     if (needsController && controller_ == nullptr) {
         sendError();
@@ -411,6 +417,29 @@ void AtCommandProcessor::processCommand() noexcept {
         break;
     }
 
+    case CommandId::PllId: {
+        if (query) {
+            char buf[64];
+            int len = std::snprintf(buf, sizeof(buf), "+PLLID:%.3f,%.3f\r\n",
+                tracked_pll_kp_, tracked_pll_ki_);
+            if (len > 0) write(buf, static_cast<std::size_t>(len));
+            sendOk();
+        } else {
+            if (!valuePtr) { sendError(); return; }
+            float kp = std::strtof(valuePtr, nullptr);
+            float ki = 0.0f;
+            const char* comma = std::strchr(valuePtr, ',');
+            if (comma) {
+                ki = std::strtof(comma + 1, nullptr);
+            }
+            tracked_pll_kp_ = kp;
+            tracked_pll_ki_ = ki;
+            controller_->setPllGains(kp, ki);
+            sendOk();
+        }
+        break;
+    }
+
     case CommandId::Ver: {
         sendResponse("VER", "1.0.0");
         break;
@@ -458,6 +487,17 @@ void AtCommandProcessor::processCommand() noexcept {
         break;
     }
 
+    case CommandId::Pll: {
+        if (query) {
+            sendIntResponse("PLL", pll_telemetry_enabled_ ? 1 : 0);
+        } else {
+            int val = parseIntParam(valuePtr);
+            setPllTelemetryEnabled(val == 1);
+            sendOk();
+        }
+        break;
+    }
+
     default:
         sendError();
         break;
@@ -484,6 +524,32 @@ void AtCommandProcessor::sendTelemetry(const MotorStatus& status) noexcept {
     if (len > 0 && static_cast<std::size_t>(len) < sizeof(buf)) {
         write(buf, static_cast<std::size_t>(len));
     }
+}
+
+void AtCommandProcessor::sendPllTelemetry(const MotorPLL::PllInfo& info) noexcept {
+    if (!pll_telemetry_enabled_) {
+        return;
+    }
+
+    char buf[64];
+    int len = std::snprintf(buf, sizeof(buf), "+PLL:%.3f;%.3f;%.4f;%.2f;%.2f\n",
+            info.angle_per_second,
+            info.pll_integral,
+            info.time_since_last_hall,
+            info.kp,
+            info.ki);
+
+    if (len > 0 && static_cast<std::size_t>(len) < sizeof(buf)) {
+        write(buf, static_cast<std::size_t>(len));
+    }
+}
+
+void AtCommandProcessor::setPllTelemetryEnabled(bool enabled) noexcept {
+    pll_telemetry_enabled_ = enabled;
+}
+
+bool AtCommandProcessor::isPllTelemetryEnabled() const noexcept {
+    return pll_telemetry_enabled_;
 }
 
 void AtCommandProcessor::setTelemetryEnabled(bool enabled) noexcept {

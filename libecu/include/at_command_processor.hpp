@@ -9,6 +9,8 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "algorithms/motor_pll.hpp"
+
 namespace libecu {
 
 // Forward declarations
@@ -103,6 +105,24 @@ public:
      */
     void processOscOutput() noexcept;
 
+    /**
+     * @brief Send PLL telemetry line (+PLL:)
+     * @param info PLL internal state snapshot (angle_per_second, pll_integral, time_since_last_hall, kp, ki)
+     */
+    void sendPllTelemetry(const MotorPLL::PllInfo& info) noexcept;
+
+    /**
+     * @brief Enable or disable PLL telemetry output
+     * @param enabled True to enable +PLL output
+     */
+    void setPllTelemetryEnabled(bool enabled) noexcept;
+
+    /**
+     * @brief Check if PLL telemetry is enabled
+     * @return True if +PLL output is enabled
+     */
+    bool isPllTelemetryEnabled() const noexcept;
+
     // Configuration constants
     static constexpr std::size_t MAX_COMMAND_LENGTH = 64;
     static constexpr std::size_t OSC_BUFFER_SIZE = 512;
@@ -168,6 +188,7 @@ private:
     std::size_t cmd_index_;
     bool telemetry_enabled_;
     bool osc_streaming_;
+    bool pll_telemetry_enabled_;
 
     // Locally-tracked state (mirrors BldcController, avoids private access)
     uint8_t tracked_drive_mode_;  // 0=FORWARD, 1=REVERSE, 2=NEUTRAL
@@ -177,6 +198,8 @@ private:
     float tracked_cpid_kp_;
     float tracked_cpid_ki_;
     float tracked_cpid_kd_;
+    float tracked_pll_kp_;
+    float tracked_pll_ki_;
 
     // Oscilloscope single buffer with two phases
     enum class OscPhase : uint8_t {
