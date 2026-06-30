@@ -1,0 +1,613 @@
+\documentclass[12pt,a4paper]{article}
+
+\usepackage[T2A]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[russian]{babel}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{geometry}
+\usepackage{array}
+\usepackage{tikz}
+\usetikzlibrary{shapes,arrows,positioning}
+\usepackage{pgfplots}
+\usepackage{hyperref}
+\usepackage{caption}
+\usepackage{float}
+
+\pgfplotsset{compat=1.18}
+\geometry{margin=2.5cm}
+
+\tikzset{
+  blocks/.style={draw, rectangle, minimum height=1cm, minimum width=2cm, align=center},
+  sum/.style={draw, circle, inner sep=0pt, minimum size=6mm}
+}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue!70!black,
+    urlcolor=blue!70!black
+}
+
+\title{Расчёт коэффициентов ПИ-регулятора MotorPLL}
+\author{Open ECU Project}
+\date{\today}
+
+\begin{document}
+\maketitle
+\tableofcontents
+\newpage
+
+\section{Постановка задачи}
+
+\texttt{MotorPLL} --- программная ФАПЧ, отслеживающая угол ротора
+BLDC-двигателя по прерываниям датчиков Холла.
+Обновление происходит на частоте ШИМ $f_\text{PWM} = 40$~кГц
+($T = 1/f_\text{PWM} = 25$~мкс).
+
+Угол измеряется в \emph{шагах}: одна электрическая период = 6~шагов.
+Рабочий диапазон расширен до $[0,\;60)$ (10 периодов) для предотвращения
+фазового переворота при быстром разгоне/торможении.
+Диапазон ошибки после wrap: $e \in [-30,\;+30]$.
+
+\textbf{Параметры двигателя} (текущая конфигурация):
+\begin{itemize}
+  \item Число пар полюсов: $N_p = 8$
+  \item Максимальная скорость: $\omega_\text{max,mech} = 200$~об/с
+  \item Максимальное ускорение: $\alpha_\text{max,mech} = 100$~об/с$^2$
+  \item Шагов на оборот: $N_p \times 6 = 48$
+  \item $\omega_\text{max} = 200 \times 48 = 9600$~шаг/с
+  \item $\alpha_\text{max} = 100 \times 48 = 4800$~шаг/с$^2$
+\end{itemize}
+
+\textbf{Три конкурирующие цели настройки:}
+\begin{enumerate}
+  \item \textbf{Быстрое слежение} --- ФАПЧ должна быстро догонять реальный мотор.
+  \item \textbf{Помехоустойчивость} --- одиночный пропуск сигнала Холла
+        должен нивелироваться без большого рывка.
+  \item \textbf{Отсутствие рывков} --- выходная скорость $\omega_\text{pll}$
+        должна быть гладкой, без выбросов и колебаний.
+\end{enumerate}
+
+\section{Линейная модель ФАПЧ}
+
+\subsection{Структурная схема}
+
+\begin{center}
+\begin{tikzpicture}[node distance=2.2cm, auto]
+  \node[coordinate] (input) {};
+  \node[sum, right=of input] (sum) {};
+  \node[blocks, right=of sum] (pi) {ПИ-регулятор};
+  \node[blocks, right=of pi, text width=1.5cm, align=center] (int) {$\int dt$};
+  \node[coordinate, right=of int] (output) {};
+
+  \draw[->] (input) -- node[above] {$\theta_\text{hall}$} (sum);
+  \draw[->] (sum) -- node[above] {$e$} (pi);
+  \draw[->] (pi) -- node[above] {$\omega_\text{pll}$} (int);
+  \draw[->] (int) -- node[above, near end] {$\theta_\text{pll}$} (output);
+
+  \draw[->] (int) |- ++(0,-1.5) -| node[pos=0.75, below] {$-$} (sum);
+\end{tikzpicture}
+\end{center}
+
+\subsection{Дифференциальное уравнение ошибки}
+
+Обозначим:
+\begin{align*}
+  e &= \theta_\text{hall} - \theta_\text{pll}
+     && \text{ошибка (lag)} \\
+  \omega_\text{real} &= \dot{\theta}_\text{hall}
+     && \text{истинная скорость ротора} \\
+  \alpha_\text{real} &= \dot{\omega}_\text{real}
+     && \text{истинное ускорение}
+\end{align*}
+
+Уравнения замкнутого контура:
+\begin{align}
+  \dot{\theta}_\text{pll} &= \omega_\text{pll} = k_p \, e + I \label{eq:pi} \\
+  \dot{I} &= k_i \, e \label{eq:int} \\
+  \dot{e} &= \omega_\text{real} - \omega_\text{pll}
+           = \omega_\text{real} - k_p \, e - I \label{eq:err}
+\end{align}
+
+Дифференцируя \eqref{eq:err} и подставляя \eqref{eq:int}:
+\begin{equation}
+  \boxed{\ddot{e} + k_p \,\dot{e} + k_i \, e = \alpha_\text{real}}
+  \label{eq:ode}
+\end{equation}
+
+\subsection{Каноническая форма}
+
+Характеристический полином: $s^2 + k_p \, s + k_i$.
+Сопоставление со стандартной формой 2-го порядка:
+\begin{equation}
+  \boxed{\omega_n = \sqrt{k_i}, \qquad
+         \zeta = \frac{k_p}{2\sqrt{k_i}}}
+  \label{eq:canonical}
+\end{equation}
+
+Передаточная функция от скорости ротора к ошибке:
+\begin{equation}
+  \frac{E(s)}{\Omega_\text{real}(s)} = \frac{s}{s^2 + k_p \, s + k_i}
+  \label{eq:tf}
+\end{equation}
+
+Система имеет астатизм 1-го порядка: нулевая установившаяся ошибка
+при постоянной скорости, ненулевая --- при постоянном ускорении.
+
+\section{Нелинейности, ограничивающие применимость модели}
+
+\subsection{Wrap (модуль 60)}
+
+Жёсткая нелинейность. Линейная модель справедлива \textbf{только пока}
+$|e| < 30$. При $|e| > 30$ ошибка переворачивается по знаку, регулятор
+ведёт ротор в обратную сторону --- происходит \emph{cycle slip}
+(проскальзывание периода).
+
+Линейная модель \textbf{не может} предсказать поведение после slip;
+она лишь указывает, достигнет ли ошибка границы 30.
+
+\subsection{Порог реверса коммутации (1{,}5 шага)}
+\label{sec:reversal}
+
+\textbf{Ключевое ограничение, обнаруженное при отладке.}
+Коммутация использует угол ФАПЧ со смещением 90\textdegree{}
+(1{,}5~шага):
+\begin{equation*}
+  \theta_\text{comm} = \theta_\text{pll} + 1{,}5 \cdot \text{direction}
+\end{equation*}
+
+Эффективный угол упреждения статора:
+\begin{equation}
+  \theta_\text{lead} = 1{,}5 - e
+\end{equation}
+
+При $e < 1{,}5$ --- упреждение положительное (двигательный момент).
+При $e = 1{,}5$ --- упреждение нулевое (момент равен нулю).
+При $e > 1{,}5$ --- \textbf{упреждение отрицательное} (тормозной момент, реверс).
+
+\textbf{Это ограничение в 20 раз жёстче порога cycle slip} (1{,}5 vs 30).
+Именно оно является \emph{binding constraint} при выборе $k_i$,
+а не порог slip.
+
+Условие отсутствия реверса при ускорении:
+\begin{equation}
+  \boxed{e_{ss} = \frac{\alpha_\text{max}}{k_i} < 1{,}5
+  \quad\Longrightarrow\quad
+  k_i > \frac{\alpha_\text{max}}{1{,}5}}
+  \label{eq:ki_reversal}
+\end{equation}
+
+Для $\alpha_\text{max} = 4800$~шаг/с$^2$:
+$k_i > 4800 / 1{,}5 = 3200$.
+
+С запасом 20\%: $k_i \ge 3840$.
+
+\subsection{Ограничение интеграла}
+
+Интеграл $I$ ограничен $\pm\omega_\text{max} = \pm 9600$~шаг/с.
+При насыщении контур становится чисто пропорциональным ($\dot{I} \to 0$).
+Ограничение \emph{после} интегрирования --- грубый anti-windup
+(без back-calculation), но достаточный.
+
+\subsection{Адаптивные коэффициенты}
+
+В текущей реализации $k_p$ и $k_i$ масштабируются по скорости:
+\begin{equation*}
+  s_f = \frac{|\omega_\text{pll}|}{\omega_\text{max}}, \qquad
+  k_p = k_{p,0} + k_{p,1} \cdot s_f, \qquad
+  k_i = k_{i,0} + k_{i,1} \cdot s_f
+\end{equation*}
+
+\textbf{Внимание:} в коде $k_i$ масштабируется \emph{линейно} по $s_f$,
+а не квадратично ($s_f^2$). Это означает, что $\zeta$ меняется со
+скоростью. Для сохранения постоянного $\zeta$ следует масштабировать
+$k_i$ по $s_f^2$ (см.~разд.~\ref{sec:adaptive}).
+
+\subsection{Дискретность}
+
+При $f_\text{PWM} = 40$~кГц и $\omega_n = 100$~рад/с
+частота дискретизации в $400\times$ превосходит полосу контура.
+Фазовый лаг ZOH $< 0{,}03^\circ$. Система рассматривается как непрерывная.
+
+Условие устойчивости дискретного интегратора:
+\begin{equation}
+  k_i \cdot T < 2 \quad\Longrightarrow\quad k_i < \frac{2}{T} = \frac{2}{25\cdot10^{-6}} = 80000
+  \label{eq:discrete_stability}
+\end{equation}
+
+Рабочее значение $k_i = 10000$ даёт $k_i \cdot T = 0{,}25$ --- запас 8$\times$.
+
+\section{Структура полюсов при $\zeta \gg 1$}
+
+При сильном перерегулировании полюсы:
+\begin{align*}
+  s_{1,2} &= -\zeta\omega_n \pm \omega_n\sqrt{\zeta^2 - 1} \\
+  s_1 &\approx -\frac{k_i}{k_p}
+       \quad\text{(медленный полюс)} \\
+  s_2 &\approx -k_p
+       \quad\text{(быстрый полюс)}
+\end{align*}
+
+Постоянная времени медленного полюса:
+\begin{equation}
+  \boxed{\tau_\text{slow} = \frac{k_p}{k_i}}
+  \label{eq:tau}
+\end{equation}
+
+Время установления (2\%): $T_s \approx 4\tau_\text{slow} = 4k_p / k_i$.
+
+\textbf{Исторический пример:} при $k_p = 90$, $k_i = 10$
+(ранняя версия, $\zeta = 14$): $\tau_\text{slow} = 9$~с, $T_s \approx 36$~с.
+Контур фактически является квазистатическим фильтром запаздывания.
+
+При текущих значениях $k_p = 200$, $k_i = 10000$ ($\zeta = 1{,}0$):
+формула неприменима ($\zeta \not\gg 1$), $T_s = 4/\omega_n = 0{,}04$~с.
+
+\section{Расчётные соотношения}
+
+\subsection{Ошибка слежения при ускорении}
+
+Установившаяся ошибка при постоянном ускорении $\alpha$
+(по теореме о конечном значении для $\Omega_\text{real} = \alpha/s^2$):
+\begin{equation}
+  \boxed{e_{ss} = \frac{\alpha}{k_i}}
+  \label{eq:ess}
+\end{equation}
+
+Пиковая ошибка с учётом перерегулирования:
+\begin{equation}
+  e_\text{peak} = \frac{\alpha}{k_i}\,(1 + M_p),
+  \qquad
+  M_p = \exp\!\left(\frac{-\pi\zeta}{\sqrt{1-\zeta^2}}\right)
+  \;\text{при }\zeta < 1, \quad M_p = 0 \;\text{при }\zeta \ge 1
+  \label{eq:epeak}
+\end{equation}
+
+\textbf{Ограничение по порогу реверса коммутации} ($|e| < 1{,}5$):
+\begin{equation}
+  \boxed{k_i \ge \frac{\alpha_\text{max}\,(1 + M_p)}{1{,}5}}
+  \label{eq:ki_min_reversal}
+\end{equation}
+
+\textbf{Ограничение по порогу cycle slip} ($|e| < 30$):
+\begin{equation}
+  k_i \ge \frac{\alpha_\text{max}\,(1 + M_p)}{30}
+  \label{eq:ki_min_slip}
+\end{equation}
+
+Ограничение \eqref{eq:ki_min_reversal} в 20 раз жёстче \eqref{eq:ki_min_slip}
+и является \textbf{binding constraint}.
+
+Для $\alpha_\text{max} = 4800$~шаг/с$^2$ и $\zeta \ge 1$ ($M_p = 0$):
+\begin{itemize}
+  \item По реверсу: $k_i \ge 4800/1{,}5 = 3200$
+  \item По реверсу с запасом 20\%: $k_i \ge 3840$
+  \item По slip: $k_i \ge 4800/30 = 160$ (не binding)
+\end{itemize}
+
+\subsection{Время восстановления при пропуске Холла}
+
+Модель возмущения: ступенчатое изменение $e$ на величину $D$
+(мгновенный скачок, регулятор не может его предотвратить).
+
+\begin{table}[H]
+\centering
+\caption{Метрики подавления возмущения}
+\begin{tabular}{lll}
+\toprule
+Метрика & Формула & Примечание \\
+\midrule
+Пиковое отклонение угла & $D$ & Неустранимо (сам возмущение) \\
+Выброс в противофазе ($\zeta<1$) & $M_p \cdot D$ & 4{,}5\% от $D$ при $\zeta=0{,}7$ \\
+Время установления 2\% & $T_s = \dfrac{8}{k_p}$ & Не зависит от $k_i$ \\
+Скачок скорости (рывок) & $\Delta\omega = k_p \cdot D$ & Step в $\omega_\text{pll}$ \\
+Интегральный сдвиг & $\Delta I = D \cdot \dfrac{k_p}{k_i}$ & \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Ключевая формула:}
+\begin{equation}
+  \boxed{T_s = \frac{8}{k_p}}
+  \label{eq:ts}
+\end{equation}
+
+\begin{itemize}
+  \item $T_s = 0{,}1$~с $\Rightarrow$ $k_p = 80$
+  \item $T_s = 0{,}04$~с $\Rightarrow$ $k_p = 200$ (текущее значение)
+  \item $T_s = 0{,}02$~с $\Rightarrow$ $k_p = 400$
+\end{itemize}
+
+\subsection{Рекомендации по демпфированию}
+
+\begin{table}[H]
+\centering
+\caption{Влияние $\zeta$ на характер переходного процесса}
+\begin{tabular}{lll}
+\toprule
+$\zeta$ & Перерегулирование & Характер \\
+\midrule
+0{,}7 & 4{,}5\% & Быстрейшее установление при заданном $\omega_n$; лёгкий звон \\
+0{,}8 & 1{,}5\% & Хороший компромисс \\
+1{,}0 & 0\% & Монотонное; наиболее гладкое; на $\sim$30\% медленнее $\zeta=0{,}7$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Рекомендация:} $\zeta = 0{,}8$--$1{,}0$ для отсутствия рывков.
+
+\subsection{Сводка ограничений}
+
+\begin{table}[H]
+\centering
+\caption{Ограничения на коэффициенты ($\alpha_\text{max}=4800$, $\omega_\text{max}=9600$, $D=6$)}
+\begin{tabular}{lll}
+\toprule
+Цель & Формула & Граничное значение \\
+\midrule
+Нет реверса коммутации ($|e|<1{,}5$) & $k_i \ge \alpha_\text{max}/1{,}5$ & $k_i \ge 3200$ (запас 20\%: 3840) \\
+Нет cycle slip ($|e|<30$) & $k_i \ge \alpha_\text{max}/30$ & $k_i \ge 160$ (не binding) \\
+Установление $< 0{,}2$~с & $k_p \ge 8/T_s$ & $k_p \ge 40$ \\
+Демпфирование $0{,}7$--$1{,}0$ & $1{,}4\sqrt{k_i} \le k_p \le 2{,}0\sqrt{k_i}$ & связывает $k_p$ и $k_i$ \\
+Рывок (выброс $< 15\%$ от 9600) & $k_p \le 0{,}15 \cdot 9600/D$ & $k_p \le 240$ \\
+Дискретная устойчивость & $k_i \cdot T < 2$ & $k_i < 80000$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Рекомендуемые значения}
+
+\subsection{Базовая конфигурация: $k_p = 200$, $k_i = 10000$}
+
+\begin{table}[H]
+\centering
+\caption{Параметры при $k_p = 200$, $k_i = 10000$}
+\begin{tabular}{lll}
+\toprule
+Параметр & Значение & Запас \\
+\midrule
+$\omega_n = \sqrt{10000}$ & 100~рад/с (15{,}9~Гц) & $0{,}004 \times f_\text{PWM}$ \\
+$\zeta = 200/(2\cdot100)$ & 1{,}00 & Критически демпфирован, без выброса \\
+$e_{ss}(\alpha=4800)$ & $4800/10000 = 0{,}48$~шага & 68\% до реверса (1{,}5) \\
+$e_{ss}$ к порогу slip & $0{,}48/30 = 1{,}6\%$ & 98\% до slip \\
+$T_s$ (возмущение) & $8/200 = 0{,}04$~с & 80\% ниже 0{,}2~с \\
+Скачок $\omega$ ($D=6$) & $6\cdot200 = 1200 = 12{,}5\%$ от 9600 & Приемлемо \\
+Интегральный сдвиг ($D=6$) & $6\cdot200/10000 = 0{,}12$~шаг$\cdot$с & Пренебрежимо \\
+$k_i \cdot T$ & $10000 \cdot 25\cdot10^{-6} = 0{,}25$ & 8$\times$ до границы устойчивости \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Адаптивная конфигурация}
+\label{sec:adaptive}
+
+Текущая реализация (линейная адаптация):
+\begin{equation}
+  \boxed{
+  \begin{aligned}
+    s_f &= \frac{|\omega_\text{pll}|}{\omega_\text{max}} \\
+    k_p &= 200 + 20\,s_f \qquad\quad (200\text{--}220) \\
+    k_i &= 10000 + 400\,s_f \qquad (10000\text{--}10400)
+  \end{aligned}
+  }
+  \label{eq:adaptive}
+\end{equation}
+
+\begin{itemize}
+  \item На малой скорости ($s_f=0$): $\zeta = 200/(2\cdot100) = 1{,}00$
+  \item На полной скорости ($s_f=1$): $\zeta = 220/(2\cdot101{,}98) = 1{,}08$
+\end{itemize}
+
+\textbf{Замечание:} $k_i$ масштабируется линейно ($s_f$), а не квадратично
+($s_f^2$). Для сохранения $\zeta = \text{const}$ следует использовать
+$k_i = k_{i,0} + k_{i,1}\,s_f^{\,2}$. При текущих значениях изменение
+$\zeta$ с 1{,}00 до 1{,}08 пренебрежимо мало.
+
+\section{Карта допустимых значений}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+    width=12cm, height=9cm,
+    xlabel={$k_i$}, ylabel={$k_p$},
+    title={Допустимая область ($T_s < 0{,}2$~с, $\zeta \in [0{,}7;\,1{,}0]$, рывок $<15\%$, нет реверса)},
+    grid=major,
+    legend pos=south east,
+    xmin=0, xmax=32000, ymin=0, ymax=260,
+]
+
+\fill[green!20] (400,40) -- (816,40) -- (14400,240) -- (29388,240) -- cycle;
+
+\node at (axis cs:8000,140) {\large $\mathcal{F}$};
+
+\addplot[blue, thick, domain=400:32000] {2*sqrt(x)};
+\addlegendentry{$\zeta = 1{,}0$ ($k_p = 2\sqrt{k_i}$)}
+
+\addplot[red, thick, domain=400:32000] {1.4*sqrt(x)};
+\addlegendentry{$\zeta = 0{,}7$ ($k_p = 1{,}4\sqrt{k_i}$)}
+
+\addplot[black, dashed] coordinates {(400,0) (400,260)};
+\addlegendentry{$k_i = 400$ ($T_s$-граница)}
+
+\addplot[black, dashed] coordinates {(0,40) (32000,40)};
+\addlegendentry{$k_p = 40$ ($T_s$-граница)}
+
+\addplot[black, dotted] coordinates {(0,240) (32000,240)};
+\addlegendentry{$k_p = 240$ (рывок 15\%)}
+
+\addplot[black, dotted] coordinates {(3200,0) (3200,260)};
+\addlegendentry{$k_i = 3200$ (реверс 1{,}5)}
+
+\node[circle,fill=blue,inner sep=2pt] at (axis cs:10000,200) {};
+\node[above right] at (axis cs:10000,200) {$(10000,\,200)$};
+
+\node[circle,fill=red,inner sep=2pt] at (axis cs:400,40) {};
+\node[above right] at (axis cs:400,40) {A};
+
+\node[circle,fill=red,inner sep=2pt] at (axis cs:816,40) {};
+\node[above right] at (axis cs:816,40) {B};
+
+\node[circle,fill=red,inner sep=2pt] at (axis cs:14400,240) {};
+\node[above right] at (axis cs:14400,240) {C};
+
+\node[circle,fill=red,inner sep=2pt] at (axis cs:29388,240) {};
+\node[above right] at (axis cs:29388,240) {D};
+
+\end{axis}
+\end{tikzpicture}
+\caption{Допустимая область $\mathcal{F}$ (зелёная) в плоскости $(k_i, k_p)$.
+Углы: A$(400,40)$, B$(816,40)$, C$(14400,240)$, D$(29388,240)$.
+Рекомендуемая точка $(10000,200)$ --- внутри области.
+Пунктирная вертикаль $k_i=3200$ --- граница реверса коммутации.}
+\end{figure}
+
+\subsection{Угловые точки области}
+
+\begin{table}[H]
+\centering
+\caption{Углы допустимой области (рывок $\le 15\%$, $T_s \le 0{,}2$~с, $\zeta \in [0{,}7;\,1{,}0]$)}
+\begin{tabular}{cccccccc}
+\toprule
+Угол & $k_i$ & $k_p$ & $\zeta$ & $T_s$, с & $e_{ss}(\alpha=4800)$ & Рывок, \% & Характер \\
+\midrule
+A & 400 & 40 & 1{,}0 & 0{,}20 & 12{,}0 & 2{,}5 & Минимум по $T_s$ и $\zeta$; $e_{ss}$ близко к реверсу \\
+B & 816 & 40 & 0{,}7 & 0{,}20 & 5{,}88 & 2{,}5 & Быстрое слежение, лёгкий звон; $e_{ss} > 1{,}5$! \\
+C & 14400 & 240 & 1{,}0 & 0{,}033 & 0{,}33 & 15 & Быстрое установление, гладко \\
+D & 29388 & 240 & 0{,}7 & 0{,}033 & 0{,}16 & 15 & Агрессивно везде \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Внимание:} угол B ($k_i=816$, $\zeta=0{,}7$) даёт $e_{ss} = 5{,}88 > 1{,}5$
+--- реверс коммутации при максимальном ускорении!
+Угол A ($k_i=400$, $\zeta=1{,}0$) даёт $e_{ss} = 12{,}0 \gg 1{,}5$ --- также реверс.
+Только точки с $k_i \ge 3200$ (пунктирная линия на карте) свободны от реверса.
+
+\subsection{Движение по карте под приоритеты}
+
+\begin{table}[H]
+\centering
+\caption{Направление сдвига при приоритизации цели}
+\begin{tabular}{lll}
+\toprule
+Приоритет & Направление & Обоснование \\
+\midrule
+Нет реверса коммутации & $\uparrow$ ($k_i \ge 3200$) & $e_{ss} = \alpha/k_i < 1{,}5$ \\
+Быстрое слежение & $\uparrow$ (больше $k_i$) & $e_{ss} = \alpha/k_i$ падает линейно \\
+Подавление возмущений & $\rightarrow$ (больше $k_p$) & $T_s = 8/k_p$ падает; рывок растёт \\
+Без рывков & $\leftarrow$ (меньше $k_p$) & $\Delta\omega = k_p \cdot D$ падает; $T_s$ растёт \\
+Демпфирование & вдоль $\zeta = 1{,}0$ & Обмен на скорость через $\zeta = 0{,}7$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Пример расчёта}
+
+\textbf{Дано:}
+$\alpha_\text{max} = 4800$~шаг/с$^2$ (100~об/с$^2 \times 48$),
+$T_{s,\text{max}} = 0{,}2$~с,
+$D = 6$~шагов,
+допустимый рывок $\le 15\%$ от $\omega_\text{max} = 9600$.
+
+\textbf{Шаг 1.} Минимальное $k_i$ из условия \textbf{отсутствия реверса}:
+\begin{equation*}
+  k_i \ge \frac{\alpha_\text{max}}{1{,}5} = \frac{4800}{1{,}5} = 3200
+\end{equation*}
+
+С запасом 20\%: $k_i \ge 3840$.
+
+\textbf{Шаг 2.} Минимальное $k_p$ из времени установления:
+\begin{equation*}
+  k_p \ge \frac{8}{T_{s,\text{max}}} = \frac{8}{0{,}2} = 40
+\end{equation*}
+
+\textbf{Шаг 3.} Максимальное $k_p$ из ограничения рывка:
+\begin{equation*}
+  k_p \le \frac{0{,}15 \cdot 9600}{D} = \frac{1440}{6} = 240
+\end{equation*}
+
+\textbf{Шаг 4.} Связь $k_p$ и $k_i$ через демпфирование ($\zeta \in [0{,}7;\,1{,}0]$):
+\begin{equation*}
+  1{,}4\sqrt{k_i} \le k_p \le 2{,}0\sqrt{k_i}
+\end{equation*}
+
+При $k_p = 200$ (из диапазона $[40;\,240]$):
+\begin{align*}
+  \zeta = 1{,}0: \quad & k_i = \left(\frac{200}{2}\right)^2 = 10000 \\
+  \zeta = 0{,}8: \quad & k_i = \left(\frac{200}{1{,}6}\right)^2 = 15625 \\
+  \zeta = 0{,}7: \quad & k_i = \left(\frac{200}{1{,}4}\right)^2 = 20408
+\end{align*}
+
+\textbf{Шаг 5.} Выбор рабочей точки.
+
+Берём $k_i = 10000$ ($\zeta = 1{,}0$, критически демпфирован):
+\begin{equation*}
+  \zeta = \frac{200}{2\sqrt{10000}} = \frac{200}{200} = 1{,}00
+\end{equation*}
+
+Проверка:
+\begin{itemize}
+  \item $e_{ss}(\alpha=4800) = 4800/10000 = 0{,}48 < 1{,}5$ (нет реверса) \checkmark
+  \item $e_{ss} = 0{,}48 \ll 30$ (нет slip) \checkmark
+  \item $T_s = 8/200 = 0{,}04 < 0{,}2$ \checkmark
+  \item Рывок $= 6 \cdot 200 = 1200 = 12{,}5\% < 15\%$ \checkmark
+  \item $\zeta = 1{,}00 \in [0{,}7;\,1{,}0]$ \checkmark
+  \item $k_i \cdot T = 0{,}25 < 2$ (дискретная устойчивость) \checkmark
+\end{itemize}
+
+\section{Реализация в коде}
+
+\subsection{Текущая реализация (адаптивные коэффициенты)}
+
+\begin{verbatim}
+void MotorPLL::updateAdaptiveGains() noexcept {
+    float abs_speed = std::abs(angle_per_second_);
+
+    float speed_factor = abs_speed / max_electrical_speed_;
+    if (speed_factor > 1.0f) speed_factor = 1.0f;
+
+    pll_kp_ = base_kp_ + (20.0f * speed_factor);   // 200..220
+    pll_ki_ = base_ki_ + (400.0f * speed_factor);   // 10000..10400
+}
+\end{verbatim}
+
+Базовые значения задаются в конструкторе и могут изменяться
+во время выполнения через команду \texttt{AT+PLLID=<kp>,<ki>}.
+
+\subsection{Проверка: почему $k_i$ масштабируется по $s_f$ (не $s_f^2$)}
+
+При $\zeta = \text{const}$:
+\begin{equation*}
+  \zeta = \frac{k_p}{2\sqrt{k_i}} = \text{const}
+  \quad\Longrightarrow\quad
+  k_i \propto k_p^2
+\end{equation*}
+
+Если $k_p$ растёт линейно с $s_f$, то $k_i$ должна расти
+квадратично --- $s_f^2$.
+
+В текущей реализации $k_i$ растёт линейно ($s_f$), что даёт
+незначительное изменение $\zeta$ с 1{,}00 до 1{,}08 ---
+пренебрежимо мало для практических целей.
+
+\section{Итоги}
+
+\begin{enumerate}
+  \item Линейная модель: $\ddot{e} + k_p\dot{e} + k_i e = \alpha$.
+  \item $\omega_n = \sqrt{k_i}$, $\zeta = k_p/(2\sqrt{k_i})$.
+  \item $e_{ss} = \alpha/k_i$ --- ошибка при ускорении.
+  \item $T_s = 8/k_p$ --- время восстановления (не зависит от $k_i$).
+  \item $\Delta\omega = k_p \cdot D$ --- рывок при возмущении.
+  \item \textbf{Порог реверса коммутации:} $|e| < 1{,}5$ шага (90\textdegree{}).
+        Это binding constraint, в 20$\times$ жёстче порога slip (30).
+  \item \textbf{Порог cycle slip:} $|e| < 30$ шагов.
+  \item Рекомендация: $k_p = 200$, $k_i = 10000$ ($\zeta = 1{,}00$,
+        $e_{ss} = 0{,}48$, $T_s = 0{,}04$~с, рывок 12{,}5\%).
+  \item Минимум по реверсу: $k_i \ge 3200$ (с запасом 3840).
+  \item Дискретная устойчивость: $k_i < 80000$.
+  \item При адаптации: $k_i \propto k_p^2$ для постоянного $\zeta$
+        (текущая линейная адаптация даёт $\Delta\zeta = 0{,}08$).
+\end{enumerate}
+
+\end{document}
