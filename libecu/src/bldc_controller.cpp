@@ -28,7 +28,7 @@ BldcController::BldcController(
     , hall_interface_(hall_interface)
     , commutation_controller_(commutation_controller)
     , adc_interface_(adc_interface)
-    , motor_pll_(1.0 / pwm_interface_.getFrequency(), params.max_speed_rps * commutation_controller.getNumPoles() * 6, params.useInverseCommTable)
+    , motor_pll_(pwm_interface_.getFrequency(), params.max_speed_rps * commutation_controller.getNumPoles() * 6, params.useInverseCommTable)
     , pid_speed_controller_()
     , current_controller_()
     , params_(params)

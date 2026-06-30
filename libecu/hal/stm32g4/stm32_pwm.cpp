@@ -25,7 +25,7 @@ bool Stm32Pwm::initialize(uint32_t frequency, uint16_t dead_time_ns) {
     // Calculate timer settings for center-aligned mode
     // In center-aligned mode, counter goes 0→ARR→0, so period = 2*ARR
     // To get desired frequency: ARR = timer_clock / (2 * frequency)
-    uint32_t timer_clock = HAL_RCC_GetPCLK2Freq() * 2;
+    uint32_t timer_clock = HAL_RCC_GetPCLK2Freq();
     uint32_t prescaler = 0;
     period_ = (timer_clock / (2 * frequency)) - 1;
 
@@ -107,7 +107,7 @@ bool Stm32Pwm::initialize(uint32_t frequency, uint16_t dead_time_ns) {
     // Calculate dead-time register value
     // tDTS = timer clock period, dead time is specified in tDTS units
     // For STM32G4 TIM1 at 170MHz: tDTS ≈ 5.88ns (when CKD=00, no clock division)
-    uint32_t tim_clock = HAL_RCC_GetPCLK2Freq() * 2;  // 170MHz typically
+    uint32_t tim_clock = HAL_RCC_GetPCLK2Freq();  // 170MHz typically
 
     // Avoid overflow: rearrange (dead_time_ns * tim_clock) / 1e9
     // to: dead_time_ns / (1e9 / tim_clock)
