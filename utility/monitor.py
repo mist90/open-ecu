@@ -466,12 +466,14 @@ class ContinuousTab(QWidget):
         self.plot_speeds = pg.PlotWidget()
         self.plot_speeds.setMinimumHeight(250)
         _style_plot(self.plot_speeds, "Speed", bottom_label="Time (s)")
+        self.plot_speeds.enableAutoRange(x=False)
         self.curve_spd_tgt  = self.plot_speeds.plot(name="target_speed",  pen=pg.mkPen("#ff0088", width=2))
         self.curve_spd_cur  = self.plot_speeds.plot(name="current_speed", pen=pg.mkPen("#ff4444", width=2))
 
         self.plot_currents = pg.PlotWidget()
         self.plot_currents.setMinimumHeight(250)
         _style_plot(self.plot_currents, "Current", bottom_label="Time (s)")
+        self.plot_currents.enableAutoRange(x=False)
         self.curve_cur_tgt  = self.plot_currents.plot(name="target_current",   pen=pg.mkPen("#aa00ff", width=2))
         self.curve_cur_meas = self.plot_currents.plot(name="measured_current", pen=pg.mkPen("#00ffff", width=2))
 
@@ -479,19 +481,20 @@ class ContinuousTab(QWidget):
         self.plot_duty.setMinimumHeight(180)
         _style_plot(self.plot_duty, "Duty Cycle", bottom_label="Time (s)")
         self.plot_duty.setYRange(0, 1)
-        self.plot_duty.enableAutoRange(y=False)
+        self.plot_duty.enableAutoRange(x=False, y=False)
         self.curve_duty = self.plot_duty.plot(name="duty_cycle", pen=pg.mkPen("#ffff00", width=2))
 
         self.plot_voltage = pg.PlotWidget()
         self.plot_voltage.setMinimumHeight(180)
         _style_plot(self.plot_voltage, "Bus Voltage", bottom_label="Time (s)")
+        self.plot_voltage.enableAutoRange(x=False)
         self.curve_bus_volt = self.plot_voltage.plot(name="bus_voltage", pen=pg.mkPen("#ffaa00", width=2))
 
         self.plot_steps = pg.PlotWidget()
         self.plot_steps.setMinimumHeight(180)
         _style_plot(self.plot_steps, "Commutation Step", bottom_label="Time (s)")
         self.plot_steps.setYRange(0, 5)
-        self.plot_steps.enableAutoRange(y=False)
+        self.plot_steps.enableAutoRange(x=False, y=False)
         self.curve_cur_step  = self.plot_steps.plot(name="current_step", pen=pg.mkPen("#00ff88", width=2))
         self.curve_next_step = self.plot_steps.plot(name="next_step",    pen=pg.mkPen("#ff8800", width=2))
         self.curve_pll_step  = self.plot_steps.plot(name="PLL step",     pen=pg.mkPen("#ff4444", width=2))
@@ -522,6 +525,11 @@ class ContinuousTab(QWidget):
         self.next_step.clear()
         self.pll_step.clear()
         self._dirty = True
+        self.plot_speeds.setXRange(0, self._buffer_size)
+        self.plot_currents.setXRange(0, self._buffer_size)
+        self.plot_duty.setXRange(0, self._buffer_size)
+        self.plot_voltage.setXRange(0, self._buffer_size)
+        self.plot_steps.setXRange(0, self._buffer_size)
 
     def add_sample(self, fields: list[str]):
         if len(fields) != 9:
@@ -604,8 +612,8 @@ class ContinuousTab(QWidget):
         self.curve_next_step.setData(tn, np.array(self.next_step, dtype=np.float64))
         self.curve_pll_step.setData(tn, np.array(self.pll_step, dtype=np.float64))
 
-        t_min = max(0.0, self.t_data[-1] - self._buffer_size)
-        t_max = self.t_data[-1] + 0.5
+        t_max = max(self._buffer_size, self.t_data[-1] + 0.5)
+        t_min = t_max - self._buffer_size
         self.plot_speeds.setXRange(t_min, t_max)
         self.plot_currents.setXRange(t_min, t_max)
         self.plot_duty.setXRange(t_min, t_max)
@@ -636,17 +644,20 @@ class CurrentWaveformTab(QWidget):
 
         self.plot_currents = pg.PlotWidget()
         _style_plot(self.plot_currents, "Current", bottom_label="Sample Index")
+        self.plot_currents.enableAutoRange(x=False)
         self.curve_meas_cur = self.plot_currents.plot(name="measured", pen=pg.mkPen("#00ffff", width=2))
         self.curve_tgt_cur = self.plot_currents.plot(name="target", pen=pg.mkPen("#aa00ff", width=2))
         layout.addWidget(self.plot_currents, stretch=2)
 
         self.plot_duty = pg.PlotWidget()
         _style_plot(self.plot_duty, "Duty Cycle", bottom_label="Sample Index")
+        self.plot_duty.enableAutoRange(x=False, y=False)
         self.curve_duty = self.plot_duty.plot(name="duty_cycle", pen=pg.mkPen("#ffff00", width=2))
         layout.addWidget(self.plot_duty, stretch=1)
 
         self.plot_position = pg.PlotWidget()
         _style_plot(self.plot_position, "Position", bottom_label="Sample Index")
+        self.plot_position.enableAutoRange(x=False, y=False)
         self.curve_position = self.plot_position.plot(name="position", pen=pg.mkPen("#44ff44", width=2))
         layout.addWidget(self.plot_position, stretch=1)
 
