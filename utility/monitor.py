@@ -6,6 +6,7 @@ import time
 import bisect
 import serial
 import numpy as np
+from datetime import datetime
 from serial.tools import list_ports
 
 from PyQt6.QtCore import QObject, QThread, QTimer, pyqtSignal, Qt
@@ -801,13 +802,13 @@ class ATConsoleTab(QWidget):
     def log_sent(self, text: str):
         if not self._logging:
             return
-        ts = time.strftime("%H:%M:%S")
+        ts = datetime.now().strftime("%H:%M:%S.%f")
         self._append(f"[{ts}] TX: {text.strip()}", self._COLOR_SENT)
 
     def log_received(self, line: str):
         if not self._logging or not line:
             return
-        ts = time.strftime("%H:%M:%S")
+        ts = datetime.now().strftime("%H:%M:%S.%f")
         color = self._COLOR_ERR if line.startswith("ERROR") else self._COLOR_RECV
         self._append(f"[{ts}] RX: {line}", color)
 
