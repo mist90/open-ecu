@@ -14,8 +14,6 @@ namespace libecu {
 
 MotorPLL::MotorPLL(float freq_pwm, float max_electrical_speed, bool is_inverse_commutation_table) noexcept
     : is_inverse_commutation_table_(is_inverse_commutation_table)
-    , base_kp_(200.0f)
-    , base_ki_(10000.0f)
 {
     DT_ = 1.0f / freq_pwm;
     max_electrical_speed_ = max_electrical_speed;
@@ -51,12 +49,12 @@ void MotorPLL::updateTick() noexcept {
     if (angle_error < -static_cast<float>(ANGLE_MAX)/2.0f)
         angle_error += static_cast<float>(ANGLE_MAX);
 
-    updateAdaptiveGains();
-
     pll_integral_ += angle_error * pll_ki_ * DT_;
     
-    if (pll_integral_ > max_electrical_speed_)  pll_integral_ = max_electrical_speed_;
-    if (pll_integral_ < -max_electrical_speed_) pll_integral_ = -max_electrical_speed_;
+    if (pll_integral_ > max_electrical_speed_)
+        pll_integral_ = max_electrical_speed_;
+    if (pll_integral_ < -max_electrical_speed_)
+        pll_integral_ = -max_electrical_speed_;
 
     angle_per_second_ = (angle_error * pll_kp_) + pll_integral_;
 
@@ -92,8 +90,8 @@ uint8_t MotorPLL::getNextHall(const volatile DriveMode &mode) noexcept {
         direction = !is_inverse_commutation_table_ ? 1.0f : -1.0f;
     if (mode == DriveMode::REVERSE)
         direction = !is_inverse_commutation_table_ ? -1.0f : 1.0f;
-
-    float next_angle = angle_ + (1.5f * direction);
+    
+    float next_angle = angle_ + (1.0f * direction);
 
     return static_cast<uint8_t>(std::round(next_angle)) % 6;
 }
@@ -122,16 +120,6 @@ float MotorPLL::getSpeedStepsSec() const noexcept {
     return angle_per_second_;
 }
 
-void MotorPLL::updateAdaptiveGains() noexcept {
-    float abs_speed = std::abs(angle_per_second_);
-
-    float speed_factor = abs_speed / max_electrical_speed_;
-    if (speed_factor > 1.0f) speed_factor = 1.0f;
-
-    pll_kp_ = base_kp_ + (20.0f * speed_factor);
-    pll_ki_ = base_ki_ + (400.0f * speed_factor);
-}
-
 MotorPLL::PllInfo MotorPLL::getInfo() const noexcept {
     PllInfo info;
     info.use_pll = use_pll_;
@@ -146,13 +134,13 @@ MotorPLL::PllInfo MotorPLL::getInfo() const noexcept {
 }
 
 void MotorPLL::setGains(float kp_base, float ki_base) noexcept {
-    base_kp_ = kp_base;
-    base_ki_ = ki_base;
+    pll_kp_ = kp_base;
+    pll_ki_ = ki_base;
 }
 
 void MotorPLL::getBaseGains(float& kp_base, float& ki_base) const noexcept {
-    kp_base = base_kp_;
-    ki_base = base_ki_;
+    kp_base = pll_kp_;
+    ki_base = pll_ki_;
 }
 
 } // namespace libecu

@@ -137,9 +137,6 @@ public:
     void getBaseGains(float& kp_base, float& ki_base) const noexcept;
 
 private:
-    /// @brief Adapt PLL PI gains based on current speed
-    void updateAdaptiveGains() noexcept;
-
     uint8_t hall_state_ = 0x0;   // [0..ANGLE_MAX]
     float angle_ = 0.0f;
     float angle_per_second_ = 0.0f;
@@ -149,13 +146,11 @@ private:
     bool use_pll_ = false;
     uint32_t last_timestamp_us_ = 0;
     float time_since_last_hall_ = 0.0f;
-    float pll_kp_ = 0.0f;
-    float pll_ki_ = 0.0f;
     float pll_integral_ = 0.0f;
     float DT_;
     float max_electrical_speed_;
-    float base_kp_ = 200.0f;   ///< Base proportional gain (tunable via AT+PLLID)
-    float base_ki_ = 10000.0f;  ///< Base integral gain (tunable via AT+PLLID)
+    float pll_kp_ = 40.0f;   ///< Base proportional gain (tunable via AT+PLLID)
+    float pll_ki_ = 400.0f;  ///< Base integral gain (tunable via AT+PLLID)
 };
 
 } // namespace libecu
