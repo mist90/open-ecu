@@ -129,6 +129,13 @@ public:
      */
     void setGains(float kp_base, float ki_base) noexcept;
 
+    /**
+     * @brief Get base PI gains
+     * @param kp_base Output: base proportional gain
+     * @param ki_base Output: base integral gain
+     */
+    void getBaseGains(float& kp_base, float& ki_base) const noexcept;
+
 private:
     /// @brief Adapt PLL PI gains based on current speed
     void updateAdaptiveGains() noexcept;

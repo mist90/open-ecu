@@ -178,6 +178,35 @@ public:
     void setPllGains(float kp, float ki) noexcept;
 
     /**
+     * @brief Get current drive mode
+     * @return Current drive mode
+     */
+    DriveMode getDriveMode() const noexcept;
+
+    /**
+     * @brief Get speed PID controller gains
+     * @param kp Output: proportional gain
+     * @param ki Output: integral gain
+     * @param kd Output: derivative gain
+     */
+    void getSpeedPidGains(float& kp, float& ki, float& kd) const noexcept;
+
+    /**
+     * @brief Get current PID controller gains
+     * @param kp Output: proportional gain
+     * @param ki Output: integral gain
+     * @param kd Output: derivative gain
+     */
+    void getCurrentPidGains(float& kp, float& ki, float& kd) const noexcept;
+
+    /**
+     * @brief Get PLL base PI gains
+     * @param kp Output: base proportional gain
+     * @param ki Output: base integral gain
+     */
+    void getPllBaseGains(float& kp, float& ki) const noexcept;
+
+    /**
      * @brief Start motor
      */
     void start() noexcept;

@@ -15,16 +15,7 @@ AtCommandProcessor::AtCommandProcessor(BldcController* controller) noexcept
       cmd_index_(0),
       telemetry_enabled_(true),
       osc_streaming_(false),
-      pll_telemetry_enabled_(true),
-      tracked_drive_mode_(2),
-      tracked_spid_kp_(0.01f),
-      tracked_spid_ki_(0.1f),
-      tracked_spid_kd_(0.0f),
-      tracked_cpid_kp_(0.01f),
-      tracked_cpid_ki_(0.1f),
-      tracked_cpid_kd_(0.0f),
-      tracked_pll_kp_(200.0f),
-      tracked_pll_ki_(10000.0f),
+      pll_telemetry_enabled_(false),
       osc_write_index_(0),
       osc_read_index_(0),
       osc_phase_(OscPhase::Accumulating),
@@ -351,7 +342,7 @@ void AtCommandProcessor::processCommand() noexcept {
 
     case CommandId::DMode: {
         if (query) {
-            sendIntResponse("DMODE", static_cast<int>(tracked_drive_mode_));
+            sendIntResponse("DMODE", static_cast<int>(controller_->getDriveMode()));
         } else {
             int val = parseIntParam(valuePtr);
             if (val < 0 || val > 2) {
@@ -359,7 +350,6 @@ void AtCommandProcessor::processCommand() noexcept {
                 return;
             }
             controller_->setDriveMode(static_cast<DriveMode>(val));
-            tracked_drive_mode_ = static_cast<uint8_t>(val);
             sendOk();
         }
         break;
@@ -367,9 +357,11 @@ void AtCommandProcessor::processCommand() noexcept {
 
     case CommandId::Spid: {
         if (query) {
+            float kp, ki, kd;
+            controller_->getSpeedPidGains(kp, ki, kd);
             char buf[64];
             int len = std::snprintf(buf, sizeof(buf), "+SPID:%.3f,%.3f,%.3f\r\n",
-                tracked_spid_kp_, tracked_spid_ki_, tracked_spid_kd_);
+                kp, ki, kd);
             if (len > 0) write(buf, static_cast<std::size_t>(len));
             sendOk();
         } else {
@@ -382,9 +374,6 @@ void AtCommandProcessor::processCommand() noexcept {
                 const char* comma2 = std::strchr(comma + 1, ',');
                 if (comma2) kd = std::strtof(comma2 + 1, nullptr);
             }
-            tracked_spid_kp_ = kp;
-            tracked_spid_ki_ = ki;
-            tracked_spid_kd_ = kd;
             controller_->setSpeedPid(kp, ki, kd);
             sendOk();
         }
@@ -393,9 +382,11 @@ void AtCommandProcessor::processCommand() noexcept {
 
     case CommandId::Cpid: {
         if (query) {
+            float kp, ki, kd;
+            controller_->getCurrentPidGains(kp, ki, kd);
             char buf[64];
             int len = std::snprintf(buf, sizeof(buf), "+CPID:%.3f,%.3f,%.3f\r\n",
-                tracked_cpid_kp_, tracked_cpid_ki_, tracked_cpid_kd_);
+                kp, ki, kd);
             if (len > 0) write(buf, static_cast<std::size_t>(len));
             sendOk();
         } else {
@@ -408,9 +399,6 @@ void AtCommandProcessor::processCommand() noexcept {
                 const char* comma2 = std::strchr(comma + 1, ',');
                 if (comma2) kd = std::strtof(comma2 + 1, nullptr);
             }
-            tracked_cpid_kp_ = kp;
-            tracked_cpid_ki_ = ki;
-            tracked_cpid_kd_ = kd;
             controller_->setCurrentPid(kp, ki, kd);
             sendOk();
         }
@@ -419,9 +407,11 @@ void AtCommandProcessor::processCommand() noexcept {
 
     case CommandId::PllId: {
         if (query) {
+            float kp, ki;
+            controller_->getPllBaseGains(kp, ki);
             char buf[64];
             int len = std::snprintf(buf, sizeof(buf), "+PLLID:%.3f,%.3f\r\n",
-                tracked_pll_kp_, tracked_pll_ki_);
+                kp, ki);
             if (len > 0) write(buf, static_cast<std::size_t>(len));
             sendOk();
         } else {
@@ -432,8 +422,6 @@ void AtCommandProcessor::processCommand() noexcept {
             if (comma) {
                 ki = std::strtof(comma + 1, nullptr);
             }
-            tracked_pll_kp_ = kp;
-            tracked_pll_ki_ = ki;
             controller_->setPllGains(kp, ki);
             sendOk();
         }

@@ -43,7 +43,6 @@ static libecu::CommutationController* commutation_controller = nullptr;
 static libecu::BldcController* motor_controller = nullptr;
 static libecu::UartAtBridge* g_at_processor = nullptr;
 static volatile bool control_tick = false;
-static uint8_t control_tick_count = 0;
 
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
@@ -276,7 +275,7 @@ int main(void)
             }
 #endif
 
-            if (at_processor.isTelemetryEnabled() && (control_tick_count++ & 1)) {
+            if (at_processor.isTelemetryEnabled()) {
                 at_processor.sendTelemetry(status);
             }
             if (at_processor.isPllTelemetryEnabled()) {

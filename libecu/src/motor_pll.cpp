@@ -150,4 +150,9 @@ void MotorPLL::setGains(float kp_base, float ki_base) noexcept {
     base_ki_ = ki_base;
 }
 
+void MotorPLL::getBaseGains(float& kp_base, float& ki_base) const noexcept {
+    kp_base = base_kp_;
+    ki_base = base_ki_;
+}
+
 } // namespace libecu

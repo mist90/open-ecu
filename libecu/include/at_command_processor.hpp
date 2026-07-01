@@ -190,17 +190,6 @@ private:
     bool osc_streaming_;
     bool pll_telemetry_enabled_;
 
-    // Locally-tracked state (mirrors BldcController, avoids private access)
-    uint8_t tracked_drive_mode_;  // 0=FORWARD, 1=REVERSE, 2=NEUTRAL
-    float tracked_spid_kp_;
-    float tracked_spid_ki_;
-    float tracked_spid_kd_;
-    float tracked_cpid_kp_;
-    float tracked_cpid_ki_;
-    float tracked_cpid_kd_;
-    float tracked_pll_kp_;
-    float tracked_pll_ki_;
-
     // Oscilloscope single buffer with two phases
     enum class OscPhase : uint8_t {
         Accumulating,  ///< ISR fills buffer, output blocked

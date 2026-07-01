@@ -287,6 +287,32 @@ void BldcController::setPllGains(float kp, float ki) noexcept {
     motor_pll_.setGains(kp, ki);
 }
 
+DriveMode BldcController::getDriveMode() const noexcept {
+    CriticalSection cs;
+    return dmode_;
+}
+
+void BldcController::getSpeedPidGains(float& kp, float& ki, float& kd) const noexcept {
+    CriticalSection cs;
+    const PidParameters& p = pid_speed_controller_.getParameters();
+    kp = p.kp;
+    ki = p.ki;
+    kd = p.kd;
+}
+
+void BldcController::getCurrentPidGains(float& kp, float& ki, float& kd) const noexcept {
+    CriticalSection cs;
+    const PidParameters& p = current_controller_.getParameters();
+    kp = p.kp;
+    ki = p.ki;
+    kd = p.kd;
+}
+
+void BldcController::getPllBaseGains(float& kp, float& ki) const noexcept {
+    CriticalSection cs;
+    motor_pll_.getBaseGains(kp, ki);
+}
+
 void BldcController::start() noexcept
 {
     status_.is_running = true;
