@@ -260,14 +260,6 @@ private:
     volatile DriveMode dmode_;
     bool initialized_;
 
-    // Speed measurement state (interrupt-driven)
-    volatile bool speed_measurement_active_; ///< True if speed measurement is active (ROTATING state)
-    volatile uint32_t speed_start_time_us_;  ///< Start timestamp for speed measurement
-    volatile uint32_t speed_end_time_us_;    ///< End timestamp for speed measurement
-    volatile int32_t speed_pulse_count_;     ///< Pulse count (can be negative for reverse)
-    volatile uint8_t last_hall_state_;       ///< Last Hall state to detect changes
-    volatile uint32_t last_period_us_;       ///< Last measured period between pulses (for extrapolation)
-
     // Position tracking for CURRENT_MODE (to detect commutation events)
     volatile uint8_t prev_position_;         ///< Previous rotor position for change detection
 
@@ -284,12 +276,6 @@ private:
     float limited_target_speed_;             ///< Rate-limited target speed (after LPF)
 
 
-
-    /**
-     * @brief Calculate motor speed from Hall sensor transitions
-     * @return Speed in RPS
-     */
-    float calculateSpeed() noexcept;
 
     /**
      * @brief Apply acceleration/deceleration limits to target speed

@@ -34,12 +34,6 @@ BldcController::BldcController(
     , params_(params)
     , dmode_(DriveMode::NEUTRAL)
     , initialized_(false)
-    , speed_measurement_active_(false)
-    , speed_start_time_us_(0)
-    , speed_end_time_us_(0)
-    , speed_pulse_count_(0)
-    , last_hall_state_(0xFF)
-    , last_period_us_(0)
     , prev_position_(0xFF)
     , open_loop_step_(0)
     , open_loop_last_step_time_us_(0)
@@ -93,7 +87,7 @@ bool BldcController::initialize() noexcept
 
 void BldcController::update() noexcept
 {
-    float speed_rps = calculateSpeed();
+    float speed_rps = motor_pll_.getSpeedStepsSec() / (commutation_controller_.getNumPoles() * 6.0f);
 
     float alpha = params_.measured_speed_lpf_alpha;
     if (alpha > 0.0f && alpha < 1.0f) {
@@ -318,17 +312,11 @@ void BldcController::start() noexcept
     status_.is_running = true;
     pwm_interface_.enable(true);
 
-    // Reset speed measurement on motor start
     CriticalSection cs;
     open_loop_last_step_time_us_ = time_us();
-    speed_measurement_active_ = false;
-    speed_start_time_us_ = 0;
-    speed_end_time_us_ = 0;
-    speed_pulse_count_ = 0;
-    last_hall_state_ = commutation_controller_.getCurrentPosition();
-    status_.measured_position = last_hall_state_;
-    motor_pll_.updateHall(last_hall_state_);
-    last_period_us_ = 0;
+    uint8_t current_hall = commutation_controller_.getCurrentPosition();
+    status_.measured_position = current_hall;
+    motor_pll_.updateHall(current_hall);
 
     // Reset PID timing and target speed filters
     last_pid_update_time_us_ = 0;
@@ -345,12 +333,6 @@ void BldcController::stop() noexcept
     open_loop_step_ = 0;
     commutation_controller_.updateDutyCycle(0.0f);
 
-    // Reset speed measurement on motor stop
-    speed_measurement_active_ = false;
-    speed_start_time_us_ = 0;
-    speed_end_time_us_ = 0;
-    speed_pulse_count_ = 0;
-    last_period_us_ = 0;
     status_.current_speed_rps = 0.0f;
 
     // Reset PID timing
@@ -360,114 +342,6 @@ void BldcController::stop() noexcept
 MotorStatus BldcController::getStatus() const noexcept
 {
     return status_;
-}
-
-float BldcController::calculateSpeed() noexcept
-{
-    /**
-     * Improved speed measurement algorithm with extrapolation:
-     * - State machine: STOPPED (returns 0) and ROTATING (returns measured/extrapolated speed)
-     * - Uses start and end timestamps from ISR
-     * - When new pulses arrive: calculates speed from measured period
-     * - When no new pulses: extrapolates speed based on elapsed time vs last period
-     * - Always returns a numeric value (never NAN) for consistent PID operation
-     * - Transitions back to STOPPED after 5 second timeout
-     */
-
-    // Atomically copy volatile variables AND current time together
-    // (prevents race where ISR updates end_time after we read current_time)
-    uint32_t current_time_us;
-    uint32_t start_time;
-    uint32_t end_time;
-    int32_t pulse_count;
-    uint32_t last_period;
-    uint32_t elapsed_since_last_pulse_us;
-    uint32_t period_us;
-
-    {
-        CriticalSection cs;
-        if (!speed_measurement_active_) {
-            // STOPPED state: measurement not active
-            return 0.0f;
-        }
-        current_time_us = time_us();
-        start_time = speed_start_time_us_;
-        end_time = speed_end_time_us_;
-        pulse_count = speed_pulse_count_;
-        last_period = last_period_us_;
-
-        // Calculate elapsed time since last pulse
-        elapsed_since_last_pulse_us = current_time_us - end_time;
-
-        // Maximum extrapolation timeout (5 seconds) - transition back to STOPPED
-        const uint32_t MAX_EXTRAPOLATION_TIMEOUT_US = 5000000;
-        if (elapsed_since_last_pulse_us > MAX_EXTRAPOLATION_TIMEOUT_US) {
-            // Motor has stopped - reset to STOPPED state
-            speed_measurement_active_ = false;
-            speed_start_time_us_ = 0;
-            speed_end_time_us_ = 0;
-            speed_pulse_count_ = 0;
-            last_period_us_ = 0;
-            return 0.0f;
-        }
-
-        // ROTATING state: we have received at least one pulse
-        period_us = end_time - start_time;
-        if (pulse_count != 0) {
-            last_period_us_ = period_us;
-            speed_start_time_us_ = end_time;
-            speed_pulse_count_ = 0;
-        }
-    }
-
-    // If we have new pulses, calculate speed from measured period
-    if (pulse_count != 0) {
-        // Avoid division by zero
-        if (period_us == 0) {
-            return 0.0f;
-        }
-
-        // Calculate speed in RPS
-        // pulse_count pulses in period_us microseconds
-        // Each full revolution = num_poles * BLDC_NUM_PHASES pulses (Hall transitions per revolution)
-        // For num_poles=8: steps_per_rev = 8 * 3 = 24
-        // RPS = (pulses / period_us) * (1000000 us/s) / steps_per_revolution
-        uint8_t num_poles = commutation_controller_.getNumPoles();
-        uint32_t steps_per_revolution = num_poles * BLDC_NUM_PHASES;
-
-        return (static_cast<float>(pulse_count) * 1000000.0f) /
-                         (static_cast<float>(period_us) * steps_per_revolution);
-    }
-
-    // No new pulses - extrapolate based on last measured period
-    if (last_period > 0) {
-        // Extrapolation threshold: 1.5x last period
-        // This provides noise immunity while still responding quickly
-        const float EXTRAPOLATION_THRESHOLD = 1.5f;
-
-        uint32_t extrapolation_time_us;
-
-        if (elapsed_since_last_pulse_us > static_cast<uint32_t>(last_period * EXTRAPOLATION_THRESHOLD)) {
-            // Motor is slowing down - use elapsed time for conservative speed estimate
-            // This gives "speed is no more than..." estimate
-            // Assumes at most 1 pulse would have occurred in the elapsed time
-            extrapolation_time_us = elapsed_since_last_pulse_us;
-        } else {
-            // Within normal measurement window - use last measured period
-            extrapolation_time_us = last_period;
-        }
-
-        // Calculate extrapolated speed
-        // Assume 1 pulse per extrapolation_time_us
-        uint8_t num_poles = commutation_controller_.getNumPoles();
-        uint32_t steps_per_revolution = num_poles * BLDC_NUM_PHASES;
-
-        return 1000000.0f /
-                         (static_cast<float>(extrapolation_time_us) * steps_per_revolution);
-    }
-
-    // No measurements yet (first pulse received but no period calculated) - return 0
-    return 0.0f;
 }
 
 float BldcController::applyAccelerationLimit(float target_speed, float dt) noexcept
@@ -514,70 +388,17 @@ uint32_t BldcController::calculateOpenLoopStepInterval(float speed_rps) noexcept
 
 void BldcController::hallSensorInterruptHandler() noexcept
 {
-    /**
-     * Hall sensor interrupt handler - called from GPIO interrupt context
-     * This function must be interrupt-safe and as fast as possible
-     *
-     * Algorithm:
-     * - Read current Hall state
-     * - Calculate step delta (can be negative for reverse movement)
-     * - Update end timestamp and increment pulse counter
-     * - Initialize start timestamp on first call
-     */
-
     if (status_.control_mode == ControlMode::OPEN_LOOP)
         return;
-    // Get current timestamp immediately to minimize latency
-    uint32_t timestamp_us = time_us();
 
-    // Read current Hall sensor state via CommutationController
     uint8_t hall_state = commutation_controller_.getCurrentPosition();
 
-    // Validate Hall state (0-5 are valid, 0xFF indicates invalid/error)
     if (hall_state > 5) {
-        /* Go to safety mode */
-        //setDriveMode(DriveMode::NEUTRAL);
         return; // Invalid Hall state, ignore
     }
 
-    // Check if state has changed from previous reading
-    if (hall_state == last_hall_state_) {
-        return; // No change in Hall state, ignore
-    }
-
-    // Calculate step delta between current and previous Hall state
-    int8_t delta = (hall_state - last_hall_state_ + 9) % 6 - 3;
-    if (delta < -2) {
-        /* This wrong step - go to safety mode */
-        setDriveMode(DriveMode::NEUTRAL);
-        return;
-    } else if (delta > 2) {
-        /* This wrong step - go to safety mode */
-        setDriveMode(DriveMode::NEUTRAL);
-        return;
-    }
-
-    if (dmode_ == DriveMode::REVERSE)
-        delta = -delta;
-
-    // Update last Hall state
-    last_hall_state_ = hall_state;
-
     {
         CriticalSection cs;
-        if (delta != 0) {
-            // Initialize measurement on first valid transition (transition to ROTATING state)
-            if (speed_measurement_active_) {
-                speed_pulse_count_ += delta;
-            } else {
-                speed_measurement_active_ = true;
-                speed_start_time_us_ = timestamp_us;
-                speed_pulse_count_ = 0;
-            }
-
-            // Update end timestamp and pulse counter
-            speed_end_time_us_ = timestamp_us;
-        }
         status_.measured_position = hall_state;
     }
     motor_pll_.updateHall(hall_state);
