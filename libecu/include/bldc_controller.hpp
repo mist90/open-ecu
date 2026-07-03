@@ -16,6 +16,7 @@
 #include "algorithms/commutation_controller.hpp"
 #include "algorithms/pid_controller.hpp"
 #include "algorithms/motor_pll.hpp"
+#include "algorithms/bemf_observer.hpp"
 
 namespace libecu {
 
@@ -53,6 +54,12 @@ struct MotorControlParams {
     PidParameters pid_voltage_mode; ///< Velocity PID parameters for voltage mode (outputs duty cycle)
     PidParameters pid_current_mode; ///< Velocity PID parameters for current mode (outputs current)
     PidParameters pid_current_regulator; ///< Current PID parameters for current mode (outputs duty cycle)
+
+    // BEMF sensorless parameters
+    float bemf_transition_speed_low;   ///< Below this speed (steps/sec): Hall only
+    float bemf_transition_speed_high;  ///< Above this speed (steps/sec): BEMF only
+    float bemf_blanking_cycles;        ///< Demagnetization blanking in PWM cycles after commutation
+    float bemf_zc_threshold;           ///< ZC threshold as fraction of Vbus (e.g., 0.5)
 };
 
 /**
@@ -66,6 +73,8 @@ struct MotorStatus {
     float measured_current;   ///< Measured motor current (A)
     float bus_voltage;         ///< Measured bus voltage (V)
     float pll_angle;          ///< Rotor angle from PLL (degrees, 0-360)
+    float bemf_voltage;       ///< Floating phase BEMF voltage (V)
+    bool bemf_active;         ///< true if BEMF mode is driving commutation
     uint8_t target_position;   ///< Driven motor position
     uint8_t measured_position;   ///< Measured motor position
     bool is_running;          ///< Motor running status
@@ -223,11 +232,11 @@ public:
     MotorStatus getStatus() const noexcept;
 
     /**
-     * @brief Hall sensor interrupt handler (called from GPIO interrupt context)
-     * This method must be called from the Hall sensor GPIO interrupt handlers.
-     * It captures the current Hall sensor state and timestamp for speed calculation.
-     * The hall state is read internally via CommutationController::getCurrentPosition().
+     * @brief Set BEMF observer for hybrid Hall/BEMF sensorless mode
+     * @param observer Pointer to BemfObserver (nullptr to disable BEMF mode)
      */
+    void setBemfObserver(BemfObserver* observer) noexcept;
+
     void hallSensorInterruptHandler() noexcept;
 
     /**
@@ -246,6 +255,8 @@ private:
     HallInterface& hall_interface_;
     CommutationController& commutation_controller_;
     AdcInterface* adc_interface_;
+    BemfObserver* bemf_observer_;
+    bool bemf_divider_direct_mode_;
 
     // Owned components
     MotorPLL motor_pll_;
@@ -289,11 +300,14 @@ private:
      */
     float applyAccelerationLimit(float target_speed, float dt) noexcept;
 
-    /**
-     * @brief Get current from active conducting phase based on commutation state
-     * @return Measured phase current in Amperes
-     */
     float getCurrentFromActivePhase() noexcept;
+
+    /**
+     * @brief Find the floating (OFF) phase in current commutation state
+     * @param channel Output: the floating phase channel
+     * @return true if a floating phase was found
+     */
+    bool findFloatingPhase(PwmChannel& channel) noexcept;
 
     /**
      * @brief Calculate step interval from target speed for open-loop control

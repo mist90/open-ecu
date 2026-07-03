@@ -20,29 +20,25 @@ MotorPLL::MotorPLL(float freq_pwm, float max_electrical_speed, bool is_inverse_c
 }
 
 void MotorPLL::updateHall(uint8_t hall_state) noexcept {
-    if (!use_pll_)
-        hall_state_ = hall_state;
-    else {
-        int8_t diff = (hall_state - (hall_state_ % 6) + 9) % 6 - 3;
-        int8_t next_state = int8_t(hall_state_) + diff;
+    hall_state_raw_ = hall_state;
 
-        if (next_state < 0) {
-            hall_state_ = next_state + ANGLE_MAX;
-        } else if (next_state >= ANGLE_MAX) {
-            hall_state_ = next_state % ANGLE_MAX;
-        } else {
-            hall_state_ = (uint8_t)next_state;
-        }
+    int8_t diff = (hall_state - (hall_state_accumulated_ % 6) + 9) % 6 - 3;
+    int8_t next_state = int8_t(hall_state_accumulated_) + diff;
+
+    if (next_state < 0) {
+        hall_state_accumulated_ = next_state + ANGLE_MAX;
+    } else if (next_state >= ANGLE_MAX) {
+        hall_state_accumulated_ = next_state % ANGLE_MAX;
+    } else {
+        hall_state_accumulated_ = (uint8_t)next_state;
     }
+
     time_since_last_hall_ = 0;
 }
 
 void MotorPLL::updateTick() noexcept {
-    if (!use_pll_)
-        return;
-
     /* PID */
-    float angle_error = fmodf(static_cast<float>(hall_state_) - angle_, static_cast<float>(ANGLE_MAX));
+    float angle_error = fmodf(static_cast<float>(hall_state_accumulated_) - angle_, static_cast<float>(ANGLE_MAX));
 
     if (angle_error > static_cast<float>(ANGLE_MAX)/2.0f)
         angle_error -= static_cast<float>(ANGLE_MAX);
@@ -78,11 +74,11 @@ void MotorPLL::updateTick() noexcept {
 uint8_t MotorPLL::getNextHall(const volatile DriveMode &mode) noexcept {
     if (!use_pll_) {
         if (mode == DriveMode::FORWARD)
-            return !is_inverse_commutation_table_ ? (hall_state_ + 1) % 6 : (hall_state_ + 5) % 6;
+            return !is_inverse_commutation_table_ ? (hall_state_raw_ + 1) % 6 : (hall_state_raw_ + 5) % 6;
         else if (mode == DriveMode::REVERSE)
-            return !is_inverse_commutation_table_ ? (hall_state_ + 5) % 6 : (hall_state_ + 1) % 6;
+            return !is_inverse_commutation_table_ ? (hall_state_raw_ + 5) % 6 : (hall_state_raw_ + 1) % 6;
         else
-            return hall_state_;
+            return hall_state_raw_;
     }
 
     float direction = 0.0f;
@@ -106,7 +102,7 @@ bool MotorPLL::isUsingPLL() const noexcept {
 }
 
 void MotorPLL::reset() noexcept {
-    angle_ = hall_state_;
+    angle_ = static_cast<float>(hall_state_accumulated_);
     angle_per_second_ = 0.0f;
     pll_integral_ = 0.0f;
     time_since_last_hall_ = 0.0f;
@@ -123,7 +119,8 @@ float MotorPLL::getSpeedStepsSec() const noexcept {
 MotorPLL::PllInfo MotorPLL::getInfo() const noexcept {
     PllInfo info;
     info.use_pll = use_pll_;
-    info.hall_state = hall_state_;
+    info.hall_state_raw = hall_state_raw_;
+    info.hall_state_accumulated = hall_state_accumulated_;
     info.angle = angle_;
     info.angle_per_second = angle_per_second_;
     info.pll_integral = pll_integral_;

@@ -6,6 +6,7 @@
 #include "../../libecu/hal/stm32g4/stm32_hall_sensor.hpp"
 #include "../../libecu/hal/stm32g4/stm32_adc.hpp"
 #include "../../libecu/include/algorithms/commutation_controller.hpp"
+#include "../../libecu/include/algorithms/bemf_observer.hpp"
 #include "../../libecu/include/algorithms/pid_controller.hpp"
 #include "../../libecu/include/platform/critical_section.hpp"
 #include <stdint.h>
@@ -39,6 +40,7 @@ static libecu::Stm32Pwm pwm_driver(&htim1);
 static libecu::HallGpioConfig hall_config{A__GPIO_Port, A__Pin, B__Pin, Z__Pin};
 static libecu::Stm32TimHallSensor hall_sensor(hall_config);
 static libecu::Stm32Adc adc_driver;
+static libecu::BemfObserver bemf_observer(PWM_TIMER_FREQ);
 static libecu::CommutationController* commutation_controller = nullptr;
 static libecu::BldcController* motor_controller = nullptr;
 static libecu::UartAtBridge* g_at_processor = nullptr;
@@ -126,7 +128,10 @@ extern "C" void motor_controller_pwm_interrupt_handler(void)
     if (motor_controller != nullptr) {
         motor_controller->pwmInterruptHandler();
         libecu::MotorStatus status = motor_controller->getStatus();
-        g_at_processor->captureOscSample(status.duty_cycle, status.target_current, status.measured_current, status.measured_position);
+        g_at_processor->captureOscSample(
+            static_cast<uint8_t>(status.duty_cycle * 100.0f),
+            status.target_current, status.measured_current,
+            status.bemf_voltage, status.measured_position);
     }
 }
 
@@ -174,6 +179,12 @@ int main(void)
         Error_Handler();
     }
 
+    // BEMF phase voltage divider: 10kOhm / 2.2kOhm
+    libecu::BemfVoltageSensorParameters bemf_voltage_params;
+    bemf_voltage_params.r_up = 10000.0f;
+    bemf_voltage_params.r_down = 2200.0f;
+    adc_driver.initializeBemf(bemf_voltage_params);
+
     // Initialize ADC and OPAMP hardware (including calibration and starting conversions)
     if (!adc_driver.initializeHardware()) {
         Error_Handler();
@@ -215,9 +226,24 @@ int main(void)
     motor_params.pid_current_regulator = {0.1f, 50.0f}; // Current PID controller parameters for CURRENT_MODE (outputs duty cycle 0..1.0)
     motor_params.useInverseCommTable = BLDC_INVERTION;
 
+    // BEMF sensorless observer parameters
+    motor_params.bemf_transition_speed_low = 500.0f;    // steps/sec: below = Hall only
+    motor_params.bemf_transition_speed_high = 800.0f;   // steps/sec: above = BEMF only
+    motor_params.bemf_blanking_cycles = 5.0f;           // PWM cycles blanking after commutation
+    motor_params.bemf_zc_threshold = 0.5f;              // ZC at Vbus/2
+
+    libecu::BemfObserverParams bemf_params;
+    bemf_params.blanking_cycles = motor_params.bemf_blanking_cycles;
+    bemf_params.zc_threshold = motor_params.bemf_zc_threshold;
+    bemf_params.transition_speed_low = motor_params.bemf_transition_speed_low;
+    bemf_params.transition_speed_high = motor_params.bemf_transition_speed_high;
+    bemf_observer.setParameters(bemf_params);
+
     motor_controller = new libecu::BldcController(
         pwm_driver, hall_sensor, *commutation_controller,
         motor_params, &adc_driver);
+
+    motor_controller->setBemfObserver(&bemf_observer);
 
     if (!motor_controller->initialize()) {
         Error_Handler();

@@ -627,7 +627,7 @@ class CurrentWaveformTab(QWidget):
 
     def __init__(self, write_callback=None):
         super().__init__()
-        self._osc_samples: list[tuple[int, int, int, int, int]] = []
+        self._osc_samples: list[tuple[int, int, int, int, int, int]] = []
         self._osc_active = False
         self._write = write_callback
         self._init_ui()
@@ -655,6 +655,12 @@ class CurrentWaveformTab(QWidget):
         self.plot_duty.enableAutoRange(x=False, y=False)
         self.curve_duty = self.plot_duty.plot(name="duty_cycle", pen=pg.mkPen("#ffff00", width=2))
         layout.addWidget(self.plot_duty, stretch=1)
+
+        self.plot_voltage_off = pg.PlotWidget()
+        _style_plot(self.plot_voltage_off, "Voltage OFF Phase", bottom_label="Sample Index")
+        self.plot_voltage_off.enableAutoRange(x=False)
+        self.curve_voltage_off = self.plot_voltage_off.plot(name="voltage_off", pen=pg.mkPen("#ffaa00", width=2))
+        layout.addWidget(self.plot_voltage_off, stretch=1)
 
         self.plot_position = pg.PlotWidget()
         _style_plot(self.plot_position, "Position", bottom_label="Sample Index")
@@ -689,11 +695,12 @@ class CurrentWaveformTab(QWidget):
         self.curve_meas_cur.setData([], [])
         self.curve_tgt_cur.setData([], [])
         self.curve_duty.setData([], [])
+        self.curve_voltage_off.setData([], [])
         self.curve_position.setData([], [])
         self.label_status.setText("Waiting for +OSC burst...")
 
-    def add_data(self, sample_idx: int, meas_cur: int, tgt_cur: int, duty: int, position: int):
-        self._osc_samples.append((sample_idx, meas_cur, tgt_cur, duty, position))
+    def add_data(self, sample_idx: int, meas_cur: int, tgt_cur: int, duty: int, voltage_off: int, position: int):
+        self._osc_samples.append((sample_idx, meas_cur, tgt_cur, duty, voltage_off, position))
         if len(self._osc_samples) > OSC_BUFFER_SIZE + 64:
             self._osc_samples = self._osc_samples[-OSC_BUFFER_SIZE:]
 
@@ -707,17 +714,20 @@ class CurrentWaveformTab(QWidget):
         x = np.array([s[0] for s in self._osc_samples], dtype=np.float64)
         meas_cur = np.array([s[1] / 1000.0 for s in self._osc_samples], dtype=np.float64)
         tgt_cur = np.array([s[2] / 1000.0 for s in self._osc_samples], dtype=np.float64)
-        duty = np.array([s[3] / 1000.0 for s in self._osc_samples], dtype=np.float64)
-        position = np.array([s[4] for s in self._osc_samples], dtype=np.float64)
+        duty = np.array([s[3] / 100.0 for s in self._osc_samples], dtype=np.float64)
+        voltage_off = np.array([s[4] / 1000.0 for s in self._osc_samples], dtype=np.float64)
+        position = np.array([s[5] for s in self._osc_samples], dtype=np.float64)
 
         self.curve_meas_cur.setData(x, meas_cur)
         self.curve_tgt_cur.setData(x, tgt_cur)
         self.curve_duty.setData(x, duty)
+        self.curve_voltage_off.setData(x, voltage_off)
         self.curve_position.setData(x, position)
 
         x_range = (x[0], x[-1] + 10)
         self.plot_currents.setXRange(*x_range)
         self.plot_duty.setXRange(*x_range)
+        self.plot_voltage_off.setXRange(*x_range)
         self.plot_position.setXRange(*x_range)
         self.label_status.setText(f"OSC burst: {n} samples")
 
@@ -729,14 +739,15 @@ class CurrentWaveformTab(QWidget):
         if line.startswith("+OSC:"):
             rest = line[5:]
             parts = rest.split(",")
-            if len(parts) >= 5:
+            if len(parts) >= 6:
                 try:
                     idx = int(parts[0])
                     meas_cur = int(parts[1])
                     tgt_cur = int(parts[2])
                     duty = int(parts[3])
-                    position = int(parts[4])
-                    self.add_data(idx, meas_cur, tgt_cur, duty, position)
+                    voltage_off = int(parts[4])
+                    position = int(parts[5])
+                    self.add_data(idx, meas_cur, tgt_cur, duty, voltage_off, position)
                 except ValueError:
                     pass
 

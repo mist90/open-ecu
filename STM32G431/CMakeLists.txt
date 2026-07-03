@@ -107,6 +107,7 @@ file(GLOB LIBECU_CORE_SOURCES
     "../libecu/src/motor_pll.cpp"
     "../libecu/src/at_command_processor.cpp"
     "../libecu/src/platform/crc16.cpp"
+    "../libecu/src/bemf_observer.cpp"
 )
 
 file(GLOB LIBECU_HAL_SOURCES

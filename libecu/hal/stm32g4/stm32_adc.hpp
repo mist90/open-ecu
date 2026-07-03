@@ -36,6 +36,13 @@ public:
     // AdcInterface implementation
     uint32_t getRawAdcValue(PwmChannel channel) override;
     uint32_t getRawAdcValue() override;
+    uint32_t getRawPhaseVoltage(PwmChannel channel) override;
+
+    /**
+     * @brief Set BEMF voltage divider mode via PB5 GPIO
+     * @param direct_mode true = PB5 HIGH (direct 3.3V clamped), false = PB5 LOW (through divider)
+     */
+    void setBemfDividerMode(bool direct_mode) noexcept;
 
     /**
      * @brief Read potentiometer and convert to output

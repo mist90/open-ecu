@@ -35,6 +35,18 @@ struct VoltageSensorParameters {
 };
 
 /**
+ * @brief BEMF voltage sensor parameters for phase voltage measurement
+ *
+ * Phase voltages are read through a resistor divider (when PB5 is LOW)
+ * or directly with 3.3V clamping (when PB5 is HIGH).
+ * Divider: R_up (10kOhm) to phase, R_down (2.2kOhm) to ground, ADC reads at R_down.
+ */
+struct BemfVoltageSensorParameters {
+    float r_up;    ///< Upper resistor of BEMF divider (Ohms), e.g. 10000.0
+    float r_down;  ///< Lower resistor of BEMF divider (Ohms), e.g. 2200.0
+};
+
+/**
  * @brief Abstract interface for ADC-based current sensing
  *
  * This interface provides platform-independent current measurement
@@ -78,6 +90,13 @@ public:
      * @return Raw ADC value for Vbus (0 to 2^resolution - 1)
      */
     virtual uint32_t getRawAdcValue() = 0;
+
+    /**
+     * @brief Get raw ADC value for phase voltage (BEMF sensing)
+     * @param channel Phase channel (U/V/W)
+     * @return Raw ADC value (0 to 2^resolution - 1)
+     */
+    virtual uint32_t getRawPhaseVoltage(PwmChannel channel) = 0;
 
     /**
      * @brief Convert raw ADC value to current in Amperes
@@ -128,6 +147,34 @@ public:
         float adc_max_value = (1 << calibration_.adc_resolution_bits) - 1;
         float divider_ratio = (voltage_params_.r_up + voltage_params_.r_down) / voltage_params_.r_down;
         return (adc_raw * calibration_.adc_reference_voltage * divider_ratio) / adc_max_value;
+    }
+
+    /**
+     * @brief Convert raw ADC value to phase voltage (BEMF)
+     * @param adc_raw Raw ADC reading
+     * @param direct_mode true if PB5 is HIGH (direct 3.3V clamped), false if through divider
+     * @return Phase voltage in Volts
+     */
+    float convertAdcToPhaseVoltage(uint32_t adc_raw, bool direct_mode) noexcept {
+        float adc_max_value = (1 << calibration_.adc_resolution_bits) - 1;
+        float v_adc = (adc_raw * calibration_.adc_reference_voltage) / adc_max_value;
+        if (direct_mode) {
+            return v_adc;  // Direct connection, clamped to 3.3V
+        }
+        // Through resistor divider: V_phase = V_adc * (R_up + R_down) / R_down
+        float divider_ratio = (bemf_voltage_params_.r_up + bemf_voltage_params_.r_down)
+                              / bemf_voltage_params_.r_down;
+        return v_adc * divider_ratio;
+    }
+
+    /**
+     * @brief Read phase voltage from ADC (BEMF sensing)
+     * @param channel Phase channel (U/V/W)
+     * @param direct_mode true if PB5 is HIGH (direct 3.3V clamped)
+     * @return Phase voltage in Volts
+     */
+    float readPhaseVoltage(PwmChannel channel, bool direct_mode) noexcept {
+        return convertAdcToPhaseVoltage(getRawPhaseVoltage(channel), direct_mode);
     }
 
     /**
@@ -204,9 +251,13 @@ public:
     }
 
     /**
-     * @brief Get current calibration parameters
-     * @return Current calibration struct
+     * @brief Initialize BEMF voltage sensing parameters
+     * @param params BEMF voltage divider parameters
      */
+    void initializeBemf(const BemfVoltageSensorParameters& params) noexcept {
+        bemf_voltage_params_ = params;
+    }
+
     const CurrentSensorCalibration& getCalibration() const noexcept {
         return calibration_;
     }
@@ -215,6 +266,7 @@ private:
     CurrentSensorCalibration calibration_;
     bool initialized_ = false;
     VoltageSensorParameters voltage_params_;
+    BemfVoltageSensorParameters bemf_voltage_params_;
 };
 
 } // namespace libecu

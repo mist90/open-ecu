@@ -105,7 +105,8 @@ public:
      */
     struct PllInfo {
         bool use_pll;              ///< PLL enabled flag
-        uint8_t hall_state;        ///< Raw Hall tracking counter [0..ANGLE_MAX)
+        uint8_t hall_state_raw;    ///< Actual Hall sensor reading [0..5]
+        uint8_t hall_state_accumulated; ///< Unwrapped Hall tracking counter [0..ANGLE_MAX)
         float angle;               ///< PLL-estimated angle in steps [0..ANGLE_MAX)
         float angle_per_second;    ///< PLL-estimated speed in steps/sec
         float pll_integral;        ///< PI integrator term in steps/sec
@@ -137,7 +138,8 @@ public:
     void getBaseGains(float& kp_base, float& ki_base) const noexcept;
 
 private:
-    uint8_t hall_state_ = 0x0;   // [0..ANGLE_MAX]
+    uint8_t hall_state_raw_ = 0;         ///< Actual Hall sensor reading [0..5]
+    uint8_t hall_state_accumulated_ = 0; ///< Unwrapped Hall tracking counter [0..ANGLE_MAX)
     float angle_ = 0.0f;
     float angle_per_second_ = 0.0f;
     bool is_locked_ = false;
