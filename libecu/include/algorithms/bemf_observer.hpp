@@ -23,6 +23,7 @@ struct BemfObserverParams {
     float zc_threshold;           ///< BEMF zero-crossing threshold as fraction of Vbus (default 0.5)
     float transition_speed_low;   ///< Speed below which Hall sensors are used (steps/sec)
     float transition_speed_high;  ///< Speed above which BEMF is used exclusively (steps/sec)
+    bool is_inverse_commutation;  ///< True if motor uses inverse commutation table (affects synthetic step mapping)
 };
 
 /**

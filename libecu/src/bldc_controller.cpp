@@ -75,7 +75,7 @@ BldcController::BldcController(
     current_controller_.setParameters(params_.pid_current_regulator);
     pid_speed_controller_.setParameters(params_.pid_current_mode);
 
-    motor_pll_.setUsePLL(true);
+    //motor_pll_.setUsePLL(true);
 }
 
 bool BldcController::initialize() noexcept
@@ -431,6 +431,34 @@ void BldcController::hallSensorInterruptHandler() noexcept
 }
 
 void BldcController::pwmInterruptHandler() noexcept {
+    // Check if current controller and ADC are available
+    if (!adc_interface_) {
+        return;
+    }
+
+    PwmChannel floating_phase;
+    float bemf_v = 0.0f;
+    bool bemf_active = false;
+    if (findFloatingPhase(floating_phase)) {
+        bemf_v = adc_interface_->readPhaseVoltage(floating_phase, bemf_divider_direct_mode_);
+        bemf_active = true;
+    }
+    // Read bus voltage
+    float bus_voltage = adc_interface_->readBusVoltage();
+
+    // BEMF observer update in CURRENT_MODE
+    if (bemf_active) {
+        if (bemf_observer_ &&
+            bemf_observer_->isBemfModeActive(motor_pll_.getSpeedStepsSec())) {
+            if (bemf_observer_->update(bemf_v, bus_voltage, status_.target_position,
+                                        motor_pll_.getSpeedStepsSec())) {
+                motor_pll_.updateHall(bemf_observer_->getSyntheticHallStep());
+            }
+        } else {
+            bemf_active = false;
+        }
+    }
+
     // Read shared data atomically (avoid torn reads from SysTick interrupt)
     ElectricMode electric_mode;
     uint8_t new_position;
@@ -448,38 +476,14 @@ void BldcController::pwmInterruptHandler() noexcept {
             CriticalSection cs;
             status_.target_position = new_position;
             commutation_controller_.update(new_position, status_.duty_cycle);
-            if (bemf_observer_) bemf_observer_->onCommutation(new_position);
+            if (bemf_observer_)
+                bemf_observer_->onCommutation(new_position);
         }
-        // BEMF observer update in VOLTAGE_MODE
-        if (bemf_observer_ && adc_interface_ &&
-            bemf_observer_->isBemfModeActive(motor_pll_.getSpeedStepsSec())) {
-            PwmChannel floating_phase;
-            if (findFloatingPhase(floating_phase)) {
-                float bemf_v = adc_interface_->readPhaseVoltage(floating_phase, bemf_divider_direct_mode_);
-                float bus_v = adc_interface_->readBusVoltage();
-                status_.bemf_voltage = bemf_v;
-                status_.bemf_active = true;
-                if (bemf_observer_->update(bemf_v, bus_v, status_.target_position,
-                                            motor_pll_.getSpeedStepsSec())) {
-                    motor_pll_.updateHall(bemf_observer_->getSyntheticHallStep());
-                }
-            }
-        } else {
-            status_.bemf_active = false;
-        }
-        return;
-    }
-
-    // Check if current controller and ADC are available
-    if (!adc_interface_) {
         return;
     }
 
     // Read current from active conducting phase
     float measured_current = getCurrentFromActivePhase();
-
-    // Read bus voltage
-    float bus_voltage = adc_interface_->readBusVoltage();
 
     if (bus_voltage > params_.max_voltage)
         setDriveMode(DriveMode::NEUTRAL);
@@ -493,30 +497,14 @@ void BldcController::pwmInterruptHandler() noexcept {
         status_.duty_cycle = duty_cycle;
         status_.bus_voltage = bus_voltage;
         status_.pll_angle = motor_pll_.getAngle();
+        status_.bemf_voltage = bemf_v;
+        status_.bemf_active = bemf_active;
         if (status_.target_position != new_position) {
             commutation_controller_.update(new_position, duty_cycle);
             status_.target_position = new_position;
-            if (bemf_observer_) bemf_observer_->onCommutation(new_position);
         } else {
             commutation_controller_.updateDutyCycle(duty_cycle);
         }
-    }
-
-    // BEMF observer update in CURRENT_MODE
-    if (bemf_observer_ && adc_interface_ &&
-        bemf_observer_->isBemfModeActive(motor_pll_.getSpeedStepsSec())) {
-        PwmChannel floating_phase;
-        if (findFloatingPhase(floating_phase)) {
-            float bemf_v = adc_interface_->readPhaseVoltage(floating_phase, bemf_divider_direct_mode_);
-            status_.bemf_voltage = bemf_v;
-            status_.bemf_active = true;
-            if (bemf_observer_->update(bemf_v, bus_voltage, status_.target_position,
-                                        motor_pll_.getSpeedStepsSec())) {
-                motor_pll_.updateHall(bemf_observer_->getSyntheticHallStep());
-            }
-        }
-    } else {
-        status_.bemf_active = false;
     }
 }
 

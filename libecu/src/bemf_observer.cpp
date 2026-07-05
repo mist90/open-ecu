@@ -5,7 +5,7 @@
  * Zero-crossing detection principle (UM3042 §4.1.2):
  *  - The floating phase BEMF crosses Vbus/2 mid-step (30° after step start)
  *  - After detecting ZC, wait another 30° before firing commutation
- *  - 30° delay = 0.5 * step_period = 3.0 * pwm_frequency / speed_steps_per_sec ticks
+ *  - 30° delay = 0.5 * step_period = 0.5 * pwm_frequency / speed_steps_per_sec ticks
  */
 
 #include "../include/algorithms/bemf_observer.hpp"
@@ -14,7 +14,7 @@ namespace libecu {
 
 BemfObserver::BemfObserver(float pwm_frequency) noexcept
     : pwm_frequency_(pwm_frequency)
-    , params_{10.0f, 0.5f, 600.0f, 1200.0f}
+    , params_{10.0f, 0.5f, 600.0f, 1200.0f, false}
     , blanking_counter_(0.0f)
     , zc_detected_(false)
     , delay_counter_(0.0f)
@@ -60,15 +60,27 @@ bool BemfObserver::update(float floating_voltage, float bus_voltage,
         // Edge detected — ZC occurred
         prev_above_threshold_ = above;
         zc_detected_ = true;
-        synthetic_step_ = (current_step + 1) % 6;
+
+        // Compute the next Hall position that the real Hall sensor would report
+        // after the rotor advances one step. The caller feeds this to
+        // MotorPLL::updateHall(), so it must be a Hall position, not a
+        // commutation step. The mapping between commutation step C and Hall
+        // position H depends on the commutation table direction:
+        //   Non-inverse: C = (H + 1) % 6  ->  H = (C + 5) % 6  ->  next_H = C
+        //   Inverse:     C = (H + 5) % 6  ->  H = (C + 1) % 6  ->  next_H = (C + 2) % 6
+        if (params_.is_inverse_commutation) {
+            synthetic_step_ = (current_step + 2) % 6;
+        } else {
+            synthetic_step_ = current_step;
+        }
 
         // Compute 30° delay in PWM ticks
-        // 30° = half of one step period
-        // step_period = 6.0 / speed_steps_per_sec seconds
-        // half_step = 3.0 / speed_steps_per_sec seconds
-        // delay_ticks = half_step * pwm_frequency = 3.0 * pwm_frequency / speed_steps_per_sec
+        // 30° = half of one step period (one step = 60°)
+        // step_period = 1.0 / speed_steps_per_sec seconds (time for ONE step)
+        // half_step = 0.5 / speed_steps_per_sec seconds
+        // delay_ticks = half_step * pwm_frequency = 0.5 * pwm_frequency / speed_steps_per_sec
         if (speed_steps_per_sec >= 1.0f) {
-            delay_counter_ = 3.0f * pwm_frequency_ / speed_steps_per_sec;
+            delay_counter_ = 0.5f * pwm_frequency_ / speed_steps_per_sec;
         } else {
             // Speed too low — cannot compute meaningful delay
             zc_detected_ = false;

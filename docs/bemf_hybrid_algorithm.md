@@ -105,25 +105,34 @@ if (above != prev_above_threshold_) {
     // Edge detected — ZC occurred
     prev_above_threshold_ = above;
     zc_detected_ = true;
-    synthetic_step_ = (current_step + 1) % 6;
+    // synthetic_step_ = next Hall position (see mapping below)
     // ... compute 30-degree delay ...
 }
 ```
 
 Either rising or falling transitions count. The direction alternates naturally between steps because the floating phase alternates between phases and polarity.
 
+### Synthetic Step Mapping
+
+The observer must output the **next Hall position** (not the next commutation step) because `MotorPLL::updateHall()` expects a Hall sensor reading. The mapping from commutation step `C` to Hall position `H` depends on the commutation table direction:
+
+- **Non-inverse**: `C = (H + 1) % 6` → `H = (C + 5) % 6` → next Hall = `(H + 1) % 6 = C`
+- **Inverse**: `C = (H + 5) % 6` → `H = (C + 1) % 6` → next Hall = `(H + 1) % 6 = (C + 2) % 6`
+
+The `is_inverse_commutation` parameter in `BemfObserverParams` selects the correct formula.
+
 ### 30-Degree Delay
 
 Once a ZC is recorded the observer counts down a delay in PWM ticks before declaring the synthetic Hall event. The delay corresponds to half of one commutation step period:
 
 ```cpp
-// 30° = half of one step period
-// step_period = 6.0 / speed_steps_per_sec  seconds
-// half_step   = 3.0 / speed_steps_per_sec  seconds
+// 30° = half of one step period (one step = 60°)
+// step_period = 1.0 / speed_steps_per_sec  seconds  (time for ONE step)
+// half_step   = 0.5 / speed_steps_per_sec  seconds
 // delay_ticks = half_step * pwm_frequency
-//            = 3.0 * pwm_frequency / speed_steps_per_sec
+//            = 0.5 * pwm_frequency / speed_steps_per_sec
 if (speed_steps_per_sec >= 1.0f) {
-    delay_counter_ = 3.0f * pwm_frequency_ / speed_steps_per_sec;
+    delay_counter_ = 0.5f * pwm_frequency_ / speed_steps_per_sec;
 } else {
     // Speed too low — cannot compute a meaningful delay
     zc_detected_ = false;
@@ -267,7 +276,7 @@ Defined in `libecu/include/bldc_controller.hpp`.
 |------------------------------|---------|--------------------------------|--------------------------------------------------------------------------|
 | `bemf_transition_speed_low`  | float   | 500.0 steps/sec                | Below this speed the Hall ISR is never suppressed.                       |
 | `bemf_transition_speed_high` | float   | 800.0 steps/sec                | Above this speed Hall events are ignored and BEMF drives the PLL.        |
-| `bemf_blanking_cycles`       | float   | 5.0 PWM cycles                 | Demagnetization blanking window after each commutation.                  |
+| `bemf_blanking_cycles`       | float   | 2.0 PWM cycles                 | Demagnetization blanking window after each commutation.                  |
 | `bemf_zc_threshold`          | float   | 0.5                            | ZC threshold as a fraction of Vbus. 0.5 means the crossing is at Vbus/2. |
 
 ### `BemfObserverParams`
@@ -280,13 +289,14 @@ Defined in `libecu/include/algorithms/bemf_observer.hpp`.
 | `zc_threshold`           | float | 0.5                       | BEMF zero-crossing threshold as a fraction of Vbus.          |
 | `transition_speed_low`   | float | 600.0 steps/sec           | Speed below which Hall sensors are used.                     |
 | `transition_speed_high`  | float | 1200.0 steps/sec          | Speed above which BEMF is used exclusively.                  |
+| `is_inverse_commutation` | bool  | false                     | Selects synthetic step mapping for inverse commutation table. |
 
-The application defaults from `main.cpp` (500 / 800 / 5 / 0.5) override the class constructor defaults at startup via `setParameters()`. The class defaults only apply if `setParameters()` is never called.
+The application defaults from `main.cpp` (500 / 800 / 2 / 0.5 / inverse from `BLDC_INVERTION`) override the class constructor defaults at startup via `setParameters()`. The class defaults only apply if `setParameters()` is never called.
 
 ### Tuning Notes
 
 - The two thresholds should be far enough apart to give a clean hysteresis band. A gap of 300 steps/sec is the application default.
-- `blanking_cycles` scales with PWM frequency. At 20 kHz, 5 cycles is 250 us. If you raise the PWM frequency, raise `blanking_cycles` proportionally to keep the same time window.
+- `blanking_cycles` scales with PWM frequency. At 20 kHz, 2 cycles is 100 us. If you raise the PWM frequency, raise `blanking_cycles` proportionally to keep the same time window. Keep it short enough that the ZC crossing (which occurs at 30° into the step) is not masked.
 - `zc_threshold` can be shifted away from 0.5 to compensate for non-symmetric phase voltage waveforms or diode drops in the inverter. Most setups leave it at 0.5.
 
 ## 9. Key Source Files

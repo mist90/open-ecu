@@ -15,14 +15,27 @@
 #include <stdio.h>
 #include "uart_at_bridge.hpp"
 
+#define MOTOR_1
+
+#ifdef MOTOR_1
 #define PERIODIC_TIMER_FREQ 100
 #define PWM_TIMER_FREQ 20000
-#define BLDC_NUM_POLES 40 // 8
-#define BLDC_MAX_CURRENT 18.0f //  6.0f
+#define BLDC_NUM_POLES 40
+#define BLDC_MAX_CURRENT 18.0f
 #define BLDC_MIN_CURRENT  -6.0f
-#define BLDC_MAX_SPEED 20.0f // 200.0f
-#define BLDC_MAX_ACCELERATION 5.0f // 100.0f
-#define BLDC_INVERTION false // true
+#define BLDC_MAX_SPEED 20.0f
+#define BLDC_MAX_ACCELERATION 5.0f
+#define BLDC_INVERTION false
+#else
+#define PERIODIC_TIMER_FREQ 100
+#define PWM_TIMER_FREQ 20000
+#define BLDC_NUM_POLES 8
+#define BLDC_MAX_CURRENT 6.0f
+#define BLDC_MIN_CURRENT  -6.0f
+#define BLDC_MAX_SPEED 200.0f
+#define BLDC_MAX_ACCELERATION 100.0f
+#define BLDC_INVERTION true
+#endif
 
 //#define LEGACY_POT_CONTROL
 
@@ -229,7 +242,7 @@ int main(void)
     // BEMF sensorless observer parameters
     motor_params.bemf_transition_speed_low = 500.0f;    // steps/sec: below = Hall only
     motor_params.bemf_transition_speed_high = 800.0f;   // steps/sec: above = BEMF only
-    motor_params.bemf_blanking_cycles = 5.0f;           // PWM cycles blanking after commutation
+    motor_params.bemf_blanking_cycles = 2.0f;           // PWM cycles blanking after commutation
     motor_params.bemf_zc_threshold = 0.5f;              // ZC at Vbus/2
 
     libecu::BemfObserverParams bemf_params;
@@ -237,13 +250,14 @@ int main(void)
     bemf_params.zc_threshold = motor_params.bemf_zc_threshold;
     bemf_params.transition_speed_low = motor_params.bemf_transition_speed_low;
     bemf_params.transition_speed_high = motor_params.bemf_transition_speed_high;
+    bemf_params.is_inverse_commutation = motor_params.useInverseCommTable;
     bemf_observer.setParameters(bemf_params);
 
     motor_controller = new libecu::BldcController(
         pwm_driver, hall_sensor, *commutation_controller,
         motor_params, &adc_driver);
 
-    motor_controller->setBemfObserver(&bemf_observer);
+    //motor_controller->setBemfObserver(&bemf_observer);
 
     if (!motor_controller->initialize()) {
         Error_Handler();
