@@ -17,7 +17,7 @@ int main() {
     const float MAX_SPEED = 2400.0f;        // Макс. скорость (шагов/сек)
     const float ACCELERATION = 800.0f;      // Ускорение (шагов/сек^2)
     const float TOTAL_TIME = 8.0f;          // Общая длительность теста: 8 секунд
-    
+
     // Временная сетка
     const float SIM_DT = 1.0f / 40000.0f;   // Шаг симуляции совпадает с ШИМ (40 кГц)
     const uint32_t TOTAL_STEPS = static_cast<uint32_t>(TOTAL_TIME / SIM_DT);
@@ -41,7 +41,7 @@ int main() {
     float real_speed = 0.0f;
     uint32_t timestamp_us = 0;
     uint8_t last_hall_step = 0;
-    
+
     // Переменные для логики симуляции аварии
     bool is_hall_completely_dead = false;
     bool is_single_drop_executed = true;
@@ -57,10 +57,10 @@ int main() {
         if (current_time < 3.0f) {
             real_speed += ACCELERATION * SIM_DT;
             if (real_speed > MAX_SPEED) real_speed = MAX_SPEED;
-        } 
+        }
         else if (current_time >= 3.0f && current_time < 5.0f) {
             real_speed = MAX_SPEED;
-        } 
+        }
         else if (current_time >= 5.0f) {
             real_speed -= (ACCELERATION * 1.5f) * SIM_DT;
             if (real_speed < 0.0f) {
@@ -107,22 +107,22 @@ int main() {
             // Определяем направление и генерируем промежуточные шаги
             int8_t direction = (real_speed >= 0.0f) ? 1 : -1;
             uint8_t step = last_hall_step;
-            
+
             // Сценарий Б: одиночный пропуск шага (помеха)
-            bool skip_next = SIMULATE_SINGLE_STEP_DROP && 
-                             current_time >= FAILURE_TRIGGER_TIME && 
+            bool skip_next = SIMULATE_SINGLE_STEP_DROP &&
+                             current_time >= FAILURE_TRIGGER_TIME &&
                              !is_single_drop_executed;
-            
+
             while (step != current_hall_step) {
                 step = (step + direction + 6) % 6;
-                
+
                 if (skip_next) {
                     std::cout << "[ПОМЕХА] Пропуск шага Холла на " << current_time << " сек!" << std::endl;
                     is_single_drop_executed = true;
                     skip_next = false;
                     continue;
                 }
-                
+
                 pll.updateHall(step);
             }
             last_hall_step = current_hall_step;

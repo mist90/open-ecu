@@ -1,7 +1,7 @@
 /**
  * @file motor_pll.cpp
  * @brief Phase-Locked Loop (PLL) for motor rotor angle estimation - implementation
- * 
+ *
  * Uses "steps" as angle units where one electrical period = 6.0 steps.
  * Working range is 0.0...60.0 (10 electrical periods) to prevent phase wrap-around.
  */
@@ -46,7 +46,7 @@ void MotorPLL::updateTick() noexcept {
         angle_error += static_cast<float>(ANGLE_MAX);
 
     pll_integral_ += angle_error * pll_ki_ * DT_;
-    
+
     if (pll_integral_ > max_electrical_speed_)
         pll_integral_ = max_electrical_speed_;
     if (pll_integral_ < -max_electrical_speed_)
@@ -60,11 +60,11 @@ void MotorPLL::updateTick() noexcept {
     if (time_since_last_hall_ >= HALL_TIMEOUT_SEC) {
         angle_per_second_ = 0.0f;
         pll_integral_ = 0.0f;
-        return; 
+        return;
     }
 
     angle_ += angle_per_second_ * DT_;
-    
+
     angle_ = fmodf(angle_, static_cast<float>(ANGLE_MAX));
     if (angle_ < 0.0f) {
         angle_ += static_cast<float>(ANGLE_MAX);
@@ -86,7 +86,7 @@ uint8_t MotorPLL::getNextHall(const volatile DriveMode &mode) noexcept {
         direction = !is_inverse_commutation_table_ ? 1.0f : -1.0f;
     if (mode == DriveMode::REVERSE)
         direction = !is_inverse_commutation_table_ ? -1.0f : 1.0f;
-    
+
     float next_angle = angle_ + (1.0f * direction);
 
     return static_cast<uint8_t>(std::round(next_angle)) % 6;

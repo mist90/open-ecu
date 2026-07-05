@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 def main():
     # Имя файла с результатами теста
     file_path = "motor_pll_test_results.csv"
-    
+
     try:
         # Чтение данных из CSV-файла
         data = pd.read_csv(file_path)
@@ -47,7 +47,7 @@ def main():
 
     # Оптимизация расположения элементов
     plt.tight_layout()
-    
+
     # Сохранение графика в файл изображения и показ на экране
     output_img = "motor_pll_plots.png"
     plt.savefig(output_img, dpi=300)

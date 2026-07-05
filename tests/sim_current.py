@@ -43,11 +43,11 @@ for i, t in enumerate(time):
     # 2. ПИД-регулятор (вызов раз в период ШИМ)
     if i % int(1 / (f_pwm * dt)) == 0:
         error = target - current_val
-        
+
         potential_integral = i_integral + Ki * (error + prev_error) * 0.5 * (1.0 / f_pwm)
-        
+
         derivative = Kd * (error - prev_error) * f_pwm
-        
+
         duty_cycle = Kp * error + i_integral + derivative
         if duty_cycle > 1.0:
             duty_cycle = 1.0

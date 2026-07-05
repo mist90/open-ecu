@@ -42,12 +42,12 @@ constexpr uint16_t crc16_table[256] = {
 
 uint16_t crc16_compute(const uint8_t* data, std::size_t length) {
     uint16_t crc = 0xFFFF;
-    
+
     for (std::size_t i = 0; i < length; ++i) {
         uint8_t table_index = (crc >> 8) ^ data[i];
         crc = (crc << 8) ^ crc16_table[table_index];
     }
-    
+
     return crc;
 }
 

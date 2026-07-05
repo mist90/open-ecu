@@ -5,7 +5,7 @@
  * Implements a PLL that tracks the motor rotor angle from Hall sensor interrupts,
  * providing smooth angle estimation at PWM frequency (40 kHz) and generating
  * virtual commutation steps with optional 90-degree field offset for maximum torque.
- * 
+ *
  * The angle is measured in "steps" where one electrical period = 6.0 steps.
  * The working range is expanded to 60.0 steps (10 electrical periods) to prevent
  * phase wrap-around issues during rapid acceleration/deceleration.

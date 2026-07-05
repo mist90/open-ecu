@@ -43,7 +43,7 @@ bool Stm32TimHallSensor::initialize() {
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
     GPIO_InitStruct.Alternate = GPIO_AF2_TIM4;
     HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
-    
+
     htim4 = {0};
 
     htim4.Instance = TIM4;

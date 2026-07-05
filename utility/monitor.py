@@ -930,22 +930,22 @@ class MonitorWindow(QMainWindow):
         root.addWidget(sep)
 
         content_layout = QHBoxLayout()
-        
+
         tabs = QTabWidget()
         tabs.addTab(self.tab_continuous, "Continuous")
         tabs.addTab(self.tab_waveform, "Current Waveform")
         tabs.addTab(self.tab_at_console, "AT Console")
         content_layout.addWidget(tabs, stretch=3)
-        
+
         separator = QFrame()
         separator.setFrameShape(QFrame.Shape.VLine)
         separator.setFrameShadow(QFrame.Shadow.Sunken)
         content_layout.addWidget(separator)
-        
+
         self.control_panel = ControlPanel(self._send_data)
         self.control_panel.setMinimumWidth(250)
         content_layout.addWidget(self.control_panel, stretch=1)
-        
+
         root.addLayout(content_layout)
 
     def _send_data(self, data: bytes):
@@ -1013,7 +1013,7 @@ class MonitorWindow(QMainWindow):
         if self.control_panel is not None:
             self.control_panel.set_enabled(True)
         self._populate_ports()
-        
+
         self._maxvals_received = False
         self._send_data(format_at_command("AT+MAXVALS").encode("ascii"))
         self._maxvals_timer = QTimer(self)
