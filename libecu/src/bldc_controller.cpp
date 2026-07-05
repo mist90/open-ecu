@@ -502,6 +502,8 @@ void BldcController::pwmInterruptHandler() noexcept {
         if (status_.target_position != new_position) {
             commutation_controller_.update(new_position, duty_cycle);
             status_.target_position = new_position;
+            if (bemf_observer_)
+                bemf_observer_->onCommutation(new_position);
         } else {
             commutation_controller_.updateDutyCycle(duty_cycle);
         }
