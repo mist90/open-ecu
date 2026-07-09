@@ -9,6 +9,7 @@ INCLUDES = -Iinclude
 # Directories
 SRC_DIR = src
 INCLUDE_DIR = include
+TEST_DIR = tests
 BUILD_DIR = build
 LIB_DIR = lib
 
@@ -26,6 +27,9 @@ all: $(LIBRARY)
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 	mkdir -p $(BUILD_DIR)/platform
+
+$(TEST_DIR):
+	mkdir -p $(TEST_DIR)
 
 $(LIB_DIR):
 	mkdir -p $(LIB_DIR)
@@ -58,6 +62,17 @@ test-compile: all
 	@echo "Objects: $(OBJECTS)"
 	@echo "Library: $(LIBRARY)"
 
+# Test executable
+TEST_SRC = $(TEST_DIR)/test_bemf_observer.cpp
+TEST_EXE = $(BUILD_DIR)/test_bemf_observer
+
+# Build and run the host-side BEMF observer test harness
+test: all $(TEST_EXE)
+	./$(TEST_EXE)
+
+$(TEST_EXE): $(TEST_SRC) $(LIBRARY) | $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -I. $(TEST_SRC) -L$(LIB_DIR) -llibecu -o $@
+
 # Show library info
 info:
 	@echo "libecu - Platform-independent BLDC motor control library"
@@ -73,4 +88,4 @@ info:
 	@echo "  make clean    - Clean build files"
 	@echo "  make info     - Show this information"
 
-.PHONY: all clean install-headers uninstall test-compile info
+.PHONY: all clean install-headers uninstall test-compile test info

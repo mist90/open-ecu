@@ -243,11 +243,13 @@ int main(void)
     motor_params.bemf_transition_speed_low = 500.0f;    // steps/sec: below = Hall only
     motor_params.bemf_transition_speed_high = 800.0f;   // steps/sec: above = BEMF only
     motor_params.bemf_blanking_cycles = 2.0f;           // PWM cycles blanking after commutation
-    motor_params.bemf_zc_threshold = 0.5f;              // ZC at Vbus/2
+    motor_params.bemf_zc_threshold_high = 0.03f;   // OFF-time: ~0.6V for 20V bus
+    motor_params.bemf_zc_threshold_low = 0.005f;    // Hysteresis lower bound: ~0.1V
 
     libecu::BemfObserverParams bemf_params;
     bemf_params.blanking_cycles = motor_params.bemf_blanking_cycles;
-    bemf_params.zc_threshold = motor_params.bemf_zc_threshold;
+    bemf_params.zc_threshold_high = motor_params.bemf_zc_threshold_high;
+    bemf_params.zc_threshold_low = motor_params.bemf_zc_threshold_low;
     bemf_params.transition_speed_low = motor_params.bemf_transition_speed_low;
     bemf_params.transition_speed_high = motor_params.bemf_transition_speed_high;
     bemf_params.is_inverse_commutation = motor_params.useInverseCommTable;

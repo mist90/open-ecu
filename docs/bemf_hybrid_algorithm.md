@@ -95,22 +95,43 @@ After a ZC is detected the controller still has another 30 degrees to go before 
 
 ### Edge Detection
 
-The ZC detector does not look for sign or magnitude. It looks for a transition. On every PWM tick it compares the floating voltage against a threshold derived from the bus voltage:
+The ZC detector does not look for sign or magnitude. It looks for a transition. On every PWM tick it compares the floating voltage against a pair of thresholds derived from the bus voltage, forming a hysteresis band:
 
 ```cpp
-float threshold = bus_voltage * params_.zc_threshold;   // zc_threshold = 0.5 by default
-bool above = floating_voltage > threshold;
+float threshold_high = bus_voltage * params_.zc_threshold_high;
+float threshold_low = bus_voltage * params_.zc_threshold_low;
 
-if (above != prev_above_threshold_) {
-    // Edge detected — ZC occurred
-    prev_above_threshold_ = above;
-    zc_detected_ = true;
-    // synthetic_step_ = next Hall position (see mapping below)
-    // ... compute 30-degree delay ...
+// First sample after blanking: initialize state without triggering edge
+if (need_reinit_) {
+    need_reinit_ = false;
+    signal_high_ = (floating_voltage > threshold_high);
+    return false;
 }
+
+if (!signal_high_ && floating_voltage > threshold_high) {
+    signal_high_ = true;  // Rising edge — ZC detected
+} else if (signal_high_ && floating_voltage < threshold_low) {
+    signal_high_ = false; // Falling edge — ZC detected
+}
+// Else: hysteresis band — no state change, no ZC
 ```
 
-Either rising or falling transitions count. The direction alternates naturally between steps because the floating phase alternates between phases and polarity.
+Hysteresis is required because OFF-time sensing does not produce a clean sign change around a mid-rail reference. In OFF-time sensing the motor neutral point (center tap) sits at 0 V, so the BEMF on the floating phase is centered at 0 V. The ADC cannot read negative voltages, and the inverter body diodes clamp the negative half of the BEMF waveform to roughly 0 V. What the ADC actually sees is genuine positive BEMF on one side of the zero crossing and a clamped near-zero voltage on the other. The "zero crossing" is therefore the transition between positive BEMF and the clamped 0 V region, not a sign change around Vbus/2.
+
+A single threshold cannot detect this transition cleanly. Near the threshold the sampled voltage is noisy, and a few counts of jitter cross the threshold back and forth, producing multiple false edges within one step. The hysteresis pair introduces a dead band where nothing happens:
+
+- `threshold_high` (~0.6 V on a 20 V bus, i.e. 0.03 × Vbus): "BEMF is definitely present."
+- `threshold_low` (~0.1 V on a 20 V bus, i.e. 0.005 × Vbus): "BEMF is definitely at or near zero."
+- Between `threshold_low` and `threshold_high` (the hysteresis band): no state change, no ZC.
+
+Once `signal_high_` is set, the voltage must fall all the way below `threshold_low` to clear it. Once it is cleared, the voltage must rise all the way above `threshold_high` to set it again. Noise riding on the signal cannot bridge the full band, so it cannot produce spurious edges.
+
+Either rising or falling transitions count. The direction of the valid edge alternates between commutation steps, because each step starts with the BEMF on a different side of the zero crossing:
+
+- **Case A (positive-first step):** The BEMF starts positive and ramps down toward zero. At 30° into the step it crosses through `threshold_low` into the clamped region. The ZC is the falling edge through `threshold_low`.
+- **Case B (negative-first step):** The BEMF starts in the clamped near-zero region. At 30° into the step it rises positive and crosses through `threshold_high`. The ZC is the rising edge through `threshold_high`.
+
+The six-step table alternates which phase floats and the polarity of the BEMF it carries, so Case A and Case B alternate. Both directions are valid ZC events, and the state machine handles both with no extra logic.
 
 ### Synthetic Step Mapping
 
@@ -164,12 +185,13 @@ void BemfObserver::onCommutation(uint8_t new_step) noexcept {
     zc_detected_ = false;
     delay_counter_ = 0.0f;
     event_pending_ = false;
+    need_reinit_ = true;  // First sample after blanking initializes signal_high_
 }
 ```
 
-While `blanking_counter_` is non-zero, `update()` decrements it and short-circuits before any ZC comparison runs. The previous comparison state (`prev_above_threshold_`) is left untouched so the edge detector is ready the moment blanking ends.
+While `blanking_counter_` is non-zero, `update()` decrements it and short-circuits before any ZC comparison runs. After blanking expires, the `need_reinit_` flag causes the first BEMF sample to initialize `signal_high_` to match the actual signal state (above or below threshold) WITHOUT triggering a ZC edge. This prevents a false zero-crossing from stale state carried over from the previous step. The first real edge detection happens on the second sample after blanking, when the BEMF has had time to settle into its ramp trajectory toward the true zero-crossing at 30°.
 
-`blanking_cycles` is expressed in PWM cycles. With the application default of 5 cycles at a 20 kHz PWM rate, the blanking window is 250 us. Heavier motors or higher inductance may need a longer window.
+`blanking_cycles` is expressed in PWM cycles. With the application default of 2 cycles at a 20 kHz PWM rate, the blanking window is 100 us. Heavier motors or higher inductance may need a longer window. ST's UM3259 §3.2.3 recommends not going below 2 to 3 PWM cycles, otherwise the inductive discharge spike after commutation can still be present and corrupt the first BEMF sample.
 
 ## 5. Hybrid Mode Switching
 
@@ -277,27 +299,40 @@ Defined in `libecu/include/bldc_controller.hpp`.
 | `bemf_transition_speed_low`  | float   | 500.0 steps/sec                | Below this speed the Hall ISR is never suppressed.                       |
 | `bemf_transition_speed_high` | float   | 800.0 steps/sec                | Above this speed Hall events are ignored and BEMF drives the PLL.        |
 | `bemf_blanking_cycles`       | float   | 2.0 PWM cycles                 | Demagnetization blanking window after each commutation.                  |
-| `bemf_zc_threshold`          | float   | 0.5                            | ZC threshold as a fraction of Vbus. 0.5 means the crossing is at Vbus/2. |
+| `bemf_zc_threshold_high`     | float   | 0.03                           | ZC high threshold as fraction of Vbus. OFF-time: ~0.6 V for 20 V bus.    |
+| `bemf_zc_threshold_low`      | float   | 0.005                          | ZC low threshold (hysteresis lower bound). ~0.1 V for 20 V bus.          |
 
 ### `BemfObserverParams`
 
 Defined in `libecu/include/algorithms/bemf_observer.hpp`.
 
-| Field                    | Type  | Class constructor default | Description                                                  |
-|--------------------------|-------|---------------------------|--------------------------------------------------------------|
-| `blanking_cycles`        | float | 10.0                      | PWM cycles to blank after commutation (demagnetization).     |
-| `zc_threshold`           | float | 0.5                       | BEMF zero-crossing threshold as a fraction of Vbus.          |
-| `transition_speed_low`   | float | 600.0 steps/sec           | Speed below which Hall sensors are used.                     |
-| `transition_speed_high`  | float | 1200.0 steps/sec          | Speed above which BEMF is used exclusively.                  |
-| `is_inverse_commutation` | bool  | false                     | Selects synthetic step mapping for inverse commutation table. |
+| Field                    | Type  | Class constructor default | Description                                                    |
+|--------------------------|-------|---------------------------|----------------------------------------------------------------|
+| `blanking_cycles`        | float | 10.0                      | PWM cycles to blank after commutation (demagnetization).       |
+| `zc_threshold_high`      | float | 0.03                      | BEMF ZC high threshold as fraction of Vbus (OFF-time default). |
+| `zc_threshold_low`       | float | 0.005                     | BEMF ZC low threshold (hysteresis lower bound).                |
+| `transition_speed_low`   | float | 600.0 steps/sec           | Speed below which Hall sensors are used.                       |
+| `transition_speed_high`  | float | 1200.0 steps/sec          | Speed above which BEMF is used exclusively.                    |
+| `is_inverse_commutation` | bool  | false                     | Selects synthetic step mapping for inverse commutation table.  |
 
-The application defaults from `main.cpp` (500 / 800 / 2 / 0.5 / inverse from `BLDC_INVERTION`) override the class constructor defaults at startup via `setParameters()`. The class defaults only apply if `setParameters()` is never called.
+The application defaults from `main.cpp` (500 / 800 / 2 / 0.03 / 0.005 / inverse from `BLDC_INVERTION`) override the class constructor defaults at startup via `setParameters()`. The class defaults only apply if `setParameters()` is never called.
 
 ### Tuning Notes
 
 - The two thresholds should be far enough apart to give a clean hysteresis band. A gap of 300 steps/sec is the application default.
 - `blanking_cycles` scales with PWM frequency. At 20 kHz, 2 cycles is 100 us. If you raise the PWM frequency, raise `blanking_cycles` proportionally to keep the same time window. Keep it short enough that the ZC crossing (which occurs at 30° into the step) is not masked.
-- `zc_threshold` can be shifted away from 0.5 to compensate for non-symmetric phase voltage waveforms or diode drops in the inverter. Most setups leave it at 0.5.
+- `zc_threshold_high` and `zc_threshold_low` are sized for OFF-time sensing, where the center tap sits at 0 V. Set `zc_threshold_high` above the ADC noise floor but below the typical BEMF peak, so a genuine BEMF ramp lifts the signal above it. Set `zc_threshold_low` just above 0 V, so the clamped near-zero region reads as "low". The hysteresis gap (`zc_threshold_high` minus `zc_threshold_low`) should be wide enough to reject noise but narrow enough not to delay ZC detection. The 0.03 / 0.005 defaults give a ~0.5 V band on a 20 V bus. See the threshold-selection note below for the OFF-time vs ON-time comparison.
+
+### Threshold Selection: OFF-time vs ON-time
+
+The thresholds depend on which coupling mode the front end uses, because the mode sets the BEMF reference (center tap) voltage:
+
+| Mode     | Center tap | `zc_threshold_high`           | `zc_threshold_low`             | Status                       |
+|----------|------------|-------------------------------|--------------------------------|------------------------------|
+| OFF-time | 0 V        | ~0.03 × Vbus (~0.6 V on 20 V) | ~0.005 × Vbus (~0.1 V on 20 V) | Current implementation       |
+| ON-time  | Vbus / 2   | ~0.55 × Vbus                  | ~0.45 × Vbus                   | Future work, not implemented |
+
+OFF-time sensing is what `BemfObserver` implements today: the floating phase is sampled while the phase is OFF, the center tap is 0 V, and the body diodes clamp negative BEMF, so the thresholds sit just above 0 V. ON-time sensing samples the floating phase while it is tied to a rail through the high-side or low-side FET, so the center tap is Vbus/2 and the thresholds center on Vbus/2. The ON-time thresholds listed here are the values the same hysteresis logic would use if that mode were added later. See UM3259 §2.1 (coupling modes) and §3.2.5 (threshold placement).
 
 ## 9. Key Source Files
 

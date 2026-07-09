@@ -17,10 +17,16 @@ namespace libecu {
 
 /**
  * @brief Configuration parameters for the BEMF observer
+ *
+ * Zero-crossing detection uses a two-threshold hysteresis band to reject
+ * noise: a ZC edge is only emitted when the floating-phase voltage crosses
+ * the high threshold (rising) or the low threshold (falling). The band
+ * between the two thresholds is a dead zone where no state change occurs.
  */
 struct BemfObserverParams {
     float blanking_cycles;        ///< PWM cycles to blank after commutation (demagnetization)
-    float zc_threshold;           ///< BEMF zero-crossing threshold as fraction of Vbus (default 0.5)
+    float zc_threshold_high;      ///< BEMF ZC high threshold as fraction of Vbus (OFF-time: ~0.03, ON-time: ~0.5)
+    float zc_threshold_low;       ///< BEMF ZC low threshold as fraction of Vbus (hysteresis lower bound, ~0.005)
     float transition_speed_low;   ///< Speed below which Hall sensors are used (steps/sec)
     float transition_speed_high;  ///< Speed above which BEMF is used exclusively (steps/sec)
     bool is_inverse_commutation;  ///< True if motor uses inverse commutation table (affects synthetic step mapping)
@@ -128,7 +134,8 @@ private:
     float delay_counter_;          ///< Remaining delay ticks after ZC
     bool event_pending_;           ///< Synthetic Hall event ready for consumption
     uint8_t synthetic_step_;       ///< Computed next commutation step
-    bool prev_above_threshold_;    ///< Previous comparison result for edge detection
+    bool signal_high_;     ///< Current hysteresis state: true when BEMF above high threshold
+    bool need_reinit_;     ///< True after commutation: first sample initializes signal_high_ without triggering edge
     float last_floating_voltage_;  ///< Last floating phase voltage (for telemetry)
     mutable bool bemf_was_active_; ///< Hysteresis state for BEMF/Hall transition
 };

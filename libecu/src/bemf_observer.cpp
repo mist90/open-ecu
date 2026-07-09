@@ -14,13 +14,14 @@ namespace libecu {
 
 BemfObserver::BemfObserver(float pwm_frequency) noexcept
     : pwm_frequency_(pwm_frequency)
-    , params_{10.0f, 0.5f, 600.0f, 1200.0f, false}
+    , params_{10.0f, 0.03f, 0.005f, 600.0f, 1200.0f, false}
     , blanking_counter_(0.0f)
     , zc_detected_(false)
     , delay_counter_(0.0f)
     , event_pending_(false)
     , synthetic_step_(0)
-    , prev_above_threshold_(false)
+    , signal_high_(false)
+    , need_reinit_(true)
     , last_floating_voltage_(0.0f)
     , bemf_was_active_(false)
 {
@@ -52,13 +53,30 @@ bool BemfObserver::update(float floating_voltage, float bus_voltage,
         return false;
     }
 
-    // Phase 3: Zero-crossing detection
-    float threshold = bus_voltage * params_.zc_threshold;
-    bool above = floating_voltage > threshold;
+    // Phase 3: Zero-crossing detection with hysteresis
+    float threshold_high = bus_voltage * params_.zc_threshold_high;
+    float threshold_low = bus_voltage * params_.zc_threshold_low;
 
-    if (above != prev_above_threshold_) {
-        // Edge detected — ZC occurred
-        prev_above_threshold_ = above;
+    // First sample after blanking: initialize state without triggering edge
+    if (need_reinit_) {
+        need_reinit_ = false;
+        signal_high_ = (floating_voltage > threshold_high);
+        return false;
+    }
+
+    bool zc_event = false;
+    if (!signal_high_ && floating_voltage > threshold_high) {
+        // Rising edge through hysteresis — ZC detected
+        signal_high_ = true;
+        zc_event = true;
+    } else if (signal_high_ && floating_voltage < threshold_low) {
+        // Falling edge through hysteresis — ZC detected
+        signal_high_ = false;
+        zc_event = true;
+    }
+    // Else: in hysteresis band or no transition — no state change
+
+    if (zc_event) {
         zc_detected_ = true;
 
         // Compute the next Hall position that the real Hall sensor would report
@@ -101,6 +119,7 @@ void BemfObserver::onCommutation(uint8_t new_step) noexcept {
     zc_detected_ = false;
     delay_counter_ = 0.0f;
     event_pending_ = false;
+    need_reinit_ = true;
 }
 
 bool BemfObserver::isBemfModeActive(float speed_steps_per_sec) const noexcept {
