@@ -49,10 +49,11 @@ bool Stm32Pwm::initialize(uint32_t frequency, uint16_t dead_time_ns) {
         return false;
     }
 
-    // ADC trigger at peak (CNT = ARR) — furthest from UP phase switching (at CNT = CCR)
+    // ADC trigger at mid-ON-time (CNT = CCR_up / 2) — BEMF sensing while high-side conducting
+    // Default to period_/4 (= 50% duty midpoint); updated dynamically in setChannelState/updateDutyCycle
     TIM_OC_InitTypeDef sConfigOC4 = {0};
     sConfigOC4.OCMode = TIM_OCMODE_PWM1;
-    sConfigOC4.Pulse = period_ - 1;
+    sConfigOC4.Pulse = period_ / 4;
     sConfigOC4.OCPolarity = TIM_OCPOLARITY_HIGH;
     sConfigOC4.OCFastMode = TIM_OCFAST_DISABLE;
     sConfigOC4.OCIdleState = TIM_OCIDLESTATE_RESET;
@@ -64,8 +65,7 @@ bool Stm32Pwm::initialize(uint32_t frequency, uint16_t dead_time_ns) {
     // Enable CCR4 preload (shadow register)
     __HAL_TIM_ENABLE_OCxPRELOAD(tim_handle, TIM_CHANNEL_4);
 
-    // Configure master synchronization
-    // TRGO2 = OC4REF triggers ADC at center of PWM period (when low-side is conducting)
+    // TRGO2 = OC4REF triggers ADC at mid-ON-time (high-side conducting, BEMF visible)
     TIM_MasterConfigTypeDef sMasterConfig = {0};
     sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
     sMasterConfig.MasterOutputTrigger2 = TIM_TRGO2_OC4REF;  // Trigger ADCs on OC4 match (center)
@@ -191,6 +191,7 @@ void Stm32Pwm::setChannelState(PwmChannel channel, PwmState state, float duty_cy
         case PwmState::UP:
             tim_instance->CCER &= ~(ccxp_bit | ccxnp_bit);
             __HAL_TIM_SET_COMPARE(tim_handle, tim_channel, compare_value);
+            __HAL_TIM_SET_COMPARE(tim_handle, TIM_CHANNEL_4, compare_value / 2);
             tim_instance->CCER |= (ccxe_bit | ccxne_bit);
             break;
 
@@ -209,6 +210,7 @@ void Stm32Pwm::updateDutyCycle(PwmChannel channel, float duty_cycle)
     uint32_t compare_value = calculateCompareValue(duty_cycle);
 
     __HAL_TIM_SET_COMPARE(tim_handle, tim_channel, compare_value);
+    __HAL_TIM_SET_COMPARE(tim_handle, TIM_CHANNEL_4, compare_value / 2);
 }
 
 void Stm32Pwm::enable(bool enable) {

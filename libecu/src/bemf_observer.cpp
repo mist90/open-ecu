@@ -14,7 +14,7 @@ namespace libecu {
 
 BemfObserver::BemfObserver(float pwm_frequency) noexcept
     : pwm_frequency_(pwm_frequency)
-    , params_{10.0f, 0.03f, 0.005f, 600.0f, 1200.0f, false}
+    , params_{10.0f, 0.15f, 0.55f, 0.45f, 600.0f, 1200.0f, false}
     , blanking_counter_(0.0f)
     , zc_detected_(false)
     , delay_counter_(0.0f)
@@ -122,7 +122,12 @@ void BemfObserver::onCommutation(uint8_t new_step) noexcept {
     need_reinit_ = true;
 }
 
-bool BemfObserver::isBemfModeActive(float speed_steps_per_sec) const noexcept {
+bool BemfObserver::isBemfModeActive(float speed_steps_per_sec, float duty_cycle) const noexcept {
+    // ON-time sensing requires minimum duty cycle for valid BEMF measurement
+    if (duty_cycle < params_.min_duty) {
+        bemf_was_active_ = false;
+        return false;
+    }
     // Hysteresis: use high threshold when transitioning Hall→BEMF,
     //             use low threshold when transitioning BEMF→Hall
     if (bemf_was_active_) {
@@ -139,7 +144,10 @@ bool BemfObserver::isBemfModeActive(float speed_steps_per_sec) const noexcept {
     return bemf_was_active_;
 }
 
-bool BemfObserver::shouldIgnoreHall(float speed_steps_per_sec) const noexcept {
+bool BemfObserver::shouldIgnoreHall(float speed_steps_per_sec, float duty_cycle) const noexcept {
+    (void)speed_steps_per_sec;
+    if (duty_cycle < params_.min_duty)
+        return false;
     return bemf_was_active_;
 }
 

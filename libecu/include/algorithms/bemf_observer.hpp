@@ -25,8 +25,9 @@ namespace libecu {
  */
 struct BemfObserverParams {
     float blanking_cycles;        ///< PWM cycles to blank after commutation (demagnetization)
-    float zc_threshold_high;      ///< BEMF ZC high threshold as fraction of Vbus (OFF-time: ~0.03, ON-time: ~0.5)
-    float zc_threshold_low;       ///< BEMF ZC low threshold as fraction of Vbus (hysteresis lower bound, ~0.005)
+    float min_duty;               ///< Minimum duty cycle for ON-time BEMF sensing (below this, Hall sensors are used)
+    float zc_threshold_high;      ///< BEMF ZC high threshold as fraction of Vbus (ON-time: ~0.55)
+    float zc_threshold_low;       ///< BEMF ZC low threshold as fraction of Vbus (ON-time hysteresis: ~0.45)
     float transition_speed_low;   ///< Speed below which Hall sensors are used (steps/sec)
     float transition_speed_high;  ///< Speed above which BEMF is used exclusively (steps/sec)
     bool is_inverse_commutation;  ///< True if motor uses inverse commutation table (affects synthetic step mapping)
@@ -95,18 +96,20 @@ public:
     void onCommutation(uint8_t new_step) noexcept;
 
     /**
-     * @brief Check if BEMF mode is active at the given speed
+     * @brief Check if BEMF mode is active at the given speed and duty
      * @param speed_steps_per_sec Current motor speed in steps/sec
-     * @return true if speed is above the transition threshold (with hysteresis)
+     * @param duty_cycle Current PWM duty cycle (0.0-1.0)
+     * @return true if speed is above transition threshold and duty above min_duty (with hysteresis)
      */
-    bool isBemfModeActive(float speed_steps_per_sec) const noexcept;
+    bool isBemfModeActive(float speed_steps_per_sec, float duty_cycle) const noexcept;
 
     /**
      * @brief Check if Hall sensor input should be suppressed
      * @param speed_steps_per_sec Current motor speed in steps/sec
-     * @return true if speed is above transition_speed_high
+     * @param duty_cycle Current PWM duty cycle (0.0-1.0)
+     * @return true if speed is above transition_speed_high and duty above min_duty
      */
-    bool shouldIgnoreHall(float speed_steps_per_sec) const noexcept;
+    bool shouldIgnoreHall(float speed_steps_per_sec, float duty_cycle) const noexcept;
 
     /**
      * @brief Telemetry snapshot of observer internal state

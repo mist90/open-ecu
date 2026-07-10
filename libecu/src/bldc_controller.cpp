@@ -425,7 +425,7 @@ void BldcController::hallSensorInterruptHandler() noexcept
 
     // If BEMF observer is active and speed is above threshold, don't feed Hall to PLL
     if (bemf_observer_ &&
-        bemf_observer_->shouldIgnoreHall(motor_pll_.getSpeedStepsSec())) {
+        bemf_observer_->shouldIgnoreHall(motor_pll_.getSpeedStepsSec(), status_.duty_cycle)) {
         return;
     }
 
@@ -468,7 +468,7 @@ void BldcController::pwmInterruptHandler() noexcept {
     // BEMF observer update in CURRENT_MODE
     if (bemf_active) {
         if (bemf_observer_ &&
-            bemf_observer_->isBemfModeActive(motor_pll_.getSpeedStepsSec())) {
+            bemf_observer_->isBemfModeActive(motor_pll_.getSpeedStepsSec(), status_.duty_cycle)) {
             if (bemf_observer_->update(bemf_v, bus_voltage, status_.target_position,
                                         motor_pll_.getSpeedStepsSec())) {
                 motor_pll_.updateHall(bemf_observer_->getSyntheticHallStep());

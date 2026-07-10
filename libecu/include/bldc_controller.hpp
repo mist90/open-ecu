@@ -59,8 +59,9 @@ struct MotorControlParams {
     float bemf_transition_speed_low;   ///< Below this speed (steps/sec): Hall only
     float bemf_transition_speed_high;  ///< Above this speed (steps/sec): BEMF only
     float bemf_blanking_cycles;        ///< Demagnetization blanking in PWM cycles after commutation
-    float bemf_zc_threshold_high;  ///< ZC high threshold as fraction of Vbus (OFF-time: ~0.03)
-    float bemf_zc_threshold_low;   ///< ZC low threshold as fraction of Vbus (hysteresis: ~0.005)
+    float bemf_min_duty;           ///< Minimum duty cycle for ON-time BEMF sensing (below: Hall only)
+    float bemf_zc_threshold_high;  ///< ZC high threshold as fraction of Vbus (ON-time: ~0.55)
+    float bemf_zc_threshold_low;   ///< ZC low threshold as fraction of Vbus (ON-time hysteresis: ~0.45)
 };
 
 /**
