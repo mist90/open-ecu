@@ -91,9 +91,8 @@ bool Stm32Pwm::initialize(uint32_t frequency, uint16_t dead_time_ns) {
         return false;
     }
 
-    // Disable CCRx preload for immediate update in current control loop
-    // This allows CCRx changes to take effect immediately without waiting for Update event
-    // Safe because updates happen in synchronized interrupt at consistent timing
+    // CCRx preload disabled: CCR changes take effect immediately for current
+    // control loop. CCER (CCPC) is preloaded and applied on COM event in apply().
     __HAL_TIM_DISABLE_OCxPRELOAD(tim_handle, TIM_CHANNEL_1);
     __HAL_TIM_DISABLE_OCxPRELOAD(tim_handle, TIM_CHANNEL_2);
     __HAL_TIM_DISABLE_OCxPRELOAD(tim_handle, TIM_CHANNEL_3);
@@ -187,19 +186,18 @@ void Stm32Pwm::setChannelState(PwmChannel channel, PwmState state, float duty_cy
     switch (state) {
         case PwmState::OFF:
             tim_instance->CCER &= ~(ccxe_bit | ccxne_bit);
-            __HAL_TIM_SET_COMPARE(tim_handle, tim_channel, 0);
             break;
 
         case PwmState::UP:
             tim_instance->CCER &= ~(ccxp_bit | ccxnp_bit);
-            tim_instance->CCER |= (ccxe_bit | ccxne_bit);
             __HAL_TIM_SET_COMPARE(tim_handle, tim_channel, compare_value);
+            tim_instance->CCER |= (ccxe_bit | ccxne_bit);
             break;
 
         case PwmState::DOWN:
             tim_instance->CCER &= ~(ccxp_bit | ccxnp_bit);
-            tim_instance->CCER |= (ccxe_bit | ccxne_bit);
             __HAL_TIM_SET_COMPARE(tim_handle, tim_channel, 0);
+            tim_instance->CCER |= (ccxe_bit | ccxne_bit);
             break;
     }
 }
