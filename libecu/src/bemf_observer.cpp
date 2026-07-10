@@ -60,7 +60,12 @@ bool BemfObserver::update(float floating_voltage, float bus_voltage,
     // First sample after blanking: initialize state without triggering edge
     if (need_reinit_) {
         need_reinit_ = false;
-        signal_high_ = (floating_voltage > threshold_high);
+        // Use midpoint (Vbus/2) for initialization, not threshold_high.
+        // BEMF polarity alternates per step: some steps rise through Vbus/2,
+        // others fall. Using threshold_high biases toward expecting rising
+        // edges only, causing missed ZC on falling-edge steps.
+        float threshold_mid = (threshold_high + threshold_low) * 0.5f;
+        signal_high_ = (floating_voltage > threshold_mid);
         return false;
     }
 

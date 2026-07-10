@@ -30,7 +30,7 @@ BldcController::BldcController(
     , adc_interface_(adc_interface)
     , bemf_observer_(nullptr)
     , bemf_divider_direct_mode_(false)
-    , motor_pll_(pwm_interface_.getFrequency(), params.max_speed_rps * commutation_controller.getNumPoles() * 6, params.useInverseCommTable)
+    , motor_pll_(pwm_interface_.getFrequency(), params.max_speed_rps * commutation_controller.getNumPoles() * BLDC_NUM_PHASES, params.useInverseCommTable)
     , pid_speed_controller_()
     , current_controller_()
     , params_(params)
@@ -93,7 +93,7 @@ bool BldcController::initialize() noexcept
 
 void BldcController::update() noexcept
 {
-    float speed_rps = motor_pll_.getSpeedStepsSec() / (commutation_controller_.getNumPoles() * 6.0f);
+    float speed_rps = motor_pll_.getSpeedStepsSec() / (commutation_controller_.getNumPoles() * BLDC_NUM_PHASES);
 
     float alpha = params_.measured_speed_lpf_alpha;
     if (alpha > 0.0f && alpha < 1.0f) {
