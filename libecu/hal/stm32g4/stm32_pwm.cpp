@@ -181,35 +181,25 @@ void Stm32Pwm::setChannelState(PwmChannel channel, PwmState state, float duty_cy
     // CCxNP = bit 3 + 4*x (complementary output polarity)
     uint32_t ccxp_bit = (1UL << (1 + 4 * channel_index));   // CCxP
     uint32_t ccxnp_bit = (1UL << (3 + 4 * channel_index));  // CCxNP
+    uint32_t ccxe_bit = (1UL << (0 + 4 * channel_index));   // CCxE
+    uint32_t ccxne_bit = (1UL << (2 + 4 * channel_index));  // CCxNE
 
     switch (state) {
         case PwmState::OFF:
-            // High impedance - disable both high-side and low-side outputs
-            HAL_TIM_PWM_Stop(tim_handle, tim_channel);
-            HAL_TIMEx_PWMN_Stop(tim_handle, tim_channel);
+            tim_instance->CCER &= ~(ccxe_bit | ccxne_bit);
             __HAL_TIM_SET_COMPARE(tim_handle, tim_channel, 0);
             break;
 
         case PwmState::UP:
-            // Non-inverse PWM: High-side active for duty_cycle, low-side complementary
-            // Set normal polarity (active high) by clearing CCxP and CCxNP bits
             tim_instance->CCER &= ~(ccxp_bit | ccxnp_bit);
-
-            // Set compare value and start outputs
+            tim_instance->CCER |= (ccxe_bit | ccxne_bit);
             __HAL_TIM_SET_COMPARE(tim_handle, tim_channel, compare_value);
-            HAL_TIM_PWM_Start(tim_handle, tim_channel);
-            HAL_TIMEx_PWMN_Start(tim_handle, tim_channel);
             break;
 
         case PwmState::DOWN:
-            // Low-side always ON, high-side always OFF
-            // CCR=0 with normal polarity: main output always LOW, complementary always HIGH
-            // This ensures low-side MOSFET conducts continuously (no PWM switching)
             tim_instance->CCER &= ~(ccxp_bit | ccxnp_bit);
-
+            tim_instance->CCER |= (ccxe_bit | ccxne_bit);
             __HAL_TIM_SET_COMPARE(tim_handle, tim_channel, 0);
-            HAL_TIM_PWM_Start(tim_handle, tim_channel);
-            HAL_TIMEx_PWMN_Start(tim_handle, tim_channel);
             break;
     }
 }

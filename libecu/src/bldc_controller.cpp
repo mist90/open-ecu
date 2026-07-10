@@ -52,7 +52,9 @@ BldcController::BldcController(
     status_.target_current = 0.0f;
     status_.measured_current = 0.0f;
     status_.bus_voltage = 0.0f;
-    status_.bemf_voltage = 0.0f;
+    status_.bemf_voltage_u = 0.0f;
+    status_.bemf_voltage_v = 0.0f;
+    status_.bemf_voltage_w = 0.0f;
     status_.bemf_active = false;
     status_.target_position = 0xFF;
     status_.measured_position = 0xFF;
@@ -436,11 +438,28 @@ void BldcController::pwmInterruptHandler() noexcept {
         return;
     }
 
+    // ADC already converted all injected channels — reading registers adds no latency
+    float v_u = adc_interface_->readPhaseVoltage(PwmChannel::PHASE_U, bemf_divider_direct_mode_);
+    float v_v = adc_interface_->readPhaseVoltage(PwmChannel::PHASE_V, bemf_divider_direct_mode_);
+    float v_w = adc_interface_->readPhaseVoltage(PwmChannel::PHASE_W, bemf_divider_direct_mode_);
+
+    {
+        CriticalSection cs;
+        status_.bemf_voltage_u = v_u;
+        status_.bemf_voltage_v = v_v;
+        status_.bemf_voltage_w = v_w;
+    }
+
     PwmChannel floating_phase;
     float bemf_v = 0.0f;
     bool bemf_active = false;
     if (findFloatingPhase(floating_phase)) {
-        bemf_v = adc_interface_->readPhaseVoltage(floating_phase, bemf_divider_direct_mode_);
+        switch (floating_phase) {
+            case PwmChannel::PHASE_U: bemf_v = v_u; break;
+            case PwmChannel::PHASE_V: bemf_v = v_v; break;
+            case PwmChannel::PHASE_W: bemf_v = v_w; break;
+            default: break;
+        }
         bemf_active = true;
     }
     // Read bus voltage
@@ -497,7 +516,6 @@ void BldcController::pwmInterruptHandler() noexcept {
         status_.duty_cycle = duty_cycle;
         status_.bus_voltage = bus_voltage;
         status_.pll_angle = motor_pll_.getAngle();
-        status_.bemf_voltage = bemf_v;
         status_.bemf_active = bemf_active;
         if (status_.target_position != new_position) {
             commutation_controller_.update(new_position, duty_cycle);

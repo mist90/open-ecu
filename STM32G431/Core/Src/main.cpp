@@ -144,7 +144,8 @@ extern "C" void motor_controller_pwm_interrupt_handler(void)
         g_at_processor->captureOscSample(
             static_cast<uint8_t>(status.duty_cycle * 100.0f),
             status.target_current, status.measured_current,
-            status.bemf_voltage, status.measured_position);
+            status.bemf_voltage_u, status.bemf_voltage_v, status.bemf_voltage_w,
+            status.measured_position);
     }
 }
 

@@ -562,7 +562,7 @@ void AtCommandProcessor::stopOscilloscope() noexcept {
     osc_phase_ = OscPhase::Accumulating;
 }
 
-void AtCommandProcessor::captureOscSample(uint8_t duty_cycle, float target_current, float measured_current, float measured_voltage_off, uint8_t position) noexcept {
+void AtCommandProcessor::captureOscSample(uint8_t duty_cycle, float target_current, float measured_current, float voltage_u, float voltage_v, float voltage_w, uint8_t position) noexcept {
     if (osc_phase_ != OscPhase::Accumulating)
         return;
 
@@ -572,7 +572,9 @@ void AtCommandProcessor::captureOscSample(uint8_t duty_cycle, float target_curre
     osc_buffer_[osc_write_index_].duty_cycle = duty_cycle;
     osc_buffer_[osc_write_index_].target_current = target_current;
     osc_buffer_[osc_write_index_].measured_current = measured_current;
-    osc_buffer_[osc_write_index_].measured_voltage_off = measured_voltage_off;
+    osc_buffer_[osc_write_index_].voltage_u = voltage_u;
+    osc_buffer_[osc_write_index_].voltage_v = voltage_v;
+    osc_buffer_[osc_write_index_].voltage_w = voltage_w;
     osc_buffer_[osc_write_index_].position = position;
 
     osc_write_index_++;
@@ -593,15 +595,19 @@ void AtCommandProcessor::processOscOutput() noexcept {
 
     int32_t meas_cur_int = static_cast<int32_t>(sample.measured_current * 1000.0f);
     int32_t tgt_cur_int = static_cast<int32_t>(sample.target_current * 1000.0f);
-    int32_t voff_int = static_cast<int32_t>(sample.measured_voltage_off * 1000.0f);
+    int32_t vu_int = static_cast<int32_t>(sample.voltage_u * 1000.0f);
+    int32_t vv_int = static_cast<int32_t>(sample.voltage_v * 1000.0f);
+    int32_t vw_int = static_cast<int32_t>(sample.voltage_w * 1000.0f);
 
-    char out_buf[80];
-    int len = std::snprintf(out_buf, sizeof(out_buf), "+OSC:%d,%ld,%ld,%u,%ld,%u\r\n",
+    char out_buf[100];
+    int len = std::snprintf(out_buf, sizeof(out_buf), "+OSC:%d,%ld,%ld,%u,%ld,%ld,%ld,%u\r\n",
         static_cast<int>(osc_sample_counter_),
         static_cast<long>(meas_cur_int),
         static_cast<long>(tgt_cur_int),
         static_cast<unsigned>(sample.duty_cycle),
-        static_cast<long>(voff_int),
+        static_cast<long>(vu_int),
+        static_cast<long>(vv_int),
+        static_cast<long>(vw_int),
         static_cast<unsigned>(sample.position));
 
     if (len > 0) {

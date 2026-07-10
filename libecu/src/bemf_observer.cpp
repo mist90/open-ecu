@@ -140,7 +140,7 @@ bool BemfObserver::isBemfModeActive(float speed_steps_per_sec) const noexcept {
 }
 
 bool BemfObserver::shouldIgnoreHall(float speed_steps_per_sec) const noexcept {
-    return speed_steps_per_sec > params_.transition_speed_high;
+    return bemf_was_active_;
 }
 
 BemfObserver::BemfInfo BemfObserver::getInfo() const noexcept {

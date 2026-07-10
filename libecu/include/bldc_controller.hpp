@@ -74,7 +74,9 @@ struct MotorStatus {
     float measured_current;   ///< Measured motor current (A)
     float bus_voltage;         ///< Measured bus voltage (V)
     float pll_angle;          ///< Rotor angle from PLL (degrees, 0-360)
-    float bemf_voltage;       ///< Floating phase BEMF voltage (V)
+    float bemf_voltage_u;     ///< Phase U voltage (V, pre-divider)
+    float bemf_voltage_v;     ///< Phase V voltage (V, pre-divider)
+    float bemf_voltage_w;     ///< Phase W voltage (V, pre-divider)
     bool bemf_active;         ///< true if BEMF mode is driving commutation
     uint8_t target_position;   ///< Driven motor position
     uint8_t measured_position;   ///< Measured motor position
