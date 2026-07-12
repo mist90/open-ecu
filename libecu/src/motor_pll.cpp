@@ -20,30 +20,32 @@ MotorPLL::MotorPLL(float freq_pwm, float max_electrical_speed, bool is_inverse_c
 }
 
 void MotorPLL::updateHall(uint8_t hall_state) noexcept {
-    hall_state_raw_ = hall_state;
-
-    int8_t diff = (hall_state - (hall_state_accumulated_ % 6) + 9) % 6 - 3;
-    int8_t next_state = int8_t(hall_state_accumulated_) + diff;
-
-    if (next_state < 0) {
-        hall_state_accumulated_ = next_state + ANGLE_MAX;
-    } else if (next_state >= ANGLE_MAX) {
-        hall_state_accumulated_ = next_state % ANGLE_MAX;
-    } else {
-        hall_state_accumulated_ = (uint8_t)next_state;
-    }
-
     time_since_last_hall_ = 0;
+    hall_state_raw_ = hall_state;
 }
 
 void MotorPLL::updateTick() noexcept {
-    /* PID */
-    float angle_error = fmodf(static_cast<float>(hall_state_accumulated_) - angle_, static_cast<float>(ANGLE_MAX));
+    float angle_error = fmodf(static_cast<float>(hall_state_raw_) - angle_, ANGLE_MAX);
+    bool reset_angle = false;
 
-    if (angle_error > static_cast<float>(ANGLE_MAX)/2.0f)
-        angle_error -= static_cast<float>(ANGLE_MAX);
-    if (angle_error < -static_cast<float>(ANGLE_MAX)/2.0f)
-        angle_error += static_cast<float>(ANGLE_MAX);
+    if (angle_error > LIMIT_ANGLE_ERROR)
+        angle_error = LIMIT_ANGLE_ERROR;
+    if (angle_error < -LIMIT_ANGLE_ERROR)
+        angle_error = -LIMIT_ANGLE_ERROR;
+
+    pll_step_error_filtered = (0.05f * std::abs(angle_error)) + (0.95f * pll_step_error_filtered);
+
+    if (is_sync) {
+        if (pll_step_error_filtered >= LIMIT_ANGLE_ERROR * 0.8f) {
+            is_sync = false;
+            reset_angle = true;
+        }
+    } else {
+        if (std::abs(angle_error) == LIMIT_ANGLE_ERROR)
+            reset_angle = true;
+        else
+            is_sync = true;
+    }
 
     pll_integral_ += angle_error * pll_ki_ * DT_;
 
@@ -63,11 +65,15 @@ void MotorPLL::updateTick() noexcept {
         return;
     }
 
-    angle_ += angle_per_second_ * DT_;
+    if (!reset_angle) {
+        angle_ += angle_per_second_ * DT_;
 
-    angle_ = fmodf(angle_, static_cast<float>(ANGLE_MAX));
-    if (angle_ < 0.0f) {
-        angle_ += static_cast<float>(ANGLE_MAX);
+        angle_ = fmodf(angle_, ANGLE_MAX);
+        if (angle_ < 0.0f) {
+            angle_ += ANGLE_MAX;
+        }
+    } else {
+        angle_ = static_cast<float>(hall_state_raw_);
     }
 }
 
@@ -102,14 +108,14 @@ bool MotorPLL::isUsingPLL() const noexcept {
 }
 
 void MotorPLL::reset() noexcept {
-    angle_ = static_cast<float>(hall_state_accumulated_);
+    angle_ = static_cast<float>(hall_state_raw_);
     angle_per_second_ = 0.0f;
     pll_integral_ = 0.0f;
     time_since_last_hall_ = 0.0f;
 }
 
 float MotorPLL::getAngle() const noexcept {
-    return fmodf(angle_, 6.0f);
+    return angle_;
 }
 
 float MotorPLL::getSpeedStepsSec() const noexcept {
@@ -120,7 +126,6 @@ MotorPLL::PllInfo MotorPLL::getInfo() const noexcept {
     PllInfo info;
     info.use_pll = use_pll_;
     info.hall_state_raw = hall_state_raw_;
-    info.hall_state_accumulated = hall_state_accumulated_;
     info.angle = angle_;
     info.angle_per_second = angle_per_second_;
     info.pll_integral = pll_integral_;

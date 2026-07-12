@@ -43,7 +43,9 @@ enum class DriveMode : uint8_t {
 class MotorPLL {
 public:
     static constexpr float HALL_TIMEOUT_SEC = 5.0f;
-    static constexpr uint8_t ANGLE_MAX = 60;
+    static constexpr float LIMIT_ANGLE_ERROR = 0.5f;
+    static constexpr float ANGLE_MAX = 6.0f;
+    static constexpr float SYNC_SPEED = 5.0f;
 
     /**
      * @brief Constructor
@@ -106,7 +108,6 @@ public:
     struct PllInfo {
         bool use_pll;              ///< PLL enabled flag
         uint8_t hall_state_raw;    ///< Actual Hall sensor reading [0..5]
-        uint8_t hall_state_accumulated; ///< Unwrapped Hall tracking counter [0..ANGLE_MAX)
         float angle;               ///< PLL-estimated angle in steps [0..ANGLE_MAX)
         float angle_per_second;    ///< PLL-estimated speed in steps/sec
         float pll_integral;        ///< PI integrator term in steps/sec
@@ -139,20 +140,19 @@ public:
 
 private:
     uint8_t hall_state_raw_ = 0;         ///< Actual Hall sensor reading [0..5]
-    uint8_t hall_state_accumulated_ = 0; ///< Unwrapped Hall tracking counter [0..ANGLE_MAX)
     float angle_ = 0.0f;
     float angle_per_second_ = 0.0f;
-    bool is_locked_ = false;
+    float pll_step_error_filtered = 0.0f;
     bool is_inverse_commutation_table_ = false;
-
+    bool is_sync = false;
     bool use_pll_ = false;
     uint32_t last_timestamp_us_ = 0;
     float time_since_last_hall_ = 0.0f;
     float pll_integral_ = 0.0f;
     float DT_;
     float max_electrical_speed_;
-    float pll_kp_ = 40.0f;   ///< Base proportional gain (tunable via AT+PLLID)
-    float pll_ki_ = 400.0f;  ///< Base integral gain (tunable via AT+PLLID)
+    float pll_kp_ = 100.0f;   ///< Base proportional gain (tunable via AT+PLLID)
+    float pll_ki_ = 40000.0f;  ///< Base integral gain (tunable via AT+PLLID)
 };
 
 } // namespace libecu

@@ -429,7 +429,10 @@ void BldcController::hallSensorInterruptHandler() noexcept
         return;
     }
 
-    motor_pll_.updateHall(hall_state);
+    {
+        CriticalSection cs;
+        motor_pll_.updateHall(hall_state);
+    }
 }
 
 void BldcController::pwmInterruptHandler() noexcept {
