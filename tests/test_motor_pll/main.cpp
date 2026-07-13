@@ -34,7 +34,7 @@ int main() {
         return -1;
     }
 
-    csv_file << "Time_s,Real_Angle,Real_Speed,Real_Hall,PLL_Angle,PLL_Speed,Output_Step\n";
+    csv_file << "Time_s,Real_Angle,Real_Speed,Real_Hall,PLL_Angle,PLL_Speed,Output_Step,Is_Sync\n";
 
     // Переменные модели виртуального мотора (Физика)
     float real_angle = 0.0f;
@@ -142,7 +142,8 @@ int main() {
                  << static_cast<int>(current_hall_step) << ","
                  << pll.getAngle() << ","
                  << pll.getSpeedStepsSec() << ","
-                 << static_cast<int>(next_comm_step) << "\n";
+                 << static_cast<int>(next_comm_step) << ","
+                 << static_cast<int>(pll.getInfo().is_sync) << "\n";
     }
 
     csv_file.close();

@@ -25,7 +25,16 @@ void MotorPLL::updateHall(uint8_t hall_state) noexcept {
 }
 
 void MotorPLL::updateTick() noexcept {
-    float angle_error = fmodf(static_cast<float>(hall_state_raw_) - angle_, ANGLE_MAX);
+    // Compute angle error with proper circular wrapping to [-ANGLE_MAX/2, +ANGLE_MAX/2).
+    // fmodf alone preserves the sign of the dividend, so fmodf(-5.5, 6.0) = -5.5
+    // instead of the correct +0.5.  This caused the PLL to reverse direction at
+    // every Hall-sensor wraparound (5→0), preventing lock at low speeds.
+    float angle_error = static_cast<float>(hall_state_raw_) - angle_;
+    angle_error = fmodf(angle_error, ANGLE_MAX);
+    if (angle_error > ANGLE_MAX * 0.5f)
+        angle_error -= ANGLE_MAX;
+    else if (angle_error < -ANGLE_MAX * 0.5f)
+        angle_error += ANGLE_MAX;
     bool reset_angle = false;
 
     if (angle_error > LIMIT_ANGLE_ERROR)
@@ -95,7 +104,9 @@ uint8_t MotorPLL::getNextHall(const volatile DriveMode &mode) noexcept {
 
     float next_angle = angle_ + (1.0f * direction);
 
-    return static_cast<uint8_t>(std::round(next_angle)) % 6;
+    int next_step = static_cast<int>(std::round(next_angle));
+    next_step = ((next_step % 6) + 6) % 6;
+    return static_cast<uint8_t>(next_step);
 }
 
 void MotorPLL::setUsePLL(bool use) noexcept {
@@ -132,6 +143,7 @@ MotorPLL::PllInfo MotorPLL::getInfo() const noexcept {
     info.time_since_last_hall = time_since_last_hall_;
     info.kp = pll_kp_;
     info.ki = pll_ki_;
+    info.is_sync = is_sync;
     return info;
 }
 

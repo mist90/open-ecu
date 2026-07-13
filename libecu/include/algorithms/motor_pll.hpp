@@ -114,6 +114,7 @@ public:
         float time_since_last_hall;///< Seconds since last Hall edge
         float kp;                  ///< Current effective proportional gain (after adaptive)
         float ki;                  ///< Current effective integral gain (after adaptive)
+        bool is_sync;              ///< PLL synchronized with Hall sensor flag
     };
 
     /**
