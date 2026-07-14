@@ -39,7 +39,7 @@ void MotorPLL::updateTick() noexcept {
 
     if (angle_error > LIMIT_ANGLE_ERROR)
         angle_error = LIMIT_ANGLE_ERROR;
-    if (angle_error < -LIMIT_ANGLE_ERROR)
+    else if (angle_error < -LIMIT_ANGLE_ERROR)
         angle_error = -LIMIT_ANGLE_ERROR;
 
     pll_step_error_filtered = (0.05f * std::abs(angle_error)) + (0.95f * pll_step_error_filtered);
@@ -52,7 +52,7 @@ void MotorPLL::updateTick() noexcept {
     } else {
         if (std::abs(angle_error) == LIMIT_ANGLE_ERROR)
             reset_angle = true;
-        else
+        else if (std::abs(angle_per_second_) > SYNC_SPEED)
             is_sync = true;
     }
 

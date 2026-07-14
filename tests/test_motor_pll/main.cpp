@@ -19,11 +19,11 @@ int main() {
     const float TOTAL_TIME = 8.0f;          // Общая длительность теста: 8 секунд
 
     // Временная сетка
-    const float SIM_DT = 1.0f / 40000.0f;   // Шаг симуляции совпадает с ШИМ (40 кГц)
+    const float SIM_DT = 1.0f / 20000.0f;   // Шаг симуляции совпадает с ШИМ (20 кГц)
     const uint32_t TOTAL_STEPS = static_cast<uint32_t>(TOTAL_TIME / SIM_DT);
 
     // Экземпляр тестируемого класса
-    const float PWM_FREQ = 40000.0f;
+    const float PWM_FREQ = 20000.0f;
     libecu::MotorPLL pll(PWM_FREQ, MAX_SPEED, false);
     pll.setUsePLL(true);
 
