@@ -152,7 +152,7 @@ private:
     float pll_integral_ = 0.0f;
     float DT_;
     float max_electrical_speed_;
-    float pll_kp_ = 100.0f;   ///< Base proportional gain (tunable via AT+PLLID)
+    float pll_kp_ = 10.0f;   ///< Base proportional gain (tunable via AT+PLLID)
     float pll_ki_ = 40000.0f;  ///< Base integral gain (tunable via AT+PLLID)
 };
 

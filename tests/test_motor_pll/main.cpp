@@ -14,16 +14,16 @@ int main() {
     const float FAILURE_TRIGGER_TIME       = 3.5f;  // Время аварии (в секундах)
 
     // Параметры профиля движения
-    const float MAX_SPEED = 2400.0f;        // Макс. скорость (шагов/сек)
-    const float ACCELERATION = 800.0f;      // Ускорение (шагов/сек^2)
+    const float MAX_SPEED = 1000.0f;        // Макс. скорость (шагов/сек)
+    const float ACCELERATION = 400.0f;      // Ускорение (шагов/сек^2)
     const float TOTAL_TIME = 8.0f;          // Общая длительность теста: 8 секунд
 
     // Временная сетка
-    const float SIM_DT = 1.0f / 20000.0f;   // Шаг симуляции совпадает с ШИМ (20 кГц)
+    const float PWM_FREQ = 20000.0f;
+    const float SIM_DT = 1.0f / PWM_FREQ;   // Шаг симуляции совпадает с ШИМ (20 кГц)
     const uint32_t TOTAL_STEPS = static_cast<uint32_t>(TOTAL_TIME / SIM_DT);
 
     // Экземпляр тестируемого класса
-    const float PWM_FREQ = 20000.0f;
     libecu::MotorPLL pll(PWM_FREQ, MAX_SPEED, false);
     pll.setUsePLL(true);
 
