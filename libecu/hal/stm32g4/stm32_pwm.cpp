@@ -191,7 +191,7 @@ void Stm32Pwm::setChannelState(PwmChannel channel, PwmState state, float duty_cy
         case PwmState::UP:
             tim_instance->CCER &= ~(ccxp_bit | ccxnp_bit);
             __HAL_TIM_SET_COMPARE(tim_handle, tim_channel, compare_value);
-            __HAL_TIM_SET_COMPARE(tim_handle, TIM_CHANNEL_4, compare_value / 2);
+            __HAL_TIM_SET_COMPARE(tim_handle, TIM_CHANNEL_4, calculateAdcTriggerCompare(compare_value, period_));
             tim_instance->CCER |= (ccxe_bit | ccxne_bit);
             break;
 
@@ -210,7 +210,7 @@ void Stm32Pwm::updateDutyCycle(PwmChannel channel, float duty_cycle)
     uint32_t compare_value = calculateCompareValue(duty_cycle);
 
     __HAL_TIM_SET_COMPARE(tim_handle, tim_channel, compare_value);
-    __HAL_TIM_SET_COMPARE(tim_handle, TIM_CHANNEL_4, compare_value / 2);
+    __HAL_TIM_SET_COMPARE(tim_handle, TIM_CHANNEL_4, calculateAdcTriggerCompare(compare_value, period_));
 }
 
 void Stm32Pwm::enable(bool enable) {

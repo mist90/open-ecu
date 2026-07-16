@@ -47,6 +47,29 @@ private:
      * @return Timer compare value
      */
     uint32_t calculateCompareValue(float duty_cycle) noexcept;
+
+    /**
+     * @brief Calculate ADC trigger compare value (CCR4) that never collapses to zero
+     *
+     * The ADC is triggered by TIM1 TRGO2 = OC4REF (PWM1 mode). In PWM1,
+     * OC4REF is high while CNT < CCR4. If CCR4 = 0, OC4REF is permanently
+     * low (RM0440 §29.3.13: "If the compare value is zero then tim_ocxref
+     * is held at 0"), so the ADC trigger disappears, the ADC stops
+     * converting, and telemetry freezes.
+     *
+     * This method floors CCR4 to period/8 when compare_value/2 would be
+     * zero, guaranteeing an OC4REF rising edge every PWM period regardless
+     * of duty cycle. At duty=0 (mode switch, PID reset) this breaks the
+     * deadlock that would otherwise freeze telemetry and stall commutation.
+     *
+     * @param compare_value The PWM compare value (duty * period) for the active phase
+     * @param period The timer period (ARR value)
+     * @return CCR4 value that is always > 0
+     */
+    static constexpr uint32_t calculateAdcTriggerCompare(uint32_t compare_value, uint32_t period) noexcept {
+        uint32_t ccr4 = compare_value / 2;
+        return (ccr4 != 0) ? ccr4 : (period / 8);
+    }
 };
 
 } // namespace libecu

@@ -77,7 +77,7 @@ BldcController::BldcController(
     current_controller_.setParameters(params_.pid_current_regulator);
     pid_speed_controller_.setParameters(params_.pid_current_mode);
 
-    //motor_pll_.setUsePLL(true);
+    motor_pll_.setUsePLL(true);
 }
 
 bool BldcController::initialize() noexcept

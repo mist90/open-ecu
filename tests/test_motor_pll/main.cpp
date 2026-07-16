@@ -46,6 +46,19 @@ int main() {
     bool is_hall_completely_dead = false;
     bool is_single_drop_executed = true;
 
+    // -------------------------------------------------------------------------
+    // СЦЕНАРИИ КОНТРАКТА (Speed convergence assertions)
+    // -------------------------------------------------------------------------
+    // S1: At t≈0.1s (2nd Hall edge), PLL speed >= 50% of real speed
+    // S2: At t≈0.5s (mid-acceleration), PLL speed >= 80% of real speed
+    // S3: At t≈3.0s (steady-state), |PLL speed - real speed| < 10 steps/sec
+    // S4: At t≈6.0s (deceleration), no NaN, no wild oscillation (|PLL| < 2000)
+    float pll_speed_at_01 = 0.0f, real_speed_at_01 = 0.0f;
+    float pll_speed_at_05 = 0.0f, real_speed_at_05 = 0.0f;
+    float pll_speed_at_30 = 0.0f, real_speed_at_30 = 0.0f;
+    float pll_speed_at_60 = 0.0f, real_speed_at_60 = 0.0f;
+    bool captured_01 = false, captured_05 = false, captured_30 = false, captured_60 = false;
+
     std::cout << "Запуск теста ФАПЧ с имитацией аварии датчиков..." << std::endl;
 
     for (uint32_t step = 0; step < TOTAL_STEPS; ++step) {
@@ -134,6 +147,21 @@ int main() {
         // Считываем шаг коммутации
         uint8_t next_comm_step = pll.getNextHall(mode);
 
+        // Capture PLL speed at key time points for scenario assertions
+        float pll_speed_now = pll.getSpeedStepsSec();
+        if (!captured_01 && current_time >= 0.1f) {
+            pll_speed_at_01 = pll_speed_now; real_speed_at_01 = real_speed; captured_01 = true;
+        }
+        if (!captured_05 && current_time >= 0.5f) {
+            pll_speed_at_05 = pll_speed_now; real_speed_at_05 = real_speed; captured_05 = true;
+        }
+        if (!captured_30 && current_time >= 3.0f) {
+            pll_speed_at_30 = pll_speed_now; real_speed_at_30 = real_speed; captured_30 = true;
+        }
+        if (!captured_60 && current_time >= 6.0f) {
+            pll_speed_at_60 = pll_speed_now; real_speed_at_60 = real_speed; captured_60 = true;
+        }
+
         // 4. ЗАПИСЬ РЕЗУЛЬТАТОВ (дискретность 1 мс)
         csv_file << std::fixed << std::setprecision(4)
                  << current_time << ","
@@ -147,6 +175,36 @@ int main() {
     }
 
     csv_file.close();
-    std::cout << "Тест успешно завершен! Результаты в файле: motor_pll_test_results.csv" << std::endl;
+
+    // -------------------------------------------------------------------------
+    // ПРОВЕРКА СЦЕНАРИЕВ КОНТРАКТА
+    // -------------------------------------------------------------------------
+    int failures = 0;
+
+    auto check = [&](const char* name, bool condition, const char* detail) {
+        std::cout << (condition ? "[PASS] " : "[FAIL] ") << name;
+        if (!condition) { std::cout << " — " << detail; failures++; }
+        std::cout << std::endl;
+    };
+
+    check("S1: t=0.1s PLL >= 50% real",
+          pll_speed_at_01 >= 0.5f * real_speed_at_01,
+          ("PLL=" + std::to_string(pll_speed_at_01) + " real=" + std::to_string(real_speed_at_01)).c_str());
+    check("S2: t=0.5s PLL >= 80% real",
+          pll_speed_at_05 >= 0.8f * real_speed_at_05,
+          ("PLL=" + std::to_string(pll_speed_at_05) + " real=" + std::to_string(real_speed_at_05)).c_str());
+    check("S3: t=3.0s |PLL-real| < 10",
+          std::abs(pll_speed_at_30 - real_speed_at_30) < 10.0f,
+          ("PLL=" + std::to_string(pll_speed_at_30) + " real=" + std::to_string(real_speed_at_30)).c_str());
+    check("S4: t=6.0s no NaN/oscillation |PLL| < 2000",
+          !std::isnan(pll_speed_at_60) && std::abs(pll_speed_at_60) < 2000.0f,
+          ("PLL=" + std::to_string(pll_speed_at_60)).c_str());
+
+    std::cout << "Результаты в файле: motor_pll_test_results.csv" << std::endl;
+    if (failures > 0) {
+        std::cerr << "ТЕСТ ПРОВАЛЕН: " << failures << " сценар(ия/иев) не прошли!" << std::endl;
+        return 1;
+    }
+    std::cout << "Тест успешно завершен! Все сценарии PASS." << std::endl;
     return 0;
 }
