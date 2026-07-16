@@ -71,4 +71,3 @@ __RAM_FUNC HAL_StatusTypeDef HAL_FLASHEx_OB_DBankConfig(uint32_t DBankConfig);
 #endif
 
 #endif /* STM32G4xx_FLASH_RAMFUNC_H */
-

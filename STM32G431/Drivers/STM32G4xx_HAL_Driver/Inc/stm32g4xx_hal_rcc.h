@@ -3403,4 +3403,3 @@ void              HAL_RCC_CSSCallback(void);
 #endif
 
 #endif /* STM32G4xx_HAL_RCC_H */
-

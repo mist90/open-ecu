@@ -1428,4 +1428,3 @@ static void FLASH_OB_GetPCROP(uint32_t *PCROPConfig, uint32_t *PCROPStartAddr, u
 /**
   * @}
   */
-

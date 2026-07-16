@@ -1516,4 +1516,3 @@ __STATIC_INLINE void LL_FLASH_DisableSleepPowerDown(void)
 #endif
 
 #endif /* __STM32G4xx_LL_SYSTEM_H */
-

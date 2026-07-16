@@ -1397,4 +1397,3 @@ static uint32_t RCC_GetSysClockFreqFromPLLSource(void)
 /**
   * @}
   */
-

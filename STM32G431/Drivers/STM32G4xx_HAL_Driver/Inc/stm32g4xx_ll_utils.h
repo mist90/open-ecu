@@ -326,4 +326,3 @@ ErrorStatus LL_PLL_ConfigSystemClock_HSE(uint32_t HSEFrequency, uint32_t HSEBypa
 #endif
 
 #endif /* STM32G4xx_LL_UTILS_H */
-

@@ -538,4 +538,3 @@ void HAL_MPU_ConfigRegion(MPU_Region_InitTypeDef *MPU_Init)
 /**
   * @}
   */
-

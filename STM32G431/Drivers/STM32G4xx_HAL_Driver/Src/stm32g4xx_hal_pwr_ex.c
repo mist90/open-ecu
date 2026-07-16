@@ -1179,4 +1179,3 @@ void HAL_PWREx_DisableUCPDDeadBattery(void)
 /**
   * @}
   */
-

@@ -86,4 +86,3 @@ void              FLASH_FlushCaches(void);
 #endif
 
 #endif /* STM32G4xx_HAL_FLASH_EX_H */
-

@@ -888,4 +888,3 @@ HAL_StatusTypeDef HAL_OPAMPEx_SelfCalibrateAll(OPAMP_HandleTypeDef *hopamp1)
 /**
   * @}
   */
-

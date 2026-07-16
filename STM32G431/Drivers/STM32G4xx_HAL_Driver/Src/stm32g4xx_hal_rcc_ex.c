@@ -1869,5 +1869,3 @@ __weak void HAL_RCCEx_CRS_ErrorCallback(uint32_t Error)
 /**
   * @}
   */
-
-

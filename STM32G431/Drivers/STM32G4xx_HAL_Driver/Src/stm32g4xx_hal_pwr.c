@@ -649,4 +649,3 @@ __weak void HAL_PWR_PVDCallback(void)
 /**
   * @}
   */
-

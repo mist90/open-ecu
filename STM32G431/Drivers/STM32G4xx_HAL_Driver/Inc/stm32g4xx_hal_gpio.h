@@ -323,4 +323,3 @@ void              HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin);
 #endif
 
 #endif /* STM32G4xx_HAL_GPIO_H */
-

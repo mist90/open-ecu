@@ -88,10 +88,10 @@ case $METHOD in
             echo "  sudo apt install stlink-tools"
             exit 1
         fi
-        
+
         echo -e "${YELLOW}Flashing with ST-Link...${NC}"
         st-flash write $FIRMWARE_BIN 0x8000000
-        
+
         if [[ $VERIFY == true ]]; then
             echo -e "${YELLOW}Verifying flash...${NC}"
             st-flash read verification.bin 0x8000000 $(stat -c%s $FIRMWARE_BIN)
@@ -105,7 +105,7 @@ case $METHOD in
             fi
         fi
         ;;
-        
+
     openocd)
         # Check if openocd is available
         if ! command -v openocd &> /dev/null; then
@@ -114,11 +114,11 @@ case $METHOD in
             echo "  sudo apt install openocd"
             exit 1
         fi
-        
+
         echo -e "${YELLOW}Flashing with OpenOCD...${NC}"
         openocd -f interface/stlink.cfg -f target/stm32g4x.cfg -c "program $FIRMWARE_ELF verify reset exit"
         ;;
-        
+
     dfu)
         # Check if dfu-util is available
         if ! command -v dfu-util &> /dev/null; then
@@ -127,14 +127,14 @@ case $METHOD in
             echo "  sudo apt install dfu-util"
             exit 1
         fi
-        
+
         echo -e "${YELLOW}Flashing with DFU...${NC}"
         echo "Put device in DFU mode (BOOT0=1, reset)"
         read -p "Press Enter when ready..."
-        
+
         dfu-util -a 0 -s 0x08000000:leave -D $FIRMWARE_BIN
         ;;
-        
+
     *)
         echo -e "${RED}Error: Unknown flash method: $METHOD${NC}"
         echo "Supported methods: stlink, openocd, dfu"

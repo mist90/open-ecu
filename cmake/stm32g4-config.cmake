@@ -84,12 +84,12 @@ function(filter_hal_sources HAL_SOURCES_VAR)
     set(FILTERED_SOURCES)
     foreach(SOURCE ${${HAL_SOURCES_VAR}})
         get_filename_component(SOURCE_NAME ${SOURCE} NAME)
-        
+
         # Skip template files
         if(SOURCE_NAME IN_LIST HAL_EXCLUDE_SOURCES)
             continue()
         endif()
-        
+
         # Only include essential modules for smaller binary
         if(SOURCE_NAME IN_LIST HAL_ESSENTIAL_MODULES)
             list(APPEND FILTERED_SOURCES ${SOURCE})

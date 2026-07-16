@@ -1024,4 +1024,3 @@ void        LL_OPAMP_StructInit(LL_OPAMP_InitTypeDef *OPAMP_InitStruct);
 #endif
 
 #endif /* STM32G4xx_LL_OPAMP_H */
-
