@@ -515,7 +515,7 @@ Enable or disable continuous PLL (Phase-Locked Loop) telemetry streaming. When e
 Each line is a newline-terminated tuple (uses `\n` only, not `\r\n`):
 
 ```
-+PLL:<angle_per_second>;<pll_integral>;<time_since_last_hall>;<angle>;<hall_state_raw>;<measured_speed>;<is_sync>
++PLL:<angle_per_second>;<pll_integral>;<time_since_last_hall>;<angle>;<hall_state_raw>;<is_sync>
 ```
 
 | Field | Type | Description |
@@ -525,51 +525,50 @@ Each line is a newline-terminated tuple (uses `\n` only, not `\r\n`):
 | time_since_last_hall | float | Seconds since last Hall sensor edge (resets to 0 on each edge, 5s timeout) |
 | angle | float | PLL-estimated rotor angle in steps [0..6) (6 steps = 1 electrical revolution) |
 | hall_state_raw | int | Actual Hall sensor reading [0..5] (raw GPIO state before any filtering) |
-| measured_speed | float | Edge-timing filtered rotor speed in steps/sec (feedforward input to PLL) |
 | is_sync | int | PLL synchronized with Hall sensor flag (1 = tracking, 0 = snapping angle to Hall) |
 
 **Example:**
 
 ```
-+PLL:291.158;218.631;0.0018;3.142;4;288.500;1
-+PLL:295.430;220.104;0.0009;0.571;5;293.200;1
-+PLL:288.712;219.502;0.0021;5.028;2;285.900;0
++PLL:291.158;218.631;0.0018;3.142;4;1
++PLL:295.430;220.104;0.0009;0.571;5;1
++PLL:288.712;219.502;0.0021;5.028;2;0
 ```
 
 **Note:** The `angle` field mirrors `+TM:pll_angle` (same value, sampled at the same tick). Position fields `meas_pos` and `tgt_pos` remain `+TM:`-only. To compute the PLL tracking error, use `+TM:` fields: `error = measured_position - pll_angle` (wrapped to [-3, +3] per electrical period). The slip threshold is 3.0 steps.
 
 ## PLL Gain Tuning (AT+PLLID)
 
-Set or read the PLL base PI gains. These are the base values used by the adaptive gain schedule. The effective gains at runtime are: `kp = base_kp + 20 * speed_factor`, `ki = base_ki + 400 * speed_factor`, where `speed_factor = |angle_per_second| / max_electrical_speed` (clamped to [0, 1]).
+Set or read the PLL PI gains.
 
 | | |
 |---|---|
 | **Set** | `AT+PLLID=<kp>,<ki>*<CRC>\r\n` |
 | **Query** | `AT+PLLID?*<CRC>\r\n` |
 | **Set response** | `OK\r\n` |
-| **Query response** | `+PLLID:200.000,10000.000\r\nOK\r\n` |
+| **Query response** | `+PLLID:100.000,5000.000\r\nOK\r\n` |
 
-**Default values:** `kp=200.0`, `ki=10000.0` (giving ω_n=100 rad/s, ζ=1.0).
+**Default values:** `kp=100.0`, `ki=5000.0` (giving ω_n=70.7 rad/s, ζ=0.707).
 
 The `kd` parameter is not used (PLL is PI-only, no derivative term).
 
 **Examples:**
 
 ```
-> AT+PLLID=200,10000*XXXX\r\n
+> AT+PLLID=100,5000*XXXX\r\n
 < OK\r\n
 
 > AT+PLLID?*XXXX\r\n
-< +PLLID:200.000,10000.000\r\n
+< +PLLID:100.000,5000.000\r\n
 < OK\r\n
 ```
 
 **Tuning notes:**
 - `ki` determines the PLL bandwidth: ω_n = √ki. Higher ki = faster tracking but potential instability if too high.
-- `kp` determines damping: ζ = kp / (2·√ki). Target ζ ≈ 1.0 for critically damped response.
-- The steady-state tracking error during acceleration is: `e_ss = α / ki` (in steps per 10 electrical periods), where α is the rotor acceleration in steps/s².
+- `kp` determines damping: ζ = kp / (2·√ki). Target ζ ≈ 0.7–1.0 for well-damped response.
+- The steady-state tracking error during acceleration is: `e_ss = α / ki` (in steps), where α is the rotor acceleration in steps/s².
 - The commutation reversal threshold is 1.5 steps (90° field offset). If the PLL tracking error exceeds 1.5 steps, the effective stator field lead becomes negative, causing torque reversal and motor runaway.
-- With ki=10000 and max acceleration 100 RPS/s (4800 steps/s²): e_ss = 0.48 steps — safely below the 1.5-step threshold.
+- With ki=5000 and max acceleration 100 RPS/s (4800 steps/s²): e_ss = 0.96 steps — safely below the 1.5-step threshold.
 
 ## Error Responses
 
@@ -610,7 +609,7 @@ ERROR\r\n
 | `AT+CPID=<kp>,<ki>[,<kd>]` | Set | any float | `OK` |
 | `AT+CPID?` | Query | -- | `+CPID:0.050,1.000,0.000` |
 | `AT+PLLID=<kp>,<ki>` | Set | any float | `OK` |
-| `AT+PLLID?` | Query | -- | `+PLLID:200.000,10000.000` |
+| `AT+PLLID?` | Query | -- | `+PLLID:100.000,5000.000` |
 | `AT+VER?` | Query | -- | `+VER:1.0.0` |
 | `AT+STATUS?` | Query | -- | `+STATUS:1,1,23.45,...` |
 | `AT+MAXVALS?` | Query | -- | `+MAXVALS:200.0,-6.0,6.0,36.0,0.95` |

@@ -20,19 +20,6 @@ MotorPLL::MotorPLL(float freq_pwm, float max_electrical_speed, bool is_inverse_c
 }
 
 void MotorPLL::updateHall(uint8_t hall_state) noexcept {
-    int step_diff = (static_cast<int>(hall_state) - static_cast<int>(hall_state_raw_) + 6) % 6;
-    float direction = 0.0f;
-    if (step_diff == 1) direction = 1.0f;
-    else if (step_diff == 5) direction = -1.0f;
-
-    if (direction != 0.0f && has_previous_edge_ &&
-        time_since_last_hall_ > 0.0f && time_since_last_hall_ < HALL_TIMEOUT_SEC) {
-        float measured_speed = direction / time_since_last_hall_;
-        if (std::abs(measured_speed) <= 5.0f * max_electrical_speed_) {
-            measured_speed_filtered_ = 0.3f * measured_speed + 0.7f * measured_speed_filtered_;
-        }
-    }
-    has_previous_edge_ = true;
     time_since_last_hall_ = 0;
     hall_state_raw_ = hall_state;
 }
@@ -84,8 +71,6 @@ void MotorPLL::updateTick() noexcept {
     if (time_since_last_hall_ >= HALL_TIMEOUT_SEC) {
         angle_per_second_ = 0.0f;
         pll_integral_ = 0.0f;
-        measured_speed_filtered_ = 0.0f;
-        has_previous_edge_ = false;
         return;
     }
 
@@ -139,8 +124,6 @@ void MotorPLL::reset() noexcept {
     angle_per_second_ = 0.0f;
     pll_integral_ = 0.0f;
     time_since_last_hall_ = 0.0f;
-    measured_speed_filtered_ = 0.0f;
-    has_previous_edge_ = false;
 }
 
 float MotorPLL::getAngle() const noexcept {
@@ -158,7 +141,6 @@ MotorPLL::PllInfo MotorPLL::getInfo() const noexcept {
     info.angle = angle_;
     info.angle_per_second = angle_per_second_;
     info.pll_integral = pll_integral_;
-    info.measured_speed = measured_speed_filtered_;
     info.time_since_last_hall = time_since_last_hall_;
     info.kp = pll_kp_;
     info.ki = pll_ki_;

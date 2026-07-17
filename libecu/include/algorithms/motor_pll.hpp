@@ -111,7 +111,6 @@ public:
         float angle;               ///< PLL-estimated angle in steps [0..ANGLE_MAX)
         float angle_per_second;    ///< PLL-estimated speed in steps/sec
         float pll_integral;        ///< PI integrator term in steps/sec
-        float measured_speed;      ///< Edge-timing filtered speed (feedforward) in steps/sec
         float time_since_last_hall;///< Seconds since last Hall edge
         float kp;                  ///< Current effective proportional gain (after adaptive)
         float ki;                  ///< Current effective integral gain (after adaptive)
@@ -150,8 +149,6 @@ private:
     bool use_pll_ = false;
     float time_since_last_hall_ = 0.0f;
     float pll_integral_ = 0.0f;
-    float measured_speed_filtered_ = 0.0f;
-    bool has_previous_edge_ = false;
     float DT_;
     float max_electrical_speed_;
     float pll_kp_ = 100.0f;   ///< Base proportional gain (tunable via AT+PLLID)
