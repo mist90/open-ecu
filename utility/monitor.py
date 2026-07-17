@@ -667,6 +667,7 @@ class CurrentWaveformTab(QWidget):
         self.plot_position = pg.PlotWidget()
         _style_plot(self.plot_position, "Position", bottom_label="Sample Index")
         self.plot_position.enableAutoRange(x=False, y=False)
+        self.plot_position.setYRange(0, 5)
         self.curve_position = self.plot_position.plot(name="position", pen=pg.mkPen("#44ff44", width=2))
         layout.addWidget(self.plot_position, stretch=1)
 

@@ -110,7 +110,7 @@ public:
 
     /**
      * @brief Send PLL telemetry line (+PLL:)
-     * @param info PLL internal state snapshot (angle_per_second, pll_integral, time_since_last_hall, kp, ki)
+     * @param info PLL internal state snapshot (angle_per_second, pll_integral, time_since_last_hall, kp, ki, is_sync)
      */
     void sendPllTelemetry(const MotorPLL::PllInfo& info) noexcept;
 

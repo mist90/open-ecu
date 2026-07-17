@@ -515,7 +515,7 @@ Enable or disable continuous PLL (Phase-Locked Loop) telemetry streaming. When e
 Each line is a newline-terminated tuple (uses `\n` only, not `\r\n`):
 
 ```
-+PLL:<angle_per_second>;<pll_integral>;<time_since_last_hall>;<kp>;<ki>
++PLL:<angle_per_second>;<pll_integral>;<time_since_last_hall>;<kp>;<ki>;<is_sync>
 ```
 
 | Field | Type | Description |
@@ -525,13 +525,14 @@ Each line is a newline-terminated tuple (uses `\n` only, not `\r\n`):
 | time_since_last_hall | float | Seconds since last Hall sensor edge (resets to 0 on each edge, 5s timeout) |
 | kp | float | Current effective proportional gain (after adaptive scaling) |
 | ki | float | Current effective integral gain (after adaptive scaling) |
+| is_sync | int | PLL synchronized with Hall sensor flag (1 = tracking, 0 = snapping angle to Hall) |
 
 **Example:**
 
 ```
-+PLL:291.158;218.631;0.0018;55.61;612.15
-+PLL:295.430;220.104;0.0009;55.63;612.59
-+PLL:288.712;219.502;0.0021;55.59;611.82
++PLL:291.158;218.631;0.0018;55.61;612.15;1
++PLL:295.430;220.104;0.0009;55.63;612.59;1
++PLL:288.712;219.502;0.0021;55.59;611.82;0
 ```
 
 **Note:** Position and angle fields available in `+TM:` telemetry (`meas_pos`, `tgt_pos`, `pll_angle`) are not duplicated here. To compute the PLL tracking error, use `+TM:` fields: `error = measured_position - pll_angle` (wrapped to [-3, +3] per electrical period). The slip threshold is 3.0 steps.
