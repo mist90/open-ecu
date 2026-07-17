@@ -520,12 +520,13 @@ void AtCommandProcessor::sendPllTelemetry(const MotorPLL::PllInfo& info) noexcep
     }
 
     char buf[64];
-    int len = std::snprintf(buf, sizeof(buf), "+PLL:%.3f;%.3f;%.4f;%.2f;%.2f;%d\n",
+    int len = std::snprintf(buf, sizeof(buf), "+PLL:%.3f;%.3f;%.4f;%.3f;%u;%.3f;%d\n",
             info.angle_per_second,
             info.pll_integral,
             info.time_since_last_hall,
-            info.kp,
-            info.ki,
+            info.angle,
+            static_cast<unsigned>(info.hall_state_raw),
+            info.measured_speed,
             static_cast<int>(info.is_sync));
 
     if (len > 0 && static_cast<std::size_t>(len) < sizeof(buf)) {

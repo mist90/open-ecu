@@ -515,7 +515,7 @@ Enable or disable continuous PLL (Phase-Locked Loop) telemetry streaming. When e
 Each line is a newline-terminated tuple (uses `\n` only, not `\r\n`):
 
 ```
-+PLL:<angle_per_second>;<pll_integral>;<time_since_last_hall>;<kp>;<ki>;<is_sync>
++PLL:<angle_per_second>;<pll_integral>;<time_since_last_hall>;<angle>;<hall_state_raw>;<measured_speed>;<is_sync>
 ```
 
 | Field | Type | Description |
@@ -523,19 +523,20 @@ Each line is a newline-terminated tuple (uses `\n` only, not `\r\n`):
 | angle_per_second | float | PLL-estimated rotor speed in steps/sec (6 steps = 1 electrical revolution) |
 | pll_integral | float | PI integrator term in steps/sec (clamped to ±max_electrical_speed) |
 | time_since_last_hall | float | Seconds since last Hall sensor edge (resets to 0 on each edge, 5s timeout) |
-| kp | float | Current effective proportional gain (after adaptive scaling) |
-| ki | float | Current effective integral gain (after adaptive scaling) |
+| angle | float | PLL-estimated rotor angle in steps [0..6) (6 steps = 1 electrical revolution) |
+| hall_state_raw | int | Actual Hall sensor reading [0..5] (raw GPIO state before any filtering) |
+| measured_speed | float | Edge-timing filtered rotor speed in steps/sec (feedforward input to PLL) |
 | is_sync | int | PLL synchronized with Hall sensor flag (1 = tracking, 0 = snapping angle to Hall) |
 
 **Example:**
 
 ```
-+PLL:291.158;218.631;0.0018;55.61;612.15;1
-+PLL:295.430;220.104;0.0009;55.63;612.59;1
-+PLL:288.712;219.502;0.0021;55.59;611.82;0
++PLL:291.158;218.631;0.0018;3.142;4;288.500;1
++PLL:295.430;220.104;0.0009;0.571;5;293.200;1
++PLL:288.712;219.502;0.0021;5.028;2;285.900;0
 ```
 
-**Note:** Position and angle fields available in `+TM:` telemetry (`meas_pos`, `tgt_pos`, `pll_angle`) are not duplicated here. To compute the PLL tracking error, use `+TM:` fields: `error = measured_position - pll_angle` (wrapped to [-3, +3] per electrical period). The slip threshold is 3.0 steps.
+**Note:** The `angle` field mirrors `+TM:pll_angle` (same value, sampled at the same tick). Position fields `meas_pos` and `tgt_pos` remain `+TM:`-only. To compute the PLL tracking error, use `+TM:` fields: `error = measured_position - pll_angle` (wrapped to [-3, +3] per electrical period). The slip threshold is 3.0 steps.
 
 ## PLL Gain Tuning (AT+PLLID)
 
