@@ -278,6 +278,9 @@ private:
     // Position tracking for CURRENT_MODE (to detect commutation events)
     volatile uint8_t prev_position_;         ///< Previous rotor position for change detection
 
+    // Deferred Hall update (debounce via PWM ISR re-read)
+    volatile bool hall_update_pending_;      ///< Set by Hall ISR, processed by PWM ISR
+
     // Open-loop timing control
     uint8_t open_loop_step_;                 ///< Current step in open-loop mode (0-5)
     uint32_t open_loop_last_step_time_us_;   ///< Timestamp of last step change

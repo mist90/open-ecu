@@ -56,7 +56,7 @@ bool Stm32TimHallSensor::initialize() {
     TIM_HallSensor_InitTypeDef hall_config = {0};
     hall_config.IC1Polarity = TIM_ICPOLARITY_RISING;
     hall_config.IC1Prescaler = TIM_ICPSC_DIV1;
-    hall_config.IC1Filter = 0x0C;  // FDIV16_N8: ~752ns debounce at fDTS=170MHz
+    hall_config.IC1Filter = 0x0F;  // FDIV32_N8: ~1.5μs hardware debounce at fDTS=170MHz
     hall_config.Commutation_Delay = 0;
 
     if (HAL_TIMEx_HallSensor_Init(&htim4, &hall_config) != HAL_OK) {

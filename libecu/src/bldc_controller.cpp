@@ -37,6 +37,7 @@ BldcController::BldcController(
     , dmode_(DriveMode::NEUTRAL)
     , initialized_(false)
     , prev_position_(0xFF)
+    , hall_update_pending_(false)
     , open_loop_step_(0)
     , open_loop_last_step_time_us_(0)
     , last_pid_update_time_us_(0)
@@ -412,27 +413,10 @@ void BldcController::hallSensorInterruptHandler() noexcept
     if (status_.control_mode == ControlMode::OPEN_LOOP)
         return;
 
-    uint8_t hall_state = commutation_controller_.getCurrentPosition();
-
-    if (hall_state > 5) {
-        return;
-    }
-
-    {
-        CriticalSection cs;
-        status_.measured_position = hall_state;
-    }
-
-    // If BEMF observer is active and speed is above threshold, don't feed Hall to PLL
-    if (bemf_observer_ &&
-        bemf_observer_->shouldIgnoreHall(motor_pll_.getSpeedStepsSec(), status_.duty_cycle)) {
-        return;
-    }
-
-    {
-        CriticalSection cs;
-        motor_pll_.updateHall(hall_state);
-    }
+    // Deferred Hall update: set flag, process in PWM ISR.
+    // Hall signal may bounce (1→0→1) due to EMI from power cables.
+    // PWM ISR re-reads stable state 50μs later, hiding bounce from PLL.
+    hall_update_pending_ = true;
 }
 
 void BldcController::pwmInterruptHandler() noexcept {
@@ -478,6 +462,25 @@ void BldcController::pwmInterruptHandler() noexcept {
             }
         } else {
             bemf_active = false;
+        }
+    }
+
+    // Process deferred Hall update (debounced re-read from stable GPIO state)
+    if (hall_update_pending_) {
+        hall_update_pending_ = false;
+        uint8_t hall_state = commutation_controller_.getCurrentPosition();
+        if (hall_state <= 5) {
+            {
+                CriticalSection cs;
+                status_.measured_position = hall_state;
+            }
+            if (!(bemf_observer_ &&
+                  bemf_observer_->shouldIgnoreHall(motor_pll_.getSpeedStepsSec(), status_.duty_cycle))) {
+                {
+                    CriticalSection cs;
+                    motor_pll_.updateHall(hall_state);
+                }
+            }
         }
     }
 
