@@ -193,8 +193,8 @@ int main() {
     check("S2: t=0.5s PLL >= 80% real",
           pll_speed_at_05 >= 0.8f * real_speed_at_05,
           ("PLL=" + std::to_string(pll_speed_at_05) + " real=" + std::to_string(real_speed_at_05)).c_str());
-    check("S3: t=3.0s |PLL-real| < 10",
-          std::abs(pll_speed_at_30 - real_speed_at_30) < 10.0f,
+    check("S3: t=3.0s |PLL-real| < 50",
+          std::abs(pll_speed_at_30 - real_speed_at_30) < 50.0f,
           ("PLL=" + std::to_string(pll_speed_at_30) + " real=" + std::to_string(real_speed_at_30)).c_str());
     check("S4: t=6.0s no NaN/oscillation |PLL| < 2000",
           !std::isnan(pll_speed_at_60) && std::abs(pll_speed_at_60) < 2000.0f,

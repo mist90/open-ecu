@@ -29,8 +29,7 @@ void MotorPLL::updateHall(uint8_t hall_state) noexcept {
         time_since_last_hall_ > 0.0f && time_since_last_hall_ < HALL_TIMEOUT_SEC) {
         float measured_speed = direction / time_since_last_hall_;
         if (std::abs(measured_speed) <= 5.0f * max_electrical_speed_) {
-            measured_speed_filtered_ = 0.5f * measured_speed + 0.5f * measured_speed_filtered_;
-            pll_integral_ = measured_speed_filtered_;
+            measured_speed_filtered_ = 0.3f * measured_speed + 0.7f * measured_speed_filtered_;
         }
     }
     has_previous_edge_ = true;
