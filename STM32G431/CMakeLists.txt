@@ -40,6 +40,33 @@ if(ENABLE_DEBUG_PWM_ISR)
     message(STATUS "PWM ISR debug capture enabled (uses ~8KB RAM)")
 endif()
 
+# Extract STM32 HAL Drivers from archive if not present
+set(DRIVERS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/Drivers")
+set(DRIVERS_ARCHIVE "${CMAKE_CURRENT_SOURCE_DIR}/Drivers.tar.gz")
+
+if(NOT EXISTS "${DRIVERS_DIR}")
+    if(NOT EXISTS "${DRIVERS_ARCHIVE}")
+        message(FATAL_ERROR
+            "STM32 HAL Drivers directory not found and archive is missing!\n"
+            "Expected archive: ${DRIVERS_ARCHIVE}\n"
+            "Cannot configure project without STM32 HAL drivers."
+        )
+    endif()
+    message(STATUS "Extracting STM32 HAL Drivers from Drivers.tar.gz...")
+    execute_process(
+        COMMAND ${CMAKE_COMMAND} -E tar xzf "${DRIVERS_ARCHIVE}"
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        RESULT_VARIABLE _extract_result
+    )
+    if(NOT _extract_result EQUAL 0)
+        message(FATAL_ERROR
+            "Failed to extract Drivers archive (exit code: ${_extract_result}).\n"
+            "Archive may be corrupted: ${DRIVERS_ARCHIVE}"
+        )
+    endif()
+    message(STATUS "Drivers extracted successfully")
+endif()
+
 # Include directories
 include_directories(
     Core/Inc

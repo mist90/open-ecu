@@ -4,3 +4,6 @@ STM32G431/Core/Src/main.cpp.bak
 tests/test_motor_pll/*.csv
 tests/test_motor_pll/test
 tests/test_motor_pll/*.png
+
+# Extracted STM32 HAL Drivers (source of truth: STM32G431/Drivers.tar.gz)
+STM32G431/Drivers/
