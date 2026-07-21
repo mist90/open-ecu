@@ -29,7 +29,7 @@ The UART is routed through **USART2** on the STM32G431:
 1. Connect your serial adapter
 2. Send a command with CRC: `AT+VER?*CRC\r\n`
 3. Calculate CRC of `AT+VER?` using CRC-16/CCITT-FALSE
-4. You should receive `+VER:1.0.0\r\nOK\r\n`
+4. You should receive `+VER:1.0.0\r\n`
 
 Python example:
 
@@ -143,7 +143,7 @@ Set target motor speed or read the current measured speed.
 | **Set** | `AT+SPD=<val>*<CRC>\r\n` |
 | **Query** | `AT+SPD?*<CRC>\r\n` |
 | **Set response** | `OK\r\n` |
-| **Query response** | `+SPD:123.45\r\nOK\r\n` |
+| **Query response** | `+SPD:123.45\r\n` |
 | **Range** | 0.0 to 200.0 RPS |
 | **Unit** | Revolutions per second |
 
@@ -155,7 +155,6 @@ Set target motor speed or read the current measured speed.
 
 > AT+SPD?*B3C4\r\n         (CRC of "AT+SPD?")
 < +SPD:48.32\r\n
-< OK\r\n
 ```
 
 ### Current Control (AT+CUR)
@@ -167,7 +166,7 @@ Set target motor current or read the current target value.
 | **Set** | `AT+CUR=<val>*<CRC>\r\n` |
 | **Query** | `AT+CUR?*<CRC>\r\n` |
 | **Set response** | `OK\r\n` |
-| **Query response** | `+CUR:2.50\r\nOK\r\n` |
+| **Query response** | `+CUR:2.50\r\n` |
 | **Range** | -6.0 to 6.0 A |
 
 Negative current values reverse the current direction, enabling regenerative braking when the motor is spinning forward.
@@ -180,7 +179,6 @@ Negative current values reverse the current direction, enabling regenerative bra
 
 > AT+CUR?*F3A4\r\n
 < +CUR:3.50\r\n
-< OK\r\n
 ```
 
 ### Duty Cycle (AT+DUT)
@@ -192,7 +190,7 @@ Set duty cycle in open-loop mode or read current duty cycle.
 | **Set** | `AT+DUT=<val>*<CRC>\r\n` |
 | **Query** | `AT+DUT?*<CRC>\r\n` |
 | **Set response** | `OK\r\n` |
-| **Query response** | `+DUT:0.30\r\nOK\r\n` |
+| **Query response** | `+DUT:0.30\r\n` |
 | **Range** | 0.0 to 1.0 |
 
 ### Control Mode (AT+MODE)
@@ -204,7 +202,7 @@ Set or read the mechanical control mode.
 | **Set** | `AT+MODE=<val>*<CRC>\r\n` |
 | **Query** | `AT+MODE?*<CRC>\r\n` |
 | **Set response** | `OK\r\n` |
-| **Query response** | `+MODE:1\r\nOK\r\n` |
+| **Query response** | `+MODE:1\r\n` |
 
 | Value | Mode | Description |
 |-------|------|-------------|
@@ -220,7 +218,6 @@ Set or read the mechanical control mode.
 
 > AT+MODE?*EF01\r\n
 < +MODE:1\r\n
-< OK\r\n
 ```
 
 ### Electric Mode (AT+EMODE)
@@ -232,7 +229,7 @@ Set or read the electrical control strategy.
 | **Set** | `AT+EMODE=<val>*<CRC>\r\n` |
 | **Query** | `AT+EMODE?*<CRC>\r\n` |
 | **Set response** | `OK\r\n` |
-| **Query response** | `+EMODE:1\r\nOK\r\n` |
+| **Query response** | `+EMODE:1\r\n` |
 
 | Value | Mode | Description |
 |-------|------|-------------|
@@ -248,7 +245,7 @@ Set or read the motor rotation direction.
 | **Set** | `AT+DMODE=<val>*<CRC>\r\n` |
 | **Query** | `AT+DMODE?*<CRC>\r\n` |
 | **Set response** | `OK\r\n` |
-| **Query response** | `+DMODE:0\r\nOK\r\n` |
+| **Query response** | `+DMODE:0\r\n` |
 
 | Value | Mode | Description |
 |-------|------|-------------|
@@ -309,7 +306,7 @@ Read the firmware version string.
 | | |
 |---|---|
 | **Query** | `AT+VER?*<CRC>\r\n` |
-| **Response** | `+VER:1.0.0\r\nOK\r\n` |
+| **Response** | `+VER:1.0.0\r\n` |
 
 ### Motor Status (AT+STATUS)
 
@@ -318,7 +315,7 @@ Read a snapshot of the motor's current state.
 | | |
 |---|---|
 | **Query** | `AT+STATUS?*<CRC>\r\n` |
-| **Response** | `+STATUS:<ctrl_mode>,<elec_mode>,<speed>,<target_cur>,<duty>,<bus_volt>\r\nOK\r\n` |
+| **Response** | `+STATUS:<ctrl_mode>,<elec_mode>,<speed>,<target_cur>,<duty>,<bus_volt>\r\n` |
 
 Response fields in order:
 
@@ -336,7 +333,6 @@ Response fields in order:
 ```
 > AT+STATUS?*DEAD\r\n
 < +STATUS:1,1,23.45,1.50,0.35,24.56\r\n
-< OK\r\n
 ```
 
 ### Maximum Values (AT+MAXVALS)
@@ -346,7 +342,7 @@ Read the firmware's configured safety limits. Useful for host-side UI to set sli
 | | |
 |---|---|
 | **Query** | `AT+MAXVALS?*<CRC>\r\n` |
-| **Response** | `+MAXVALS:<max_speed>,<min_current>,<max_current>,<max_voltage>,<max_duty>\r\nOK\r\n` |
+| **Response** | `+MAXVALS:<max_speed>,<min_current>,<max_current>,<max_voltage>,<max_duty>\r\n` |
 
 Response fields in order:
 
@@ -362,13 +358,12 @@ Response fields in order:
 
 ```
 > AT+MAXVALS?*XXXX\r\n
-< +MAXVALS:200.0,-6.0,6.0,36.0,0.95
-< OK
+< +MAXVALS:200.0,-6.0,6.0,36.0,0.95\r\n
 ```
 
 ## Telemetry (AT+TM)
 
-Enable or disable continuous telemetry streaming. When enabled, the controller sends motor state data at 100Hz (every 10ms), synchronized with the speed control loop (SysTick). +TM is sent every other tick (50Hz); +PLL telemetry (see [AT+PLL](#pll-telemetry-at+pll)) is sent every tick (100Hz).
+Enable or disable continuous telemetry streaming. When enabled, the controller sends motor state data at 100Hz (every 10ms), synchronized with the speed control loop (SysTick). Both +TM and +PLL telemetry (see [AT+PLL](#pll-telemetry-at+pll)) are sent every tick (100Hz).
 
 | | |
 |---|---|
@@ -408,7 +403,7 @@ Each line is a newline-terminated tuple (uses `\n` only, not `\r\n`):
 +TM:4;5;23.45;22.20;0.35;1.50;1.47;24.56;3.6
 ```
 
-The telemetry output is invoked from the 100Hz speed control loop (SysTick). +TM is emitted every other tick (50Hz); +PLL is emitted every tick (100Hz). Each call to `sendTelemetry()` or `sendPllTelemetry()` produces one line.
+The telemetry output is invoked from the 100Hz speed control loop (SysTick). Both +TM and +PLL are emitted every tick (100Hz). Each call to `sendTelemetry()` or `sendPllTelemetry()` produces one line.
 
 ## Oscilloscope (AT+OSC)
 
@@ -419,7 +414,7 @@ Start or stop the oscilloscope feature, which captures high-speed samples from t
 | **Command** | `AT+OSC=<0|1>*<CRC>\r\n` |
 | **Query** | `AT+OSC?*<CRC>\r\n` |
 | **Response** | `OK\r\n` |
-| **Query response** | `+OSC:1\r\nOK\r\n` |
+| **Query response** | `+OSC:1\r\n` |
 
 | Value | Effect |
 |-------|--------|
@@ -441,13 +436,16 @@ When the write phase fills the buffer (write index reaches 512), the phase swaps
 
 ### Captured Data
 
-Each sample captures four values:
+Each sample captures seven values:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| duty_cycle | float | Current duty cycle |
+| duty_cycle | uint8 | Current duty cycle × 100 (0-100) |
 | target_current | float | Target current setpoint |
 | measured_current | float | Raw measured current from shunt |
+| bemf_voltage_u | float | Back-EMF voltage phase U |
+| bemf_voltage_v | float | Back-EMF voltage phase V |
+| bemf_voltage_w | float | Back-EMF voltage phase W |
 | position | uint8 | Rotor position from Hall sensors |
 
 ### Output Format
@@ -455,7 +453,7 @@ Each sample captures four values:
 Samples stream out as `\r\n`-terminated lines, one per call to `processOscOutput()`:
 
 ```
-+OSC:<sample_index>,<meas_cur_x1000>,<tgt_cur_x1000>,<duty_x1000>,<position>\r\n
++OSC:<sample_index>,<meas_cur_x1000>,<tgt_cur_x1000>,<duty_x100>,<volt_u_x1000>,<volt_v_x1000>,<volt_w_x1000>,<position>\r\n
 ```
 
 | Field | Type | Description |
@@ -463,7 +461,10 @@ Samples stream out as `\r\n`-terminated lines, one per call to `processOscOutput
 | sample_index | int | Sequential sample counter starting at 0 |
 | meas_cur_x1000 | int32 | `measured_current * 1000`, signed integer |
 | tgt_cur_x1000 | int32 | `target_current * 1000`, signed integer |
-| duty_x1000 | int32 | `duty_cycle * 1000`, signed integer |
+| duty_x100 | uint8 | `duty_cycle * 100` (0-100), unsigned integer |
+| volt_u_x1000 | int32 | `bemf_voltage_u * 1000`, signed integer |
+| volt_v_x1000 | int32 | `bemf_voltage_v * 1000`, signed integer |
+| volt_w_x1000 | int32 | `bemf_voltage_w * 1000`, signed integer |
 | position | uint8 | Rotor position (Hall sensor, 0-5) |
 
 The end of a burst is signaled by an empty data line:
@@ -477,12 +478,12 @@ After the end-of-burst marker, oscilloscope continues capturing the next burst (
 **Example burst:**
 
 ```
-+OSC:0,1500,2000,350,3
-+OSC:1,1485,2000,350,3
-+OSC:2,1520,2000,350,3
-+OSC:3,1490,2000,350,4
++OSC:0,1500,2000,35,1200,-600,-580,3
++OSC:1,1485,2000,35,1195,-610,-575,3
++OSC:2,1520,2000,35,1210,-590,-590,3
++OSC:3,1490,2000,35,1205,-605,-585,4
 ...
-+OSC:511,1510,2000,350,5
++OSC:511,1510,2000,35,1198,-598,-582,5
 +OSC:
 ```
 
@@ -491,7 +492,10 @@ To convert the scaled values back to physical units:
 ```python
 measured_current_A = meas_cur_x1000 / 1000.0
 target_current_A   = tgt_cur_x1000 / 1000.0
-duty_cycle         = duty_x1000 / 1000.0
+duty_cycle         = duty_x100 / 100.0
+voltage_u_V        = volt_u_x1000 / 1000.0
+voltage_v_V        = volt_v_x1000 / 1000.0
+voltage_w_V        = volt_w_x1000 / 1000.0
 ```
 
 ## PLL Telemetry (AT+PLL)
@@ -503,12 +507,12 @@ Enable or disable continuous PLL (Phase-Locked Loop) telemetry streaming. When e
 | **Command** | `AT+PLL=<0|1>*<CRC>\r\n` |
 | **Query** | `AT+PLL?*<CRC>\r\n` |
 | **Response** | `OK\r\n` |
-| **Query response** | `+PLL:1\r\nOK\r\n` |
+| **Query response** | `+PLL:1\r\n` |
 
 | Value | Effect |
 |-------|--------|
 | 0 | Disable +PLL telemetry |
-| 1 | Enable +PLL telemetry (default: enabled) |
+| 1 | Enable +PLL telemetry (default: disabled) |
 
 ### PLL Telemetry Format
 
