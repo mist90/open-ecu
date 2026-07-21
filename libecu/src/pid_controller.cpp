@@ -10,7 +10,6 @@ namespace libecu {
 
 PidController::PidController(const PidParameters& params) noexcept
     : params_(params)
-    , error_(0.0f)
     , previous_error_(0.0f)
     , integral_(0.0f)
     , derivative_(0.0f)
@@ -20,7 +19,6 @@ PidController::PidController(const PidParameters& params) noexcept
 
 void PidController::reset() noexcept
 {
-    error_ = 0.0f;
     previous_error_ = 0.0f;
     integral_ = 0.0f;
     derivative_ = 0.0f;
@@ -29,29 +27,33 @@ void PidController::reset() noexcept
 
 float PidController::update(float setpoint, float feedback, float dt) noexcept
 {
-    error_ = setpoint - feedback;
+    float error = setpoint - feedback;
 
-    float proportional = params_.kp * error_;
-    float potential_integral_ = integral_ + params_.ki * (error_ + previous_error_) * 0.5f * dt;
+    float i_max = params_.integral_max;
+    float i_min = params_.integral_min;
 
-    derivative_ = (dt > 0.0f) ? params_.kd * (error_ - previous_error_) / dt : 0.0f;
+    float proportional = params_.kp * error;
 
-    output_ = proportional + potential_integral_ + derivative_;
+    // Trapezoidal integration with clamping
+    float potential_integral = integral_ + params_.ki * (error + previous_error_) * 0.5f * dt;
+    potential_integral = clamp(potential_integral, i_min, i_max);
 
-    // Anti-windup + update integral
-    if (output_ > params_.max_output) {
-        output_ = params_.max_output;
-        if (error_ < 0.0f)
-            integral_ = potential_integral_;
-    } else if (output_ < params_.min_output) {
-        output_ = params_.min_output;
-        if (error_ > 0)
-            integral_ = potential_integral_;
-    } else {
-        integral_ = potential_integral_;
+    derivative_ = (dt > 0.0f) ? params_.kd * (error - previous_error_) / dt : 0.0f;
+
+    float unclamped_output = proportional + potential_integral + derivative_;
+    output_ = clamp(unclamped_output, params_.min_output, params_.max_output);
+
+    // Back-calculation anti-windup: reduce integral when output is saturated
+    if (params_.kb > 0.0f && dt > 0.0f) {
+        float saturation_error = output_ - unclamped_output;
+        if (saturation_error != 0.0f) {
+            potential_integral += params_.kb * saturation_error * dt;
+            potential_integral = clamp(potential_integral, i_min, i_max);
+        }
     }
 
-    previous_error_ = error_;
+    integral_ = potential_integral;
+    previous_error_ = error;
 
     return output_;
 }
@@ -64,8 +66,7 @@ float PidController::update(float setpoint, float feedback) noexcept
 void PidController::setParameters(const PidParameters& params) noexcept
 {
     params_ = params;
-
-    integral_ = clamp(integral_, params_.min_output, params_.max_output);
+    integral_ = clamp(integral_, params_.integral_min, params_.integral_max);
 }
 
 float PidController::clamp(float value, float min_val, float max_val) noexcept

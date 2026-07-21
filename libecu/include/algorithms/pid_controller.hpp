@@ -20,6 +20,9 @@ struct PidParameters {
     float max_output;   ///< Maximum output value
     float min_output;   ///< Minimum output value
     float sample_time_s; ///< Fixed sample time in seconds (for update(setpoint, feedback) overload)
+    float integral_max; ///< Integral clamp upper limit (must be set explicitly)
+    float integral_min; ///< Integral clamp lower limit (must be set explicitly)
+    float kb;           ///< Back-calculation anti-windup gain (0 = disabled, typical 1-5)
 };
 
 /**
@@ -71,12 +74,6 @@ public:
     const PidParameters& getParameters() const { return params_; }
 
     /**
-     * @brief Get last error value
-     * @return Last error value
-     */
-    float getLastError() const { return error_; }
-
-    /**
      * @brief Get integral term
      * @return Current integral term
      */
@@ -97,7 +94,6 @@ public:
 private:
     PidParameters params_;
 
-    float error_;
     float previous_error_;
     float integral_;
     float derivative_;
