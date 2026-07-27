@@ -47,19 +47,23 @@ public:
      * @param setpoint Desired value
      * @param feedback Current value
      * @param dt Time step in seconds
+     * @param external_saturated When true, freeze integral accumulation
+     *        (conditional integration for cascaded loop anti-windup)
      * @return Control output
      */
-    float update(float setpoint, float feedback, float dt) noexcept;
+    float update(float setpoint, float feedback, float dt, bool external_saturated = false) noexcept;
 
     /**
      * @brief Update PID controller with fixed sample time
      * @param setpoint Desired value
      * @param feedback Current value
+     * @param external_saturated When true, freeze integral accumulation
+     *        (conditional integration for cascaded loop anti-windup)
      * @return Control output (returns 0 if disabled)
      *
      * Uses sample_time_s from parameters. Suitable for fixed-frequency loops.
      */
-    float update(float setpoint, float feedback) noexcept;
+    float update(float setpoint, float feedback, bool external_saturated = false) noexcept;
 
     /**
      * @brief Set PID parameters
@@ -91,6 +95,12 @@ public:
      */
     float getOutput() const { return output_; }
 
+    /**
+     * @brief Check if output was saturated (clamped) on last update
+     * @return true if output hit min_output or max_output limit
+     */
+    bool isSaturated() const { return saturated_; }
+
 private:
     PidParameters params_;
 
@@ -98,6 +108,7 @@ private:
     float integral_;
     float derivative_;
     float output_;
+    bool saturated_;        ///< True when output was clamped on last update
 
     /**
      * @brief Clamp value between min and max

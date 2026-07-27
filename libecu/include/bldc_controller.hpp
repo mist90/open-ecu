@@ -79,6 +79,7 @@ struct MotorStatus {
     float bemf_voltage_v;     ///< Phase V voltage (V, pre-divider)
     float bemf_voltage_w;     ///< Phase W voltage (V, pre-divider)
     bool bemf_active;         ///< true if BEMF mode is driving commutation
+    bool current_pid_saturated; ///< true if current PID output is clamped (for speed PID anti-windup)
     uint8_t target_position;   ///< Driven motor position
     uint8_t measured_position;   ///< Measured motor position
     bool is_running;          ///< Motor running status

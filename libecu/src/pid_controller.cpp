@@ -14,6 +14,7 @@ PidController::PidController(const PidParameters& params) noexcept
     , integral_(0.0f)
     , derivative_(0.0f)
     , output_(0.0f)
+    , saturated_(false)
 {
 }
 
@@ -23,9 +24,10 @@ void PidController::reset() noexcept
     integral_ = 0.0f;
     derivative_ = 0.0f;
     output_ = 0.0f;
+    saturated_ = false;
 }
 
-float PidController::update(float setpoint, float feedback, float dt) noexcept
+float PidController::update(float setpoint, float feedback, float dt, bool external_saturated) noexcept
 {
     float error = setpoint - feedback;
 
@@ -34,14 +36,21 @@ float PidController::update(float setpoint, float feedback, float dt) noexcept
 
     float proportional = params_.kp * error;
 
-    // Trapezoidal integration with clamping
-    float potential_integral = integral_ + params_.ki * (error + previous_error_) * 0.5f * dt;
-    potential_integral = clamp(potential_integral, i_min, i_max);
+    // Conditional integration: freeze integral when downstream loop is saturated
+    float potential_integral;
+    if (external_saturated) {
+        potential_integral = integral_;
+    } else {
+        // Trapezoidal integration with clamping
+        potential_integral = integral_ + params_.ki * (error + previous_error_) * 0.5f * dt;
+        potential_integral = clamp(potential_integral, i_min, i_max);
+    }
 
     derivative_ = (dt > 0.0f) ? params_.kd * (error - previous_error_) / dt : 0.0f;
 
     float unclamped_output = proportional + potential_integral + derivative_;
     output_ = clamp(unclamped_output, params_.min_output, params_.max_output);
+    saturated_ = (output_ != unclamped_output);
 
     // Back-calculation anti-windup: reduce integral when output is saturated
     if (params_.kb > 0.0f && dt > 0.0f) {
@@ -58,9 +67,9 @@ float PidController::update(float setpoint, float feedback, float dt) noexcept
     return output_;
 }
 
-float PidController::update(float setpoint, float feedback) noexcept
+float PidController::update(float setpoint, float feedback, bool external_saturated) noexcept
 {
-    return update(setpoint, feedback, params_.sample_time_s);
+    return update(setpoint, feedback, params_.sample_time_s, external_saturated);
 }
 
 void PidController::setParameters(const PidParameters& params) noexcept

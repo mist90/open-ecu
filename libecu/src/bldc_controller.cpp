@@ -57,6 +57,7 @@ BldcController::BldcController(
     status_.bemf_voltage_v = 0.0f;
     status_.bemf_voltage_w = 0.0f;
     status_.bemf_active = false;
+    status_.current_pid_saturated = false;
     status_.target_position = 0xFF;
     status_.measured_position = 0xFF;
     status_.is_running = false;
@@ -151,7 +152,8 @@ void BldcController::update() noexcept
                 float pid_output = pid_speed_controller_.update(
                     limited_target,
                     status.current_speed_rps,
-                    dt
+                    dt,
+                    status.current_pid_saturated
                 );
 
                 // Electric mode determines how to use PID output
@@ -523,6 +525,7 @@ void BldcController::pwmInterruptHandler() noexcept {
         status_.bus_voltage = bus_voltage;
         status_.pll_angle = motor_pll_.getAngle();
         status_.bemf_active = bemf_active;
+        status_.current_pid_saturated = current_controller_.isSaturated();
         if (status_.target_position != new_position) {
             commutation_controller_.update(new_position, duty_cycle);
             status_.target_position = new_position;
