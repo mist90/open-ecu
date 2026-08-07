@@ -93,7 +93,7 @@ public:
     bool isUsingPLL() const noexcept;
 
     /// @brief Hall sensor fault was detected
-    /// @return 
+    /// @return
     bool isHallFault() const noexcept;
 
     /// @brief Reset PLL state (angle, speed, integrator)
