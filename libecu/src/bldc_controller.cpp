@@ -498,6 +498,11 @@ void BldcController::pwmInterruptHandler() noexcept {
         new_position = motor_pll_.getNextHall(dmode_);
     }
 
+    if (motor_pll_.isHallFault()) {
+        setDriveMode(DriveMode::NEUTRAL);
+        motor_pll_.resetHallFault();
+    }
+
     if (electric_mode == ElectricMode::VOLTAGE_MODE) {
         if (status_.target_position != new_position) {
             CriticalSection cs;

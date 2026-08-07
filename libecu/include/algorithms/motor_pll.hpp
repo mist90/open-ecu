@@ -93,8 +93,15 @@ public:
     /// @return true if PLL mode is active
     bool isUsingPLL() const noexcept;
 
+    /// @brief Hall sensor fault was detected
+    /// @return 
+    bool isHallFault() const noexcept;
+
     /// @brief Reset PLL state (angle, speed, integrator)
     void reset() noexcept;
+
+    /// @brief Reset Hall sensor fault flag
+    void resetHallFault() noexcept;
 
     /// @return Current estimated rotor angle in steps (0-5)
     float getAngle() const noexcept;
@@ -115,6 +122,7 @@ public:
         float kp;                  ///< Current effective proportional gain (after adaptive)
         float ki;                  ///< Current effective integral gain (after adaptive)
         bool is_sync;              ///< PLL synchronized with Hall sensor flag
+        bool is_hall_fault;        ///< Hall sensor fault flag
     };
 
     /**
@@ -147,6 +155,7 @@ private:
     bool is_inverse_commutation_table_ = false;
     bool is_sync = false;
     bool use_pll_ = false;
+    bool is_hall_fault_ = false;
     float time_since_last_hall_ = 0.0f;
     float pll_integral_ = 0.0f;
     float DT_;
