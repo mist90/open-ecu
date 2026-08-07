@@ -95,7 +95,12 @@ bool BldcController::initialize() noexcept
 
 void BldcController::update() noexcept
 {
-    float speed_rps = motor_pll_.getSpeedStepsSec() / (commutation_controller_.getNumPoles() * BLDC_NUM_PHASES);
+    // The PLL reports signed electrical speed — negative in REVERSE, because the
+    // Hall sequence descends.  Direction is carried by dmode_, and the speed PID
+    // setpoint is always a magnitude (setTargetSpeed rejects negatives), so the
+    // feedback must be a magnitude too.  Feeding the signed value made the error
+    // term (target + |speed|) unable to reach zero, pinning the loop at max_current.
+    float speed_rps = std::abs(motor_pll_.getSpeedStepsSec()) / (commutation_controller_.getNumPoles() * BLDC_NUM_PHASES);
 
     float alpha = params_.measured_speed_lpf_alpha;
     if (alpha > 0.0f && alpha < 1.0f) {

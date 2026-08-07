@@ -94,22 +94,34 @@ void MotorPLL::updateTick() noexcept {
 }
 
 uint8_t MotorPLL::getNextHall(const volatile DriveMode &mode) noexcept {
+    // Step offset applied to the rotor angle to place the stator field.
+    //
+    // FORWARD uses +1 step: the rotor sweeps 60 degrees inside a Hall sector, so
+    // the field leads it by 120..60 degrees — centred on the 90-degree torque
+    // optimum.  REVERSE must produce the *opposite* torque, which means flipping
+    // the field by 180 degrees, i.e. 3 steps of the 6-step table: +1 - 3 = -2.
+    // Using -1 (the naive mirror of +1) leaves the field only 120 degrees from
+    // the forward vector; the torque angle then sweeps 0..-60 degrees, so torque
+    // collapses to zero at every sector entry.  The motor cannot self-start and
+    // jerks once turning.
+    float offset = 0.0f;
+    if (mode == DriveMode::FORWARD)
+        offset = 1.0f;
+    else if (mode == DriveMode::REVERSE)
+        offset = -2.0f;
+
+    // An inverse commutation table runs the step sequence backwards, so the
+    // sign of the offset flips with it.
+    if (is_inverse_commutation_table_)
+        offset = -offset;
+
     if (!use_pll_) {
-        if (mode == DriveMode::FORWARD)
-            return !is_inverse_commutation_table_ ? (hall_state_raw_ + 1) % 6 : (hall_state_raw_ + 5) % 6;
-        else if (mode == DriveMode::REVERSE)
-            return !is_inverse_commutation_table_ ? (hall_state_raw_ + 5) % 6 : (hall_state_raw_ + 1) % 6;
-        else
-            return hall_state_raw_;
+        int next_step = static_cast<int>(hall_state_raw_) + static_cast<int>(offset);
+        next_step = ((next_step % 6) + 6) % 6;
+        return static_cast<uint8_t>(next_step);
     }
 
-    float direction = 0.0f;
-    if (mode == DriveMode::FORWARD)
-        direction = !is_inverse_commutation_table_ ? 1.0f : -1.0f;
-    if (mode == DriveMode::REVERSE)
-        direction = !is_inverse_commutation_table_ ? -1.0f : 1.0f;
-
-    float next_angle = angle_ + (1.0f * direction);
+    float next_angle = angle_ + offset;
 
     int next_step = static_cast<int>(std::round(next_angle));
     next_step = ((next_step % 6) + 6) % 6;
