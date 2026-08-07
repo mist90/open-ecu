@@ -76,14 +76,8 @@ void MotorPLL::updateTick() noexcept {
      * only HALL_TIMEOUT_SEC applies there. */
     if (is_sync) {
         const float speed_abs = std::abs(angle_per_second_);
-        if (speed_abs > 0.0f && time_since_last_hall_ > (1.0f / speed_abs))
+        if (time_since_last_hall_ > 1.5*(1.0f / speed_abs))
             is_hall_fault_ = true;
-    }
-
-    if (time_since_last_hall_ >= HALL_TIMEOUT_SEC) {
-        angle_per_second_ = 0.0f;
-        pll_integral_ = 0.0f;
-        return;
     }
 
     if (!reset_angle) {

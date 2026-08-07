@@ -42,7 +42,6 @@ enum class DriveMode : uint8_t {
  */
 class MotorPLL {
 public:
-    static constexpr float HALL_TIMEOUT_SEC = 5.0f;
     static constexpr float LIMIT_ANGLE_ERROR = 0.5f;
     static constexpr float ANGLE_MAX = 6.0f;
     static constexpr float SYNC_SPEED = 5.0f;
