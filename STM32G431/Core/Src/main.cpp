@@ -349,6 +349,10 @@ int main(void)
                 libecu::MotorPLL::PllInfo pll_info = motor_controller->getPllInfo();
                 at_processor.sendPllTelemetry(pll_info);
             }
+            if (at_processor.isBemfTelemetryEnabled()) {
+                at_processor.sendBemfTelemetry(motor_controller->getBemfInfo(),
+                                               motor_controller->getBemfAmplitude());
+            }
         }
 
         at_processor.process();

@@ -262,6 +262,13 @@ public:
      */
     BemfAmplitude getBemfAmplitude() const noexcept;
 
+    /**
+     * @brief Observer state snapshot for telemetry
+     *
+     * Zeroed when no observer is attached.
+     */
+    BemfObserver::BemfInfo getBemfInfo() const noexcept;
+
     void hallSensorInterruptHandler() noexcept;
 
     /**

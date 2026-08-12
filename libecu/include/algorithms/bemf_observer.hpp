@@ -196,6 +196,11 @@ public:
     /// @return true if no zero-crossing has arrived within max_step_periods
     bool isSyncLost() const noexcept { return sync_lost_; }
 
+    /// @return Number of times lock has been lost since construction
+    /// @note Telemetry runs far slower than the commutation rate, so the live
+    ///       `sync_lost` flag is easy to miss.  This counter is not.
+    uint32_t getSyncLossCount() const noexcept { return sync_loss_count_; }
+
     /// @return Integrator limit learned from Hall-driven steps (V*s), 0 if none yet
     float getLearnedIntegratorLimit() const noexcept { return learned_limit_; }
 
@@ -234,6 +239,7 @@ public:
         bool    bemf_active;        ///< BEMF mode currently active
         bool    zc_detected;        ///< Zero-crossing confirmed, waiting to fire
         bool    sync_lost;          ///< No zero-crossing within max_step_periods
+        uint32_t sync_loss_count;   ///< Lock losses since construction
         bool    blanked;            ///< Currently inside the blanking window
         uint8_t synthetic_step;     ///< Last synthetic Hall position emitted
         int8_t  polarity;           ///< Learned global BEMF slope sign (+1 / -1)
@@ -291,6 +297,7 @@ private:
     int8_t  polarity_;             ///< Learned global slope sign (+1 / -1)
     int32_t polarity_disagree_;    ///< Consecutive steps whose first sample contradicts polarity_
     bool    sync_lost_;            ///< No zero-crossing within max_step_periods
+    uint32_t sync_loss_count_;     ///< Rising edges of sync_lost_ since construction
     bool    bemf_was_active_;      ///< Hysteresis state for the BEMF/Hall handover
 
     // --- telemetry ---

@@ -543,6 +543,70 @@ Each line is a newline-terminated tuple (uses `\n` only, not `\r\n`):
 
 **Note:** The `angle` field mirrors `+TM:pll_angle` (same value, sampled at the same tick). Position fields `meas_pos` and `tgt_pos` remain `+TM:`-only. To compute the PLL tracking error, use `+TM:` fields: `error = measured_position - pll_angle` (wrapped to [-3, +3] per electrical period). The slip threshold is 3.0 steps.
 
+## BEMF Observer Telemetry (AT+BEMF)
+
+Enable or disable continuous BEMF observer telemetry. When enabled, the controller emits a `+BEMF:` line at 100Hz (every control tick) describing the state of the sensorless zero-crossing observer.
+
+Like `+PLL` and unlike `AT+OSC`, this is **unbuffered**: one line is written straight to the UART per control tick, with no capture buffer and no RAM cost.
+
+| | |
+|---|---|
+| **Command** | `AT+BEMF=<0|1>*<CRC>\r\n` |
+| **Query** | `AT+BEMF?*<CRC>\r\n` |
+| **Response** | `OK\r\n` |
+| **Query response** | `+BEMF:1\r\n` |
+
+| Value | Effect |
+|-------|--------|
+| 0 | Disable +BEMF telemetry |
+| 1 | Enable +BEMF telemetry (default: disabled) |
+
+### BEMF Telemetry Format
+
+Each line is a newline-terminated tuple (uses `\n` only, not `\r\n`):
+
+```
++BEMF:<e_peak>;<ke>;<int_limit>;<step_us>;<fit_n>;<pol>;<synth_step>;<active>;<lost>;<lost_cnt>
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| e_peak | float | Back-EMF plateau, line-to-neutral (V). Filtered least-squares estimate |
+| ke | float | Back-EMF constant, V*s per electrical radian. `E = ke * (pi/3) * steps_per_sec` |
+| int_limit | float | Flux limit currently in force (V*s), after learning and phase advance |
+| step_us | uint | Measured commutation step period, microseconds |
+| fit_n | uint | Samples in the last amplitude fit. Drops as speed rises - the sample budget per step |
+| pol | int | Learned BEMF slope sign, +1 or -1. Flips only if `auto_polarity` corrected the table |
+| synth_step | uint | Last synthetic Hall position emitted (0-5) |
+| active | int | 1 = BEMF mode is driving the PLL, 0 = Hall sensors are |
+| lost | int | 1 = no zero-crossing within `max_step_periods` right now |
+| lost_cnt | uint | Total lock losses since boot |
+
+**Example:**
+
+```
++BEMF:5.936;0.004717;0.001250;833;14;1;3;1;0;0
++BEMF:5.941;0.004719;0.001250;834;14;1;5;1;0;0
++BEMF:5.902;0.004702;0.001250;831;13;1;1;1;0;2
+```
+
+### Why these fields
+
+Telemetry runs at 100Hz while commutation runs at up to a few thousand steps per second, so a single tick sees roughly one step in twelve at 1200 steps/s and less at higher speed. Instantaneous per-sample values - the floating-phase reading, `v_diff`, the running integrator - would each be an arbitrary point inside a randomly chosen step and would tell you nothing. Every field above is therefore a **filtered value, a per-step aggregate, or a sticky counter**.
+
+`lost_cnt` exists for the same reason: the live `lost` flag clears on the next successful detection, which at 1200 steps/s is under a millisecond later, so a 100Hz poll would almost never catch it. The counter cannot be missed.
+
+Reading the line:
+
+- **Is sensorless running?** `active` = 1 and `lost` = 0. If `active` = 0 the observer is below `min_duty` or below the transition speed and the Hall sensors have the loop.
+- **Is it healthy?** `lost_cnt` should stop increasing once locked. A slowly climbing count means marginal detection - check `fit_n`.
+- **Is the signal strong enough?** `e_peak` against the bus voltage. Detection quality falls off when `e_peak` drops much below a few percent of Vbus.
+- **Am I running out of samples?** `fit_n` is the count of usable samples per step, after blanking and the rail guard. Below about 6 the crossing has very little to work with; that is the regime where the tuning sweep in `docs/bemf_hybrid_algorithm.md` section 8 matters.
+- **Is the timing constant sane?** `int_limit` should settle to a constant once learned, independent of speed. If it drifts with speed the flux model is not matching the motor.
+- **Is the model usable?** `ke` should be constant across the whole speed range. It is the term to pin into a feed-forward current model (see `docs/bemf_hybrid_algorithm.md` section 12).
+
+For raw per-sample phase voltages, use `AT+OSC` - that is what its capture buffer is for.
+
 ## PLL Gain Tuning (AT+PLLID)
 
 Set or read the PLL PI gains.
@@ -621,4 +685,5 @@ ERROR\r\n
 | `AT+MAXVALS?` | Query | -- | `+MAXVALS:200.00,-6.00,6.00,36.00,0.95` |
 | `AT+TM=<0|1>` | Set | 0, 1 | `OK` |
 | `AT+PLL=<0|1>` | Set/Query | 0, 1 | `OK` / `+PLL:1` |
+| `AT+BEMF=<0|1>` | Set/Query | 0, 1 | `OK` / `+BEMF:1` |
 | `AT+OSC=<0|1>` | Set/Query | 0, 1 | `OK` / `+OSC:1` |

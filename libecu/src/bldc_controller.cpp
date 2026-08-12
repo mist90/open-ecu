@@ -404,6 +404,14 @@ void BldcController::setBemfObserver(BemfObserver* observer) noexcept {
     bemf_observer_ = observer;
 }
 
+BemfObserver::BemfInfo BldcController::getBemfInfo() const noexcept {
+    CriticalSection cs;
+    if (!bemf_observer_) {
+        return BemfObserver::BemfInfo{};
+    }
+    return bemf_observer_->getInfo();
+}
+
 BemfAmplitude BldcController::getBemfAmplitude() const noexcept {
     CriticalSection cs;
     if (!bemf_observer_) {

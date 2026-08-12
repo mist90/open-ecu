@@ -92,6 +92,7 @@ BemfObserver::BemfObserver(float pwm_frequency) noexcept
     , polarity_(1)
     , polarity_disagree_(0)
     , sync_lost_(false)
+    , sync_loss_count_(0)
     , bemf_was_active_(false)
     , last_v_float_(0.0f)
     , last_v_ref_(0.0f)
@@ -312,7 +313,10 @@ bool BemfObserver::update(const BemfObserverInput& in) noexcept {
     // ---- loss-of-lock watchdog --------------------------------------------
     if (!fired_ && step_period > 0.0f && params_.max_step_periods > 0.0f &&
         time_since_comm_ > params_.max_step_periods * step_period) {
-        sync_lost_ = true;
+        if (!sync_lost_) {
+            sync_lost_ = true;
+            ++sync_loss_count_;   // rising edge only
+        }
     }
 
     if (fired_) {
@@ -583,6 +587,7 @@ BemfObserver::BemfInfo BemfObserver::getInfo() const noexcept {
     info.bemf_active        = bemf_was_active_;
     info.zc_detected        = zc_active_;
     info.sync_lost          = sync_lost_;
+    info.sync_loss_count    = sync_loss_count_;
     info.blanked            = (samples_valid_ == 0);
     info.synthetic_step     = synthetic_step_;
     info.polarity           = polarity_;
