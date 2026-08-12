@@ -245,6 +245,7 @@ public:
         int8_t  polarity;           ///< Learned global BEMF slope sign (+1 / -1)
         float   floating_voltage;   ///< Last floating phase voltage (V)
         float   v_ref;              ///< Neutral reference used for the last sample (V)
+        bool    virtual_neutral;    ///< Virtual neutral was actually used for the last sample
         float   v_diff;             ///< Last polarity-normalised BEMF error (V)
         float   integrator_vs;      ///< Flux integral accumulated since the ZC (V*s)
         float   integrator_limit;   ///< Limit currently in force (V*s)
@@ -328,6 +329,7 @@ private:
     float   amp_step_period_;      ///< Step period the last fit used (s)
     int32_t amp_fit_samples_;      ///< Samples in the last attempted fit
     bool    amp_valid_;            ///< Last attempted fit succeeded
+    bool    used_virtual_neutral_; ///< Virtual neutral survived the clip check last sample
 };
 
 } // namespace libecu

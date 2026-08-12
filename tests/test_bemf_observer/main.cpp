@@ -77,6 +77,8 @@ struct SimConfig {
     uint32_t seed        = 1;
     float deadband_v     = 0.0f;      ///< 0 = auto (1% of Vbus)
     uint8_t confirm      = 2;
+    bool  virtual_neutral = false;    ///< reference = (Vu+Vv+Vw)/3 instead of Vbus/2
+    float bus_gain_err   = 0.0f;      ///< bus-divider gain error relative to the phase taps
 };
 
 struct Result {
@@ -109,6 +111,7 @@ static Result runSim(const SimConfig& cfg, BemfTimingMode mode) {
     p.zc_deadband_volts     = cfg.deadband_v;
     p.zc_confirm_samples    = cfg.confirm;
     p.auto_polarity         = false;
+    p.use_virtual_neutral   = cfg.virtual_neutral;
     p.auto_learn_limit      = false;  // no Hall edges here to learn from
     p.timing_mode           = mode;
     if (mode == BemfTimingMode::FLUX_INTEGRATE) {
@@ -168,7 +171,10 @@ static Result runSim(const SimConfig& cfg, BemfTimingMode mode) {
             BemfObserverInput in;
             in.v_float = v[floating];
             in.v_u = v[0]; in.v_v = v[1]; in.v_w = v[2];
-            in.bus_voltage = cfg.vbus;
+            // The bus sense divider and the phase taps are different resistor
+            // networks on different ADC channels; bus_gain_err is their
+            // tolerance mismatch.
+            in.bus_voltage = cfg.vbus * (1.0f + cfg.bus_gain_err);
             in.step = applied_step;
             in.speed_steps_per_sec = cfg.steps_per_sec;
             fired = obs.update(in);
@@ -293,6 +299,29 @@ int main() {
             printf("  %-9.2f %-8u %8.2f %8.2f %8.2f %7d\n",
                    db, static_cast<unsigned>(cf), r.mean_err_deg,
                    r.rms_err_deg, r.max_abs_deg, r.lost_steps);
+        }
+    }
+    printf("\n");
+
+    // The Vbus/2 reference comes through a different divider than the phase
+    // taps.  Their tolerance mismatch is a fixed offset on V_ref - but v_diff
+    // multiplies by a sign that alternates per step, so the offset alternates
+    // too and lands as step-to-step jitter rather than a DC phase shift.  The
+    // virtual neutral travels the same path as the floating phase and cancels
+    // it outright.
+    printf("--- neutral reference vs bus-divider mismatch (1200 st/s, 0.3 V noise) ---\n");
+    printf("  %-10s %-16s %8s %8s %7s\n",
+           "bus err", "reference", "bias", "jitter", "missed");
+    const float gain_errs[] = {-0.02f, -0.01f, 0.0f, 0.01f, 0.02f};
+    for (float ge : gain_errs) {
+        for (int vn = 0; vn < 2; ++vn) {
+            SimConfig cfg = configFor(kCases[3]);   // 1200 st/s, 0.3 V rms
+            cfg.bus_gain_err    = ge;
+            cfg.virtual_neutral = (vn == 1);
+            Result r = runSim(cfg, BemfTimingMode::FLUX_INTEGRATE);
+            printf("  %+6.0f%%    %-16s %8.2f %8.2f %7d\n",
+                   100.0 * ge, vn ? "virtual neutral" : "Vbus/2",
+                   r.mean_err_deg, r.rms_err_deg, r.lost_steps);
         }
     }
     printf("\n");

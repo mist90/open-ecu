@@ -193,9 +193,10 @@ int main(void)
         Error_Handler();
     }
 
-    // BEMF phase voltage divider: 10kOhm / 2.2kOhm
+    // BEMF phase voltage divider: 22kOhm / 2.2kOhm -> ratio 11.0, full scale
+    // 3.3 V * 11.0 = 36.3 V, just above the 36 V over-voltage trip.
     libecu::BemfVoltageSensorParameters bemf_voltage_params;
-    bemf_voltage_params.r_up = 10000.0f;
+    bemf_voltage_params.r_up = 22000.0f;
     bemf_voltage_params.r_down = 2200.0f;
     adc_driver.initializeBemf(bemf_voltage_params);
 
@@ -275,9 +276,13 @@ int main(void)
     bemf_params.integrator_limit_vs = motor_params.bemf_integrator_limit_vs;
     bemf_params.phase_advance = motor_params.bemf_phase_advance;
     bemf_params.auto_learn_limit = true;
-    // The 10k/2.2k phase dividers clip at 18.3 V, so the phase sitting at Vbus
-    // rails out above that and the (Vu+Vv+Vw)/3 neutral would be wrong.
-    bemf_params.use_virtual_neutral = false;
+    // The 22k/2.2k dividers reach 36.3 V full scale, so the phase sitting at
+    // Vbus no longer rails out and (Vu+Vv+Vw)/3 is a usable neutral.  It
+    // travels the same divider path as the floating phase, so divider
+    // tolerance mismatch and common-mode pickup cancel instead of showing up
+    // as a fixed zero-crossing offset.  The observer falls back to Vbus/2 by
+    // itself on any sample where a phase tap looks clipped.
+    bemf_params.use_virtual_neutral = true;
     bemf_observer.setParameters(bemf_params);
 
     motor_controller = new libecu::BldcController(

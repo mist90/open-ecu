@@ -63,6 +63,11 @@ constexpr float INTEGRATOR_BACKSTOP_FRACTION = 0.75f;
 /// Consecutive steps that must contradict the current polarity before it flips.
 constexpr int32_t POLARITY_FLIP_STEPS = 4;
 
+/// In ON-time sensing one phase always sits at the top rail, so the largest of
+/// the three readings must be close to Vbus.  If it is not, the phase dividers
+/// are saturating the ADC and the mean of the three is not a neutral.
+constexpr float VIRTUAL_NEUTRAL_RAIL_CHECK = 0.90f;
+
 /// Minimum samples in a step before its slope fit is trusted.
 constexpr int32_t MIN_FIT_SAMPLES = 4;
 
@@ -113,6 +118,7 @@ BemfObserver::BemfObserver(float pwm_frequency) noexcept
     , amp_step_period_(0.0f)
     , amp_fit_samples_(0)
     , amp_valid_(false)
+    , used_virtual_neutral_(false)
 {
     // Defaults tuned for ON-time sensing at 20 kHz on a 24 V bus.
     params_.min_duty              = 0.15f;
@@ -266,14 +272,30 @@ bool BemfObserver::update(const BemfObserverInput& in) noexcept {
     // the ZC.  The virtual neutral (Vu+Vv+Vw)/3 travels the same divider path
     // and cancels that mismatch - but only where the phase dividers do not
     // clip on the phase that sits at Vbus, so it stays opt-in.
-    const float v_ref = params_.use_virtual_neutral
+    // The virtual neutral is only meaningful while none of the phase taps are
+    // clipping.  The driven phase sits at Vbus, so if the largest reading is
+    // well below the bus the dividers have saturated the ADC input and the
+    // mean is wrong - fall back to Vbus/2 for that sample.  A false fallback
+    // costs nothing: it is simply the other reference mode.
+    bool virtual_neutral = params_.use_virtual_neutral;
+    if (virtual_neutral) {
+        const float v_max = (in.v_u > in.v_v)
+                          ? ((in.v_u > in.v_w) ? in.v_u : in.v_w)
+                          : ((in.v_v > in.v_w) ? in.v_v : in.v_w);
+        if (v_max < VIRTUAL_NEUTRAL_RAIL_CHECK * in.bus_voltage) {
+            virtual_neutral = false;
+        }
+    }
+    used_virtual_neutral_ = virtual_neutral;
+
+    const float v_ref = virtual_neutral
                       ? (in.v_u + in.v_v + in.v_w) * (1.0f / 3.0f)
                       : 0.5f * in.bus_voltage;
 
     // The virtual neutral scales the error by 2/3 (the floating phase
     // contributes a third of its own BEMF to the mean); undo that so the
     // integrator limit means the same thing in both reference modes.
-    const float gain = params_.use_virtual_neutral ? 1.5f : 1.0f;
+    const float gain = virtual_neutral ? 1.5f : 1.0f;
 
     const int8_t sign = static_cast<int8_t>(baseSlopeSign(in.step, in.speed_steps_per_sec) * polarity_);
 
@@ -593,6 +615,7 @@ BemfObserver::BemfInfo BemfObserver::getInfo() const noexcept {
     info.polarity           = polarity_;
     info.floating_voltage   = last_v_float_;
     info.v_ref              = last_v_ref_;
+    info.virtual_neutral    = used_virtual_neutral_;
     info.v_diff             = last_v_diff_;
     info.integrator_vs      = integrator_;
     info.integrator_limit   = effectiveLimit();

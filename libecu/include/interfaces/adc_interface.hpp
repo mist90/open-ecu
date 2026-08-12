@@ -39,10 +39,10 @@ struct VoltageSensorParameters {
  *
  * Phase voltages are read through a resistor divider (when PB5 is LOW)
  * or directly with 3.3V clamping (when PB5 is HIGH).
- * Divider: R_up (10kOhm) to phase, R_down (2.2kOhm) to ground, ADC reads at R_down.
+ * Divider: R_up (22kOhm) to phase, R_down (2.2kOhm) to ground, ADC reads at R_down.
  */
 struct BemfVoltageSensorParameters {
-    float r_up;    ///< Upper resistor of BEMF divider (Ohms), e.g. 10000.0
+    float r_up;    ///< Upper resistor of BEMF divider (Ohms), e.g. 22000.0
     float r_down;  ///< Lower resistor of BEMF divider (Ohms), e.g. 2200.0
 };
 

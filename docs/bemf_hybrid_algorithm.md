@@ -29,11 +29,11 @@ Each phase voltage is brought out to a dedicated ADC input through a resistor di
 
 ### Resistor Divider
 
-The BEMF front end is a 10 kOhm / 2.2 kOhm divider per phase, giving a ratio of about 5.55x. The ADC pin sits at the 2.2 kOhm node to ground. Parameters are stored in `BemfVoltageSensorParameters`:
+The BEMF front end is a 22 kOhm / 2.2 kOhm divider per phase, giving a ratio of exactly 11.0x. The ADC pin sits at the 2.2 kOhm node to ground, so full scale is 3.3 V * 11.0 = **36.3 V of phase voltage** - just above the 36 V over-voltage trip in `MotorControlParams::max_voltage`. Parameters are stored in `BemfVoltageSensorParameters`:
 
 ```cpp
 libecu::BemfVoltageSensorParameters bemf_voltage_params;
-bemf_voltage_params.r_up = 10000.0f;
+bemf_voltage_params.r_up = 22000.0f;
 bemf_voltage_params.r_down = 2200.0f;
 adc_driver.initializeBemf(bemf_voltage_params);
 ```
@@ -116,11 +116,26 @@ Normalising the polarity is what removes the amplitude dependence of the old two
 
 ### Neutral reference
 
-By default `V_ref = bus_voltage / 2`. `bus_voltage` comes through a different divider (169k/18k) and a different ADC channel than the phase taps (10k/2.2k), so their tolerance mismatch appears as a fixed offset on the ZC and therefore as a fixed commutation phase error.
+By default `V_ref = bus_voltage / 2`. `bus_voltage` comes through a different divider (169k/18k) and a different ADC channel than the phase taps (22k/2.2k), so their tolerance mismatch appears as a fixed offset on `V_ref`.
+
+That offset does **not** land as a fixed commutation phase error, as one might expect. `v_diff` multiplies by a sign that alternates step to step, so a constant offset on `V_ref` alternates with it: odd steps fire early, even steps fire late by the same amount. The mean is unchanged and the symptom is **step-to-step jitter**, i.e. torque ripple at three times the electrical frequency, not a DC phase shift. The harness confirms this - a 2% bus-divider mismatch leaves the bias at 1.77 degrees but lifts the jitter from 1.16 to 1.71 degrees, an alternating component of `sqrt(1.71^2 - 1.16^2) = 1.25` degrees, which matches `(err * Vbus/2) / (2E) * 60` degrees.
 
 Setting `use_virtual_neutral` switches the reference to `(Vu + Vv + Vw) / 3`, which travels the same divider path and cancels that mismatch. The measured difference is then `(2/3) * e_c`, which the observer scales back by 1.5 so the integrator limit means the same thing in both modes.
 
-**On this board the virtual neutral is not usable at normal bus voltages.** The 10k/2.2k divider saturates the 3.3 V ADC input at 18.3 V of phase voltage, so the phase sitting at Vbus rails out for any bus above that and the mean of the three readings is wrong. Enabling `use_virtual_neutral` requires changing the divider (roughly 10k/1.0k for a 36 V bus).
+**This is enabled on the current hardware.** The earlier 10k/2.2k divider saturated the 3.3 V ADC input at 18.3 V of phase voltage, so the phase sitting at Vbus railed out on any bus above that and the mean of the three readings was wrong. The 22k/2.2k divider reaches 36.3 V full scale, above the 36 V over-voltage trip, so all three taps stay in range across the whole operating envelope.
+
+Measured effect, from `tests/test_bemf_observer/run.sh` at 1200 steps/s with 0.3 V rms noise:
+
+| Bus-divider mismatch | Reference | bias | jitter |
+|---|---|---|---|
+| 0 % | `Vbus/2` | 1.74 | 1.16 |
+| +1 % | `Vbus/2` | 1.80 | 1.29 |
+| +2 % | `Vbus/2` | 1.77 | 1.71 |
+| any | virtual neutral | 1.72 | 1.17 |
+
+The virtual neutral is flat across the whole sweep - the mismatch cancels exactly, as the derivation says it should.
+
+Headroom above the trip is only 0.3 V, so the observer checks every sample rather than trusting the divider: in ON-time sensing one phase always sits at the top rail, so if the largest of the three readings falls below `0.90 * Vbus` the taps must be saturating and the sample reverts to the `Vbus/2` reference. A false trigger of that check is harmless - it is simply the other reference mode - so the check is biased towards firing. `BemfInfo::virtual_neutral` reports which reference was actually used.
 
 ### Deadband and confirmation
 
