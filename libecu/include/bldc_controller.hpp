@@ -58,10 +58,13 @@ struct MotorControlParams {
     // BEMF sensorless parameters
     float bemf_transition_speed_low;   ///< Below this speed (steps/sec): Hall only
     float bemf_transition_speed_high;  ///< Above this speed (steps/sec): BEMF only
-    float bemf_blanking_cycles;        ///< Demagnetization blanking in PWM cycles after commutation
-    float bemf_min_duty;           ///< Minimum duty cycle for ON-time BEMF sensing (below: Hall only)
-    float bemf_zc_threshold_high;  ///< ZC high threshold as fraction of Vbus (ON-time: ~0.55)
-    float bemf_zc_threshold_low;   ///< ZC low threshold as fraction of Vbus (ON-time hysteresis: ~0.45)
+    float bemf_blanking_cycles;        ///< Demagnetization blanking floor in PWM cycles
+    float bemf_blanking_fraction;      ///< Extra blanking as a fraction of the step period (0..0.45)
+    float bemf_min_duty;               ///< Minimum duty cycle for ON-time BEMF sensing (below: Hall only)
+    float bemf_zc_deadband_volts;      ///< ZC noise floor in Volts; 0 = auto (1% of Vbus)
+    uint8_t bemf_zc_confirm_samples;   ///< Consecutive positive samples needed to accept a ZC
+    float bemf_integrator_limit_vs;    ///< Flux limit from ZC to commutation (V*s); 0 = learn it
+    float bemf_phase_advance;          ///< 0..0.9: fraction of the 30-degree arc removed
 };
 
 /**
@@ -241,6 +244,17 @@ public:
      * @param observer Pointer to BemfObserver (nullptr to disable BEMF mode)
      */
     void setBemfObserver(BemfObserver* observer) noexcept;
+
+    /**
+     * @brief Back-EMF amplitude estimate from the observer
+     *
+     * Intended as the plant term of a model-based (feed-forward) current
+     * command.  All fields are zero when no observer is attached.
+     *
+     * @note Read under a CriticalSection - the estimate is updated from the
+     *       PWM ISR.
+     */
+    BemfAmplitude getBemfAmplitude() const noexcept;
 
     void hallSensorInterruptHandler() noexcept;
 

@@ -87,111 +87,119 @@ Step 5: U=OFF,  V=DOWN,  W=UP    -> U floating
 
 The controller picks the floating phase at runtime by querying `getPhaseState()` for each phase and picking the one whose state is `PwmState::OFF`. This is done in `BldcController::findFloatingPhase()`.
 
-### Zero-Crossing Geometry
+### Coupling mode: ON-time sensing
 
-During a commutation step the floating phase BEMF ramps toward (or away from) the bus rail. It crosses `Vbus / 2` at 30 electrical degrees after the step started, which is the midpoint of the 60-degree step. That crossing is the zero-crossing (ZC) event.
+The bridge uses complementary (synchronous) PWM: the `UP` phase chops between Vbus and ground, the `DOWN` phase has its low side permanently on, and the floating phase has both switches off. `TIM1_CCR4` is set to `CCR_phase / 2` (`Stm32Pwm::calculateAdcTriggerCompare`), so `TRGO2` fires the injected ADC sequence inside the high-side conduction window. This is **ON-time sensing**: while the high side conducts, one phase sits at Vbus, one at 0 V, and the motor neutral is at Vbus/2. The floating phase therefore reads
 
-After a ZC is detected the controller still has another 30 degrees to go before the next commutation is due. The observer waits that delay out, then emits the synthetic step. Commutation timing therefore tracks the actual rotor rather than a fixed schedule.
-
-### Edge Detection
-
-The ZC detector does not look for sign or magnitude. It looks for a transition. On every PWM tick it compares the floating voltage against a pair of thresholds derived from the bus voltage, forming a hysteresis band:
-
-```cpp
-float threshold_high = bus_voltage * params_.zc_threshold_high;
-float threshold_low = bus_voltage * params_.zc_threshold_low;
-
-// First sample after blanking: initialize state without triggering edge
-if (need_reinit_) {
-    need_reinit_ = false;
-    signal_high_ = (floating_voltage > threshold_high);
-    return false;
-}
-
-if (!signal_high_ && floating_voltage > threshold_high) {
-    signal_high_ = true;  // Rising edge — ZC detected
-} else if (signal_high_ && floating_voltage < threshold_low) {
-    signal_high_ = false; // Falling edge — ZC detected
-}
-// Else: hysteresis band — no state change, no ZC
+```
+V_float = Vbus/2 + e_c(theta)
 ```
 
-Hysteresis is required because OFF-time sensing does not produce a clean sign change around a mid-rail reference. In OFF-time sensing the motor neutral point (center tap) sits at 0 V, so the BEMF on the floating phase is centered at 0 V. The ADC cannot read negative voltages, and the inverter body diodes clamp the negative half of the BEMF waveform to roughly 0 V. What the ADC actually sees is genuine positive BEMF on one side of the zero crossing and a clamped near-zero voltage on the other. The "zero crossing" is therefore the transition between positive BEMF and the clamped 0 V region, not a sign change around Vbus/2.
+where `e_c` is the BEMF of the floating winding, referred to the neutral. Across a 60-degree step `e_c` ramps linearly from one trapezoid plateau to the other and crosses zero at 30 degrees. That crossing is the zero-crossing (ZC). A real Hall edge would occur another 30 degrees later, which is where the synthetic Hall event has to be placed.
 
-A single threshold cannot detect this transition cleanly. Near the threshold the sampled voltage is noisy, and a few counts of jitter cross the threshold back and forth, producing multiple false edges within one step. The hysteresis pair introduces a dead band where nothing happens:
+### Polarity normalisation
 
-- `threshold_high` (~0.6 V on a 20 V bus, i.e. 0.03 × Vbus): "BEMF is definitely present."
-- `threshold_low` (~0.1 V on a 20 V bus, i.e. 0.005 × Vbus): "BEMF is definitely at or near zero."
-- Between `threshold_low` and `threshold_high` (the hysteresis band): no state change, no ZC.
+Which way `e_c` ramps alternates from step to step. Tracing each floating winding between the step where it is driven `UP` and the step where it is driven `DOWN` shows the BEMF falls on the even steps and rises on the odd ones. Rather than accepting either edge direction, the observer multiplies the error by a per-step sign:
 
-Once `signal_high_` is set, the voltage must fall all the way below `threshold_low` to clear it. Once it is cleared, the voltage must rise all the way above `threshold_high` to set it again. Noise riding on the signal cannot bridge the full band, so it cannot produce spurious edges.
+```cpp
+int8_t sign = (step & 1u) ? +1 : -1;
+if (params_.is_inverse_commutation) sign = -sign;   // sequence runs backwards
+if (speed_steps_per_sec < 0.0f)     sign = -sign;   // REVERSE
+v_diff = sign * (V_float - V_ref) * polarity_;
+```
 
-Either rising or falling transitions count. The direction of the valid edge alternates between commutation steps, because each step starts with the BEMF on a different side of the zero crossing:
+`v_diff` is then negative before the ZC and positive after it on every step and in both directions, and detection reduces to one "crosses zero upwards" test at the true neutral. This mirrors VESC's per-`comm_step` sign table in `mcpwm.c`.
 
-- **Case A (positive-first step):** The BEMF starts positive and ramps down toward zero. At 30° into the step it crosses through `threshold_low` into the clamped region. The ZC is the falling edge through `threshold_low`.
-- **Case B (negative-first step):** The BEMF starts in the clamped near-zero region. At 30° into the step it rises positive and crosses through `threshold_high`. The ZC is the rising edge through `threshold_high`.
+Normalising the polarity is what removes the amplitude dependence of the old two-threshold scheme. Detecting at `0.55 * Vbus` instead of at the neutral means waiting for the BEMF to climb `0.05 * Vbus` past zero, which takes `0.025 * (Vbus / E) * T_step` seconds, where `E` is the BEMF plateau. The resulting phase error is **6 degrees at E = 0.25 * Vbus and 15 degrees at E = 0.1 * Vbus** - it scales with load and speed instead of staying constant, and below `E = 0.05 * Vbus` the signal never reaches the threshold at all and no ZC is ever detected.
 
-The six-step table alternates which phase floats and the polarity of the BEMF it carries, so Case A and Case B alternate. Both directions are valid ZC events, and the state machine handles both with no extra logic.
+`polarity_` is a learned global flip. When `auto_polarity` is set, the observer checks the first valid sample of each step - which is by construction still on the pre-crossing side - and inverts the sign after `POLARITY_FLIP_STEPS` (4) consecutive steps disagree. This covers wiring and commutation-table conventions that the static table gets wrong.
+
+### Neutral reference
+
+By default `V_ref = bus_voltage / 2`. `bus_voltage` comes through a different divider (169k/18k) and a different ADC channel than the phase taps (10k/2.2k), so their tolerance mismatch appears as a fixed offset on the ZC and therefore as a fixed commutation phase error.
+
+Setting `use_virtual_neutral` switches the reference to `(Vu + Vv + Vw) / 3`, which travels the same divider path and cancels that mismatch, as VESC does when it has no hardware `ADC_V_ZERO` node. The measured difference is then `(2/3) * e_c`, which the observer scales back by 1.5 so the integrator limit means the same thing in both modes.
+
+**On this board the virtual neutral is not usable at normal bus voltages.** The 10k/2.2k divider saturates the 3.3 V ADC input at 18.3 V of phase voltage, so the phase sitting at Vbus rails out for any bus above that and the mean of the three readings is wrong. Enabling `use_virtual_neutral` requires changing the divider (roughly 10k/1.0k for a 36 V bus).
+
+### Deadband and confirmation
+
+`zc_deadband_volts` forces everything inside the ADC/EMI noise floor to read as exactly zero, so noise alone can neither create nor cancel a crossing. Setting it to 0 selects an automatic value of 1% of Vbus.
+
+`zc_confirm_samples` (default 2) requires that many consecutive positive samples before a crossing is accepted; a positive blip that falls back to negative discards the candidate. The confirmation costs nothing in timing accuracy because the crossing instant is interpolated from the bracketing samples, not from the sample that confirms it.
+
+### Sub-sample interpolation
+
+At 20 kHz PWM the sample spacing is significant: 3.6 electrical degrees at 1200 steps/s and 7.2 degrees at 2400 steps/s. Quantising the ZC to a whole PWM tick would cost up to a full sample of phase error. The observer keeps the last strictly-negative sample and its age in ticks, and interpolates linearly against the first positive one:
+
+```cpp
+const float span = neg_age_ * dt_;
+const float frac = v_neg_last_ / (v_neg_last_ - v_diff);   // in (0,1)
+t_since_zc_      = span * (1.0f - frac);
+```
+
+Keeping the *age* rather than assuming the previous tick means samples that fell inside the deadband, or that were discarded by the rail guard, do not break the bracket.
+
+### Rail guard
+
+A floating phase pinned to 0 V or Vbus is not measuring BEMF - it is freewheeling through a body diode. Samples outside `[rail_margin * Vbus, (1 - rail_margin) * Vbus]` are discarded outright and do not advance any detection state. This is the same idea as VESC's `ph_now_raw > min && ph_now_raw < (VIN - min)` term, and it is what actually makes demagnetisation harmless (see section 4).
 
 ### Synthetic Step Mapping
 
 The observer must output the **next Hall position** (not the next commutation step) because `MotorPLL::updateHall()` expects a Hall sensor reading. The mapping from commutation step `C` to Hall position `H` depends on the commutation table direction:
 
-- **Non-inverse**: `C = (H + 1) % 6` → `H = (C + 5) % 6` → next Hall = `(H + 1) % 6 = C`
-- **Inverse**: `C = (H + 5) % 6` → `H = (C + 1) % 6` → next Hall = `(H + 1) % 6 = (C + 2) % 6`
+- **Non-inverse**: `C = (H + 1) % 6` -> next Hall = `C`
+- **Inverse**: `C = (H + 5) % 6` -> next Hall = `(C + 2) % 6`
 
-The `is_inverse_commutation` parameter in `BemfObserverParams` selects the correct formula.
+The `is_inverse_commutation` parameter selects the correct formula.
 
-### 30-Degree Delay
+### Commutation timing
 
-Once a ZC is recorded the observer counts down a delay in PWM ticks before declaring the synthetic Hall event. The delay corresponds to half of one commutation step period:
+`BemfTimingMode` selects how the commutation instant is placed after the ZC.
 
-```cpp
-// 30° = half of one step period (one step = 60°)
-// step_period = 1.0 / speed_steps_per_sec  seconds  (time for ONE step)
-// half_step   = 0.5 / speed_steps_per_sec  seconds
-// delay_ticks = half_step * pwm_frequency
-//            = 0.5 * pwm_frequency / speed_steps_per_sec
-if (speed_steps_per_sec >= 1.0f) {
-    delay_counter_ = 0.5f * pwm_frequency_ / speed_steps_per_sec;
-} else {
-    // Speed too low — cannot compute a meaningful delay
-    zc_detected_ = false;
-    return false;
-}
-```
-
-`speed_steps_per_sec` is the PLL's own estimate of rotor speed in steps per second. The observer therefore self-times the next commutation from the most recent ZC, with no fixed lookup table.
-
-When the delay counter reaches zero, `update()` returns `true` and the caller feeds the synthetic step into the PLL:
+**`DELAY_30DEG`** counts down half a step period using the PLL speed estimate:
 
 ```cpp
-if (bemf_observer_->update(bemf_v, bus_v, status_.target_position,
-                           motor_pll_.getSpeedStepsSec())) {
-    motor_pll_.updateHall(bemf_observer_->getSyntheticHallStep());
-}
+target = 0.5f * (1.0f - phase_advance) * step_period;
+delay_ticks_ = (target - t_since_zc_) / dt_;
 ```
+
+This is the original scheme. It works, but the delay depends on a speed estimate that is itself driven by this observer's own events: a late ZC produces a late event, which makes the PLL read a lower speed, which lengthens the delay, which makes the next event later still. It also degrades whenever the rotor accelerates inside a step.
+
+**`FLUX_INTEGRATE`** (default) is VESC's `COMM_MODE_INTEGRATE`. It integrates `v_diff` from the interpolated crossing and fires when the integral reaches `integrator_limit_vs`:
+
+```cpp
+integrator_ += 0.5f * (max(v_prev, 0) + max(v_now, 0)) * dt_;   // positive contributions only
+fire = (integrator_ >= effectiveLimit());
+```
+
+The BEMF plateau `E` is proportional to speed while the 30-degree arc is inversely proportional to speed, so the integral over that arc - `E * T_step / 4` - is **speed-independent**. One constant covers the whole speed range and no speed estimate enters the loop at all. Integration is also a low-pass filter, so per-sample ADC noise averages out instead of directly displacing the commutation instant.
+
+Only positive contributions are accumulated, so a noise dip cannot unwind flux that is already banked. A backstop fires the event anyway if the step runs 45 degrees past the ZC, so a mis-tuned limit cannot strand the PLL.
+
+**Learning the limit.** With `auto_learn_limit` set and `integrator_limit_vs` left at 0, the observer learns the limit during the hybrid handover: on steps where it detected a ZC but the *Hall sensors* placed the commutation, the flux accumulated between the two is exactly the 30-degree integral it should be aiming for, and it is low-pass filtered into `learned_limit_` with `learn_alpha`. Until a value is learned, `FLUX_INTEGRATE` falls back to the timed countdown, so the observer is usable from the first step.
+
+**Phase advance.** `phase_advance` (0..0.9) scales the limit (or the countdown) down, moving the commutation earlier by that fraction of the 30-degree arc. VESC does the same through `sl_phase_advance_at_br`.
+
+### Recovering from a late bridge
+
+If the bridge falls more than 30 degrees behind the rotor, the crossing has already happened by the time blanking ends and no negative sample can arrive - the naive detector waits forever and the loop latches permanently behind. When the first valid samples of a step are already positive with no negative bracket, the observer confirms that over `zc_confirm_samples` and then anchors the crossing at the **step start**, not at "now". Anchoring at "now" would add another 30 degrees of lag every step and the loop would run away instead of catching up.
 
 ## 4. Demagnetization Blanking
 
-Right after a commutation the newly floating phase still carries current from when it was energized. Its voltage is dominated by inductive discharge, not BEMF, and any ZC reading taken during that window is bogus.
+Right after a commutation the newly floating phase still carries current from when it was energized. Its voltage is dominated by inductive discharge, not BEMF, and any reading taken during that window is bogus.
 
-`BemfObserver` handles this with a blanking counter. `onCommutation()` is called by `BldcController` every time the commutation step changes, and it resets the blanking window:
+Two mechanisms cover this, and the second is the one that matters:
 
-```cpp
-void BemfObserver::onCommutation(uint8_t new_step) noexcept {
-    (void)new_step;
-    blanking_counter_ = params_.blanking_cycles;
-    zc_detected_ = false;
-    delay_counter_ = 0.0f;
-    event_pending_ = false;
-    need_reinit_ = true;  // First sample after blanking initializes signal_high_
-}
+**Time-based blanking.** `onCommutation()` restarts the window. `update()` short-circuits while
+
+```
+time_since_comm_ < max(blanking_cycles * dt, blanking_fraction * last_step_period)
 ```
 
-While `blanking_counter_` is non-zero, `update()` decrements it and short-circuits before any ZC comparison runs. After blanking expires, the `need_reinit_` flag causes the first BEMF sample to initialize `signal_high_` to match the actual signal state (above or below threshold) WITHOUT triggering a ZC edge. This prevents a false zero-crossing from stale state carried over from the previous step. The first real edge detection happens on the second sample after blanking, when the BEMF has had time to settle into its ramp trajectory toward the true zero-crossing at 30°.
+A fixed tick count alone is wrong at both ends of the speed range: too short for a large motor at low speed, and longer than the whole 30-degree arc at high speed. At 2400 steps/s a step is only 8.3 PWM cycles, so the original fixed 2-cycle window already consumes a quarter of it. `blanking_fraction` (default 0.20, clamped below 0.45 so blanking always ends before the 30-degree point) makes the window scale with speed, the way VESC gates on `pwm_cycles_sum > last_pwm_cycles_sum / 2`.
 
-`blanking_cycles` is expressed in PWM cycles. With the application default of 2 cycles at a 20 kHz PWM rate, the blanking window is 100 us. Heavier motors or higher inductance may need a longer window. ST's UM3259 §3.2.3 recommends not going below 2 to 3 PWM cycles, otherwise the inductive discharge spike after commutation can still be present and corrupt the first BEMF sample.
+**Rail guard.** How long demagnetization actually lasts depends on phase current, inductance and speed, so no fixed window covers it reliably - and the sample right after a too-short window is both the most contaminated one and the one the detector leans on hardest. Discarding railed samples (section 3) removes the dependence on getting the window right: a freewheeling phase is pinned to a rail by definition, so it is filtered out whether or not the timer agreed.
 
 ## 5. Hybrid Mode Switching
 
@@ -203,42 +211,26 @@ The controller picks its position source based on rotor speed in steps per secon
 | Transition          | between `transition_speed_low` and `_high`   | active     | runs, no suppress   |
 | BEMF only           | above `transition_speed_high`                | suppressed | active              |
 
+The transition zone is where `auto_learn_limit` acquires the flux limit, so it should be wide enough for a few tens of commutations.
+
 ### Hysteresis
 
-A two-threshold scheme with hysteresis prevents mode chatter when the rotor speed hovers near a boundary. The `bemf_was_active_` flag remembers the current source:
+A two-threshold scheme with hysteresis prevents mode chatter when the rotor speed hovers near a boundary. The `bemf_was_active_` flag remembers the current source. The PLL speed is **signed** - negative in REVERSE, because the Hall sequence descends - so both `isBemfModeActive()` and `shouldIgnoreHall()` compare magnitudes:
 
 ```cpp
-bool BemfObserver::isBemfModeActive(float speed_steps_per_sec) const noexcept {
-    if (bemf_was_active_) {
-        // Currently in BEMF mode — drop out at low threshold
-        if (speed_steps_per_sec < params_.transition_speed_low) {
-            bemf_was_active_ = false;
-        }
-    } else {
-        // Currently in Hall mode — enter BEMF at high threshold
-        if (speed_steps_per_sec > params_.transition_speed_high) {
-            bemf_was_active_ = true;
-        }
-    }
-    return bemf_was_active_;
+const float speed = std::fabs(speed_steps_per_sec);
+if (bemf_was_active_) {
+    if (speed < params_.transition_speed_low)  bemf_was_active_ = false;
+} else {
+    if (speed > params_.transition_speed_high) bemf_was_active_ = true;
 }
 ```
 
-Entering BEMF mode requires crossing `transition_speed_high`. Dropping back to Hall requires falling below `transition_speed_low`. Between the two thresholds the controller stays in whatever mode it was already in. This means the transition zone can show both sources feeding the PLL simultaneously, which is harmless because both push the same step direction.
+Comparing the signed value made BEMF mode unreachable in REVERSE and produced a negative 30-degree delay that fired immediately.
 
 ### Hall Suppression
 
-Suppressing the Hall ISR above the high threshold is a separate decision so the BEMF observer always runs first and the PLL is never fed conflicting steps. The check lives in `BldcController::hallSensorInterruptHandler()`:
-
-```cpp
-if (bemf_observer_ &&
-    bemf_observer_->shouldIgnoreHall(motor_pll_.getSpeedStepsSec())) {
-    return;
-}
-motor_pll_.updateHall(hall_state);
-```
-
-`shouldIgnoreHall()` returns true only when speed is strictly above `transition_speed_high`. Below that, Hall events continue to reach the PLL even while the BEMF observer is running, which keeps the loop synchronized during handover.
+`shouldIgnoreHall()` returns false whenever the observer has lost lock (`sync_lost_`), so the Hall sensors automatically take the loop back while the observer keeps running and re-synchronises. `sync_lost_` is raised when no zero-crossing arrives within `max_step_periods` step periods and cleared on the next successful event.
 
 ## 6. Integration with MotorPLL
 
@@ -261,85 +253,75 @@ The diagram below shows the two ISRs and how the observer slots into the PWM pat
 ```
 TIM1 Update ISR (20 kHz)
   |
-  +-> motor_pll_.updateTick()           // PI angle integrator
-  +-> new_position = getNextHall()      // commutation step from PLL
-  +-> [if step changed]
-  |     +-> commutation_controller_.update(new_position, duty)
-  |     +-> bemf_observer_->onCommutation(new_position)   // reset blanking
-  +-> read current (DOWN phase)
+  +-> read Vu, Vv, Vw from the injected ADC registers   // sampled mid-ON-time
+  +-> findFloatingPhase()                               // pick the OFF phase
   +-> read bus voltage
-  +-> [if BEMF active]
-  |     +-> findFloatingPhase()         // pick the OFF phase
-  |     +-> read BEMF voltage (ADC)
-  |     +-> bemf_observer_->update()
-  |     +-> [if ZC + delay expired]
-  |           +-> motor_pll_.updateHall(synthetic_step)
-  +-> run current PI controller
-  +-> apply commutation
+  +-> [if isBemfModeActive(speed, duty)]
+  |     +-> bemf_observer_->update(BemfObserverInput{...})
+  |     +-> [if it returned true]
+  |           +-> motor_pll_.updateHall(getSyntheticHallStep())
+  +-> [if hall_update_pending_]                         // deferred, debounced
+  |     +-> hall_state = getCurrentPosition()
+  |     +-> [if !shouldIgnoreHall(speed, duty)]
+  |           +-> motor_pll_.updateHall(hall_state)
+  +-> motor_pll_.updateTick()                           // PI angle integrator
+  +-> new_position = getNextHall(dmode)                 // commutation step
+  +-> run current PI controller  (CURRENT_MODE)
+  +-> [if step changed]
+        +-> commutation_controller_.update(new_position, duty)
+        +-> bemf_observer_->onCommutation(new_position) // restart blanking
 
 Hall EXTI ISR
   |
-  +-> read Hall GPIO state
-  +-> [if !shouldIgnoreHall()]
-        +-> motor_pll_.updateHall(hall_state)
+  +-> hall_update_pending_ = true       // re-read in the PWM ISR, 50 us later,
+                                        // so EMI-induced bounce is hidden
 ```
 
-The BEMF block runs after the commutation update so `onCommutation()` is called first and the blanking window is open before any new sample is examined. The current PI controller runs after the BEMF block in `CURRENT_MODE` so the synthetic step, if any, is already in the PLL by the time the duty cycle is computed.
+Both position sources reach the PLL before `updateTick()` runs, so a synthetic event and a Hall event arriving in the same cycle are resolved by the PLL rather than by ISR ordering. `onCommutation()` is called last, at the point the bridge actually changes, which is what makes `time_since_comm_` line up with the real step boundary: the new switch states take effect on the next timer update event.
 
 ## 8. Configuration Parameters
 
-BEMF parameters live in two structs. `MotorControlParams` carries them at the application level for AT-command tuning. They are copied into a `BemfObserverParams` struct and pushed into the observer at startup.
-
-### `MotorControlParams` (BEMF fields)
-
-Defined in `libecu/include/bldc_controller.hpp`.
-
-| Field                        | Type    | Application default (main.cpp) | Description                                                              |
-|------------------------------|---------|--------------------------------|--------------------------------------------------------------------------|
-| `bemf_transition_speed_low`  | float   | 500.0 steps/sec                | Below this speed the Hall ISR is never suppressed.                       |
-| `bemf_transition_speed_high` | float   | 800.0 steps/sec                | Above this speed Hall events are ignored and BEMF drives the PLL.        |
-| `bemf_blanking_cycles`       | float   | 2.0 PWM cycles                 | Demagnetization blanking window after each commutation.                  |
-| `bemf_zc_threshold_high`     | float   | 0.03                           | ZC high threshold as fraction of Vbus. OFF-time: ~0.6 V for 20 V bus.    |
-| `bemf_zc_threshold_low`      | float   | 0.005                          | ZC low threshold (hysteresis lower bound). ~0.1 V for 20 V bus.          |
+BEMF parameters live in two structs. `MotorControlParams` carries the application-level subset for AT-command tuning; the full set lives in `BemfObserverParams`. `main.cpp` reads the class defaults with `getParameters()`, overrides what it cares about, and pushes the result back with `setParameters()`.
 
 ### `BemfObserverParams`
 
 Defined in `libecu/include/algorithms/bemf_observer.hpp`.
 
-| Field                    | Type  | Class constructor default | Description                                                    |
-|--------------------------|-------|---------------------------|----------------------------------------------------------------|
-| `blanking_cycles`        | float | 10.0                      | PWM cycles to blank after commutation (demagnetization).       |
-| `zc_threshold_high`      | float | 0.03                      | BEMF ZC high threshold as fraction of Vbus (OFF-time default). |
-| `zc_threshold_low`       | float | 0.005                     | BEMF ZC low threshold (hysteresis lower bound).                |
-| `transition_speed_low`   | float | 600.0 steps/sec           | Speed below which Hall sensors are used.                       |
-| `transition_speed_high`  | float | 1200.0 steps/sec          | Speed above which BEMF is used exclusively.                    |
-| `is_inverse_commutation` | bool  | false                     | Selects synthetic step mapping for inverse commutation table.  |
-
-The application defaults from `main.cpp` (500 / 800 / 2 / 0.03 / 0.005 / inverse from `BLDC_INVERTION`) override the class constructor defaults at startup via `setParameters()`. The class defaults only apply if `setParameters()` is never called.
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `min_duty` | float | 0.15 | Minimum duty for ON-time sensing; below this the Hall sensors are used |
+| `transition_speed_low` | float | 600 st/s | Below this the Hall ISR is never suppressed |
+| `transition_speed_high` | float | 1200 st/s | Above this Hall events are ignored and BEMF drives the PLL |
+| `is_inverse_commutation` | bool | false | Selects the synthetic step mapping and flips the slope sign |
+| `blanking_cycles` | float | 2.0 | Hard floor of the blanking window, in PWM cycles |
+| `blanking_fraction` | float | 0.20 | Blanking as a fraction of the step period, clamped below 0.45 |
+| `zc_deadband_volts` | float | 0.0 | Noise floor in Volts; 0 selects 1% of Vbus |
+| `zc_confirm_samples` | uint8 | 2 | Consecutive positive samples required to accept a crossing |
+| `use_virtual_neutral` | bool | false | Reference `(Vu+Vv+Vw)/3` instead of `Vbus/2` - needs unclipped dividers |
+| `auto_polarity` | bool | true | Learn the global BEMF slope sign at runtime |
+| `rail_margin` | float | 0.05 | Discard samples this fraction of Vbus away from either rail |
+| `timing_mode` | enum | `FLUX_INTEGRATE` | Commutation timing strategy |
+| `integrator_limit_vs` | float | 0.0 | Flux from ZC to commutation in V*s; 0 means learn it |
+| `phase_advance` | float | 0.0 | 0..0.9: fraction of the 30-degree arc removed |
+| `auto_learn_limit` | bool | true | Learn the flux limit from Hall-driven steps |
+| `learn_alpha` | float | 0.2 | LPF coefficient for the learned limit |
+| `max_step_periods` | float | 2.0 | Declare loss of lock if no event within this many step periods |
+| `amplitude_lpf_alpha` | float | 0.2 | LPF coefficient for the BEMF amplitude estimate |
 
 ### Tuning Notes
 
-- The two thresholds should be far enough apart to give a clean hysteresis band. A gap of 300 steps/sec is the application default.
-- `blanking_cycles` scales with PWM frequency. At 20 kHz, 2 cycles is 100 us. If you raise the PWM frequency, raise `blanking_cycles` proportionally to keep the same time window. Keep it short enough that the ZC crossing (which occurs at 30° into the step) is not masked.
-- `zc_threshold_high` and `zc_threshold_low` are sized for OFF-time sensing, where the center tap sits at 0 V. Set `zc_threshold_high` above the ADC noise floor but below the typical BEMF peak, so a genuine BEMF ramp lifts the signal above it. Set `zc_threshold_low` just above 0 V, so the clamped near-zero region reads as "low". The hysteresis gap (`zc_threshold_high` minus `zc_threshold_low`) should be wide enough to reject noise but narrow enough not to delay ZC detection. The 0.03 / 0.005 defaults give a ~0.5 V band on a 20 V bus. See the threshold-selection note below for the OFF-time vs ON-time comparison.
-
-### Threshold Selection: OFF-time vs ON-time
-
-The thresholds depend on which coupling mode the front end uses, because the mode sets the BEMF reference (center tap) voltage:
-
-| Mode     | Center tap | `zc_threshold_high`           | `zc_threshold_low`             | Status                       |
-|----------|------------|-------------------------------|--------------------------------|------------------------------|
-| OFF-time | 0 V        | ~0.03 × Vbus (~0.6 V on 20 V) | ~0.005 × Vbus (~0.1 V on 20 V) | Current implementation       |
-| ON-time  | Vbus / 2   | ~0.55 × Vbus                  | ~0.45 × Vbus                   | Future work, not implemented |
-
-OFF-time sensing is what `BemfObserver` implements today: the floating phase is sampled while the phase is OFF, the center tap is 0 V, and the body diodes clamp negative BEMF, so the thresholds sit just above 0 V. ON-time sensing samples the floating phase while it is tied to a rail through the high-side or low-side FET, so the center tap is Vbus/2 and the thresholds center on Vbus/2. The ON-time thresholds listed here are the values the same hysteresis logic would use if that mode were added later. See UM3259 §2.1 (coupling modes) and §3.2.5 (threshold placement).
+- **Start with the defaults.** `integrator_limit_vs = 0` plus `auto_learn_limit = true` means the observer calibrates itself during the Hall-to-BEMF handover. Read the learned value back with `getLearnedIntegratorLimit()` and pin it in `main.cpp` once it is stable.
+- **`zc_deadband_volts` is a floor, not a filter.** Sizing it above the noise costs samples in the 30-degree arc, which matters at high speed where there are only a handful. The sweep in `tests/test_bemf_observer` shows the tradeoff: at 2400 steps/s with 0.8 V rms noise, going from a 0.24 V deadband to 2.4 V raises the mean error from 3.7 to 11.2 degrees and starts dropping steps. Prefer the automatic 1% of Vbus and let `zc_confirm_samples` and the integrator do the noise rejection.
+- **`blanking_cycles` scales with PWM frequency**; `blanking_fraction` does not. If you raise the PWM frequency, raise `blanking_cycles` proportionally to keep the same absolute demagnetization floor.
+- **Residual bias.** Firing on the tick at or after the target adds on average half a PWM period of lag - 1.8 degrees at 1200 steps/s, 3.6 at 2400. It is a known constant and can be dialled out with `phase_advance` if it matters.
+- **A wide transition zone helps.** `auto_learn_limit` only learns on steps that the Hall sensors commutated, so the band between `transition_speed_low` and `transition_speed_high` needs to be crossed slowly enough to collect a few tens of steps.
 
 ## 9. Key Source Files
 
 | File                                                | Role                                                                                       |
 |-----------------------------------------------------|--------------------------------------------------------------------------------------------|
 | `libecu/include/algorithms/bemf_observer.hpp`       | `BemfObserver` class and `BemfObserverParams` struct.                                      |
-| `libecu/src/bemf_observer.cpp`                      | ZC detection, 30-degree delay, blanking, hysteresis.                                       |
+| `libecu/src/bemf_observer.cpp`                      | Polarity normalisation, ZC interpolation, flux integration, blanking, rail guard.          |
 | `libecu/include/interfaces/adc_interface.hpp`       | `BemfVoltageSensorParameters`, `getRawPhaseVoltage()`, `readPhaseVoltage()`, divider math. |
 | `libecu/hal/stm32g4/stm32_adc.cpp`                  | ADC1/ADC2 injected channel config, PB5 GPIO mode control, OPAMP setup.                     |
 | `libecu/hal/stm32g4/stm32_adc.hpp`                  | `Stm32Adc` declaration, `setBemfDividerMode()`.                                            |
@@ -347,9 +329,155 @@ OFF-time sensing is what `BemfObserver` implements today: the floating phase is 
 | `libecu/include/bldc_controller.hpp`                | `MotorControlParams` with BEMF fields, `setBemfObserver()`.                                |
 | `libecu/include/algorithms/motor_pll.hpp`           | `MotorPLL::updateHall()` / `updateTick()` / `getNextHall()` API.                           |
 | `STM32G431/Core/Src/main.cpp`                       | Wiring: constructs `BemfObserver`, configures parameters, registers with controller.      |
+| `tests/test_bemf_observer/`                         | Host harness: commutation accuracy and amplitude estimate under noise.                     |
+
+## 10. Relationship to VESC
+
+The detector is modelled on VESC's 6-step BLDC path (`motor/mcpwm.c`, `mcpwm_adc_int_handler`). What was taken, and what differs:
+
+| VESC (`mcpwm.c`) | open-ecu `BemfObserver` |
+|---|---|
+| Per-`comm_step` sign table (`+ph1, -ph2, +ph3, -ph1, +ph2, -ph3`) | Same idea, derived from step parity plus direction and table convention |
+| `mcpwm_vzero = ADC_V_ZERO`, or `(ADC_V_L1+L2+L3)/3` when not commutated or duty < 0.2 | `Vbus/2` by default; `(Vu+Vv+Vw)/3` behind `use_virtual_neutral`. No hardware V_ZERO node on this board, and the phase dividers clip above 18.3 V |
+| `if (abs(v_diff) < 10) v_diff = 0;` | `zc_deadband_volts`, auto-scaled to 1% of Vbus |
+| `ph_now_raw > min && ph_now_raw < (VIN - min)` | `rail_margin` guard |
+| `pwm_cycles_sum > last_pwm_cycles_sum / 2` gate | `blanking_fraction` of the measured step period |
+| `cycle_integrator += v_diff / switching_frequency_now` then compare against `cycle_int_limit_running` | `FLUX_INTEGRATE`, same integral, limit in V*s |
+| `cycle_int_limit_running` computed from `sl_cycle_int_limit`, `sl_bemf_coupling_k / rpm`, `sl_phase_advance_at_br` | Single learned `integrator_limit_vs` plus `phase_advance`; the RPM-dependent terms compensate a coupling effect that has not been characterised on this hardware |
+| `val_sample = duty / 2` | Already matched: `Stm32Pwm::calculateAdcTriggerCompare` sets `CCR4 = CCR_phase / 2` |
+| `commutate()` drives the bridge directly | Emits a synthetic Hall event into `MotorPLL`, which drives the bridge |
+
+Not adopted:
+
+- **Whole-step ZC quantisation.** VESC runs at a higher and adaptive switching frequency, so it can afford to quantise the crossing to a PWM tick. At a fixed 20 kHz with steps as short as 8 cycles, the sub-sample interpolation added here is worth more than anything else in the list.
+- **RPM-dependent integrator limits.** `sl_bemf_coupling_k` compensates capacitive/inductive coupling from the driven phases into the floating one, which is hardware-specific. The learned single constant is the simpler starting point; if the commutation angle turns out to drift with speed on the bench, that is the term to add.
+- **Direct commutation.** Feeding the PLL instead of the bridge is a genuine advantage of this architecture: the PLL low-pass filters ZC jitter and keeps producing angle between events, so a single missed or mistimed crossing does not directly become a mistimed commutation. Keep it.
+
+## 11. Measured behaviour
+
+`tests/test_bemf_observer/run.sh` builds a host harness that models a trapezoidal BLDC, samples the floating phase once per PWM cycle the way the injected ADC does, and closes the commutation loop on the observer. The rotor is kinematic, so the metric is the true rotor angle at which the observer emits its synthetic event, in electrical degrees, against the sector boundary it names. "bias" is the mean, "jitter" the standard deviation about the mean, "missed" the number of steps that produced no event and had to be forced by the harness watchdog.
+
+20 kHz PWM, 24 V bus, 8 degrees of modelled demagnetization:
+
+| Case | timing | bias | jitter | max\|e\| | missed |
+|---|---|---|---|---|---|
+| clean, 1200 st/s | `DELAY_30DEG` | 1.24 | 0.98 | 3.60 | 0 |
+| | `FLUX_INTEGRATE` | 1.23 | 0.98 | **2.47** | 0 |
+| clean, 2400 st/s | `DELAY_30DEG` | 2.42 | 1.96 | 7.20 | 0 |
+| | `FLUX_INTEGRATE` | 2.42 | 1.96 | 7.20 | 0 |
+| weak BEMF (E = 0.08 Vbus) | `DELAY_30DEG` | 1.24 | 0.98 | 3.60 | 0 |
+| | `FLUX_INTEGRATE` | 1.23 | 0.98 | **2.47** | 0 |
+| 0.3 V rms noise | `DELAY_30DEG` | 1.52 | 1.42 | 6.02 | 0 |
+| | `FLUX_INTEGRATE` | 1.74 | **1.16** | **4.82** | 0 |
+| 0.8 V rms noise | `DELAY_30DEG` | 1.85 | 2.87 | 10.84 | 0 |
+| | `FLUX_INTEGRATE` | 1.65 | **1.71** | **7.24** | 0 |
+| 0.8 V rms + 1 % EMI spikes | `DELAY_30DEG` | 2.04 | 3.06 | 16.85 | 1 |
+| | `FLUX_INTEGRATE` | 1.70 | **1.84** | **7.24** | **0** |
+| 0.8 V rms, 2400 st/s | `DELAY_30DEG` | 3.35 | 3.22 | 28.82 | 5 |
+| | `FLUX_INTEGRATE` | 3.76 | 3.09 | 38.43 | 6 |
+
+Reading the numbers:
+
+- **Flux integration wins on jitter and worst case, not on bias.** At 0.8 V rms the jitter is 1.71 vs 2.87 degrees and the worst single step is 7.24 vs 10.84 - the integrator's low-pass action. Under EMI spikes it is the difference between 0 and 1 dropped step.
+- **The comparison flatters `DELAY_30DEG`.** The harness hands it the *exact* rotor speed. In the firmware it gets the PLL estimate that its own events produce, so the positive-feedback path described in section 3 is not represented here at all. Treat the delay column as an optimistic bound.
+- **Neither mode is exercised on acceleration**, which is where the flux integral's real advantage lies: it is a path integral in angle, so any speed trajectory gives the same result at the same angle, while a countdown locks in a duration at the ZC and is wrong the moment the speed changes. The harness runs at constant speed only.
+- The residual 1-4 degrees of bias is the half-PWM-period firing granularity described in section 8, not a detection error. It is the same for both modes because both fire on the tick at or after their target.
+- 2400 steps/s is the hard case for both: ~8 PWM samples per step leaves only ~4 between the end of blanking and the crossing.
+
+### What the legacy detector measured
+
+The pre-rewrite detector (fixed `0.55`/`0.45 * Vbus` hysteresis pair, fixed 2-cycle blanking, speed-derived countdown) was carried in the harness during the rewrite and has since been removed. For the record, on the same cases it produced:
+
+| Case | bias | jitter | missed |
+|---|---|---|---|
+| clean, 1200 st/s | 9.6 | 1.0 | 0 |
+| clean, 2400 st/s | -77.6 | 90.0 | 1333 |
+| weak BEMF (E = 0.08 Vbus) | -67.2 | 90.0 | 666 |
+| 0.8 V rms noise | -67.6 | 90.7 | 100 |
+| 0.8 V rms + 1 % EMI spikes | -72.4 | 93.5 | 124 |
+
+A jitter of ~90 degrees is not jitter, it is loss of lock - the loop was not tracking at all in those rows. The two outright failures, 2400 steps/s and weak BEMF, are exactly the two failure modes predicted analytically in section 3: a fixed 2-cycle blanking window against an 8-cycle step, and a signal that never climbs `0.05 * Vbus` past the neutral. These numbers are no longer reproducible from the current harness.
+
+## 12. BEMF amplitude estimate (for model-based current control)
+
+`BemfObserver::getAmplitude()` returns a `BemfAmplitude` describing the back-EMF the observer is currently seeing. It exists so a current command can be computed from the motor's physics instead of leaving a PID to discover the operating point every time.
+
+### How it is measured
+
+Inside a step the floating winding sweeps the linear transition of the trapezoid from `-E` to `+E`, so the polarity-normalised signal `v_diff` is a straight line whose slope carries the amplitude. The observer runs a least-squares fit over every sample of the step that survived the rail guard:
+
+```
+slope s = (n*sum(k*v) - sum(k)*sum(v)) / (n*sum(k^2) - sum(k)^2)   [V per PWM tick]
+E       = 0.5 * (s / dt) * T_step                                   [V, line-to-neutral peak]
+ke      = E * T_step / (pi/3)                                       [V*s per electrical radian]
+```
+
+Three implementation points:
+
+- **The abscissa is the PWM tick index, not seconds.** With seconds the sums are O(1e-8) and the normal-equation denominator `n*sum(t^2) - sum(t)^2` loses most of a `float` mantissa to cancellation. With tick indices the sums stay O(1..1e3) and the fit is exact to working precision.
+- **The fit uses the raw `v_diff`, before the deadband.** The deadband flattens exactly the samples nearest the crossing, which would bias the fitted slope towards zero.
+- **The fit runs in `onCommutation()`**, so it sees the whole step. That costs one step of latency on a quantity that changes on a mechanical timescale.
+
+A fitted slope that comes out negative means the polarity is wrong or the step was garbage; the sample is dropped rather than folded in. Results are low-pass filtered with `amplitude_lpf_alpha` and retain their last good value, so the caller can read them every PWM cycle.
+
+Because it is a fit over `n` samples rather than a peak reading, the noise on the estimate falls as `1/sqrt(n)`.
+
+### Accuracy
+
+From `tests/test_bemf_observer/run.sh`, against the modelled amplitude:
+
+| Case | E true | E est | error |
+|---|---|---|---|
+| clean, 1200 st/s | 6.000 | 5.936 | -1.1 % |
+| clean, 2400 st/s | 9.000 | 8.722 | -3.1 % |
+| weak BEMF (0.08 Vbus) | 2.000 | 1.979 | -1.1 % |
+| 0.3 V rms noise | 6.000 | 5.883 | -2.0 % |
+| 0.8 V rms noise | 6.000 | 5.983 | -0.3 % |
+| 0.8 V rms + 1 % spikes | 6.000 | 6.079 | +1.3 % |
+| 0.8 V rms, 2400 st/s | 9.000 | 8.927 | -0.8 % |
+
+Noise barely moves it - the fit averages it out. The consistent small **negative** bias is a real systematic, not noise: commutation runs a couple of degrees late, so the first samples of a step still catch the tail of the trapezoid *plateau*, which is flat and drags the fitted slope down. It scales with the commutation lag, which is why it is -3 % at 2400 steps/s (lag ~2.4-3.8 degrees) and -1 % at 1200 (lag ~1.2 degrees). Fitting only the middle of the step would remove it; at 1-3 % it is smaller than the winding-resistance drift you get from a 40 K temperature rise, so it is left alone.
+
+### Using it for a feed-forward current command
+
+In 6-step drive two phases are in series across the bridge, so the loop equation is
+
+```
+duty * Vbus = 2*E + 2*R_phase*I + 2*L_phase*dI/dt
+```
+
+Both driven phases contribute BEMF, hence `2*E`. In steady state the feed-forward duty for a target current is
+
+```
+duty_ff = (2*E + 2*R_phase*I_target) / Vbus
+```
+
+and the existing PID then only has to trim the model error - resistance drift with temperature, dead-time voltage loss, MOSFET and diode drops - instead of building the whole operating point out of integral action. That is what removes the windup and the slow recovery from saturation.
+
+For a current *step* the inductive term matters:
+
+```
+duty_step = (2*E + 2*R_phase*I_target + 2*L_phase*(I_target - I_now)/dt) / Vbus
+```
+
+which is a deadbeat command; in practice clamp it, since `2*L/dt` is a large gain at 20 kHz.
+
+**`ke_v_s_per_rad` is the field that makes this work at all speeds.** `E` is only measured while the observer is receiving samples - above `min_duty`, with a phase floating, and realistically above the transition speed. But `ke` is a motor constant. Once learned, `predictBemfVolts(speed)` gives `E = ke * (pi/3) * speed_steps_per_sec` from the PLL speed alone, so the feed-forward model stays valid down to standstill where the observer itself is inactive:
+
+```cpp
+const libecu::BemfAmplitude a = controller.getBemfAmplitude();
+const float e = a.valid ? a.peak_volts
+                        : observer.predictBemfVolts(pll_speed_steps_sec);
+const float duty_ff = (2.0f * e + 2.0f * R_phase * i_target) / bus_voltage;
+```
+
+Two parameters the observer cannot supply and that have to come from a motor datasheet or a bench measurement: `R_phase` and `L_phase` (line-to-neutral). A DC injection test at standstill gives `R_phase`; a small-signal step or an LCR meter across two terminals gives `2*L_phase`.
+
+`BldcController::getBemfAmplitude()` is a `CriticalSection`-guarded passthrough, since the estimate is updated from the PWM ISR.
 
 ## References
 
 - STM32 UM3042 "Motor-control sensorless BEMF zero-crossing" application note, section 4.1.2, for the 30-degree ZC geometry referenced in `bemf_observer.cpp`.
+- VESC firmware, `motor/mcpwm.c` (`mcpwm_adc_int_handler`, `update_adc_sample_pos`, `rpm_thread`) for the flux-integration commutation scheme.
 - STM32G431 reference manual (RM0440) for ADC dual-mode injected conversions and `TIM1_TRGO2` trigger routing.
 - Project README and `AGENTS.md` for the high-level firmware architecture and build instructions.

@@ -254,19 +254,30 @@ int main(void)
     // BEMF sensorless observer parameters
     motor_params.bemf_transition_speed_low = 500.0f;    // steps/sec: below = Hall only
     motor_params.bemf_transition_speed_high = 800.0f;   // steps/sec: above = BEMF only
-    motor_params.bemf_blanking_cycles = 2.0f;           // PWM cycles blanking after commutation
+    motor_params.bemf_blanking_cycles = 2.0f;           // PWM cycles: demagnetization floor
+    motor_params.bemf_blanking_fraction = 0.20f;        // ...or 20% of the step, whichever is longer
     motor_params.bemf_min_duty = 0.15f;            // ON-time sensing needs >6% duty; 15% with margin
-    motor_params.bemf_zc_threshold_high = 0.55f;   // ON-time: Vbus/2 + hysteresis
-    motor_params.bemf_zc_threshold_low = 0.45f;    // ON-time: Vbus/2 - hysteresis
+    motor_params.bemf_zc_deadband_volts = 0.0f;    // 0 = auto: 1% of Vbus
+    motor_params.bemf_zc_confirm_samples = 2;      // reject single-sample noise spikes
+    motor_params.bemf_integrator_limit_vs = 0.0f;  // 0 = learn it from Hall-driven steps
+    motor_params.bemf_phase_advance = 0.0f;        // no advance
 
-    libecu::BemfObserverParams bemf_params;
+    libecu::BemfObserverParams bemf_params = bemf_observer.getParameters();
     bemf_params.blanking_cycles = motor_params.bemf_blanking_cycles;
+    bemf_params.blanking_fraction = motor_params.bemf_blanking_fraction;
     bemf_params.min_duty = motor_params.bemf_min_duty;
-    bemf_params.zc_threshold_high = motor_params.bemf_zc_threshold_high;
-    bemf_params.zc_threshold_low = motor_params.bemf_zc_threshold_low;
+    bemf_params.zc_deadband_volts = motor_params.bemf_zc_deadband_volts;
+    bemf_params.zc_confirm_samples = motor_params.bemf_zc_confirm_samples;
     bemf_params.transition_speed_low = motor_params.bemf_transition_speed_low;
     bemf_params.transition_speed_high = motor_params.bemf_transition_speed_high;
     bemf_params.is_inverse_commutation = motor_params.useInverseCommTable;
+    bemf_params.timing_mode = libecu::BemfTimingMode::FLUX_INTEGRATE;
+    bemf_params.integrator_limit_vs = motor_params.bemf_integrator_limit_vs;
+    bemf_params.phase_advance = motor_params.bemf_phase_advance;
+    bemf_params.auto_learn_limit = true;
+    // The 10k/2.2k phase dividers clip at 18.3 V, so the phase sitting at Vbus
+    // rails out above that and the (Vu+Vv+Vw)/3 neutral would be wrong.
+    bemf_params.use_virtual_neutral = false;
     bemf_observer.setParameters(bemf_params);
 
     motor_controller = new libecu::BldcController(

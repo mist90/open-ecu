@@ -404,6 +404,14 @@ void BldcController::setBemfObserver(BemfObserver* observer) noexcept {
     bemf_observer_ = observer;
 }
 
+BemfAmplitude BldcController::getBemfAmplitude() const noexcept {
+    CriticalSection cs;
+    if (!bemf_observer_) {
+        return BemfAmplitude{0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0u, false};
+    }
+    return bemf_observer_->getAmplitude();
+}
+
 bool BldcController::findFloatingPhase(PwmChannel& channel) noexcept {
     PwmState state_u = commutation_controller_.getPhaseState(PwmChannel::PHASE_U);
     PwmState state_v = commutation_controller_.getPhaseState(PwmChannel::PHASE_V);
@@ -463,8 +471,15 @@ void BldcController::pwmInterruptHandler() noexcept {
     if (bemf_active) {
         if (bemf_observer_ &&
             bemf_observer_->isBemfModeActive(motor_pll_.getSpeedStepsSec(), status_.duty_cycle)) {
-            if (bemf_observer_->update(bemf_v, bus_voltage, status_.target_position,
-                                        motor_pll_.getSpeedStepsSec())) {
+            BemfObserverInput bemf_in;
+            bemf_in.v_float             = bemf_v;
+            bemf_in.v_u                 = v_u;
+            bemf_in.v_v                 = v_v;
+            bemf_in.v_w                 = v_w;
+            bemf_in.bus_voltage         = bus_voltage;
+            bemf_in.step                = status_.target_position;
+            bemf_in.speed_steps_per_sec = motor_pll_.getSpeedStepsSec();
+            if (bemf_observer_->update(bemf_in)) {
                 motor_pll_.updateHall(bemf_observer_->getSyntheticHallStep());
             }
         } else {
