@@ -338,27 +338,29 @@ Response fields in order:
 ### Maximum Values (AT+MAXVALS)
 
 Read the firmware's configured safety limits. Useful for host-side UI to set slider ranges.
+The values are taken from the live `MotorControlParams` of the `BldcController`, so they
+reflect the actual build configuration (see `motor_params` in `main.cpp`).
 
 | | |
 |---|---|
 | **Query** | `AT+MAXVALS?*<CRC>\r\n` |
 | **Response** | `+MAXVALS:<max_speed>,<min_current>,<max_current>,<max_voltage>,<max_duty>\r\n` |
 
-Response fields in order:
+Response fields in order (all printed with 2 decimals):
 
-| Field | Type | Description |
-|-------|------|-------------|
-| max_speed | float | Maximum speed in RPS (200.0) |
-| min_current | float | Minimum current in Amperes (-6.0) |
-| max_current | float | Maximum current in Amperes (6.0) |
-| max_voltage | float | Maximum bus voltage in Volts (36.0) |
-| max_duty | float | Maximum duty cycle (0.95) |
+| Field | Type | Source |
+|-------|------|--------|
+| max_speed | float | `max_speed_rps` -- maximum speed in RPS |
+| min_current | float | `min_current` -- minimum (negative) current in Amperes |
+| max_current | float | `max_current` -- maximum current in Amperes |
+| max_voltage | float | `max_voltage` -- maximum bus voltage in Volts |
+| max_duty | float | `max_duty_cycle` -- maximum duty cycle (0.0-1.0) |
 
 **Example:**
 
 ```
 > AT+MAXVALS?*XXXX\r\n
-< +MAXVALS:200.0,-6.0,6.0,36.0,0.95\r\n
+< +MAXVALS:200.00,-6.00,6.00,36.00,0.95\r\n
 ```
 
 ## Telemetry (AT+TM)
@@ -616,7 +618,7 @@ ERROR\r\n
 | `AT+PLLID?` | Query | -- | `+PLLID:100.000,5000.000` |
 | `AT+VER?` | Query | -- | `+VER:1.0.0` |
 | `AT+STATUS?` | Query | -- | `+STATUS:1,1,23.45,...` |
-| `AT+MAXVALS?` | Query | -- | `+MAXVALS:200.0,-6.0,6.0,36.0,0.95` |
+| `AT+MAXVALS?` | Query | -- | `+MAXVALS:200.00,-6.00,6.00,36.00,0.95` |
 | `AT+TM=<0|1>` | Set | 0, 1 | `OK` |
 | `AT+PLL=<0|1>` | Set/Query | 0, 1 | `OK` / `+PLL:1` |
 | `AT+OSC=<0|1>` | Set/Query | 0, 1 | `OK` / `+OSC:1` |

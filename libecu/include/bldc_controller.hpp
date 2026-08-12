@@ -240,6 +240,12 @@ public:
     MotorStatus getStatus() const noexcept;
 
     /**
+     * @brief Get motor control parameters (configured limits)
+     * @return Reference to the parameters the controller was configured with
+     */
+    const MotorControlParams& getParams() const noexcept { return params_; }
+
+    /**
      * @brief Set BEMF observer for hybrid Hall/BEMF sensorless mode
      * @param observer Pointer to BemfObserver (nullptr to disable BEMF mode)
      */

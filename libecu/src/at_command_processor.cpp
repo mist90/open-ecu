@@ -253,7 +253,7 @@ void AtCommandProcessor::processCommand() noexcept {
                             id == CommandId::EMode || id == CommandId::DMode ||
                             id == CommandId::Spid || id == CommandId::Cpid ||
                             id == CommandId::PllId ||
-                            id == CommandId::Status);
+                            id == CommandId::Status || id == CommandId::Maxvals);
     if (needsController && controller_ == nullptr) {
         sendError();
         return;
@@ -434,7 +434,16 @@ void AtCommandProcessor::processCommand() noexcept {
     }
 
     case CommandId::Maxvals: {
-        sendResponse("MAXVALS", "200.0,-6.0,6.0,36.0,0.95");
+        const MotorControlParams& params = controller_->getParams();
+        char buf[96];
+        int len = std::snprintf(buf, sizeof(buf),
+            "+MAXVALS:%.2f,%.2f,%.2f,%.2f,%.2f\r\n",
+            params.max_speed_rps,
+            params.min_current,
+            params.max_current,
+            params.max_voltage,
+            params.max_duty_cycle);
+        if (len > 0) write(buf, static_cast<std::size_t>(len));
         break;
     }
 
