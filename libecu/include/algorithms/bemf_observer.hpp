@@ -14,7 +14,7 @@
  * the amplitude-dependent bias of a fixed +-5%-of-Vbus threshold pair.
  *
  * Two commutation-timing strategies are available (see BemfTimingMode):
- * a speed-derived 30-degree countdown, and a VESC-style flux integration
+ * a speed-derived 30-degree countdown, and a flux integration
  * that needs no speed estimate at all.
  */
 
@@ -46,7 +46,6 @@ enum class BemfTimingMode : uint8_t {
      * that arc is speed-independent - one constant covers the whole speed
      * range.  Integration is also a low-pass filter, so per-sample ADC noise
      * averages out instead of directly displacing the commutation instant.
-     * This is the scheme VESC uses (mcpwm.c, COMM_MODE_INTEGRATE).
      */
     FLUX_INTEGRATE = 1,
 };

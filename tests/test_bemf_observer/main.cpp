@@ -12,7 +12,6 @@
  *
  * The two commutation-timing strategies are compared on identical noise
  * realisations: DELAY_30DEG (speed-derived countdown) and FLUX_INTEGRATE
- * (VESC-style volt-second integration).
  *
  * Not modelled: phase current and the R*I / L*di/dt terms, switching ringing
  * (noise here is white), current-dependent demagnetisation duration, coupling

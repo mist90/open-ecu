@@ -26,8 +26,7 @@
  *
  * is negative before the ZC and positive after it on every step and in both
  * rotation directions.  Detection is then a single "crosses zero upwards"
- * test at the true neutral, with no amplitude-dependent bias.  This mirrors
- * VESC's per-comm_step sign table in mcpwm.c.
+ * test at the true neutral, with no amplitude-dependent bias
  *
  * Sub-sample interpolation
  * ------------------------
@@ -299,8 +298,7 @@ bool BemfObserver::update(const BemfObserverInput& in) noexcept {
     // A fixed tick count is wrong at both ends of the speed range: too short
     // for a big motor at low speed, and longer than the whole 30-degree arc at
     // high speed.  Blank for whichever is longer - the hard demagnetisation
-    // floor, or a fixed fraction of the step.  VESC gates the same way with
-    // pwm_cycles_sum > last_pwm_cycles_sum / 2.
+    // floor, or a fixed fraction of the step
     const float period_for_blanking = (last_step_period_ > 0.0f) ? last_step_period_ : step_period;
     float blank_time = params_.blanking_cycles * dt_;
     if (period_for_blanking > 0.0f) {
@@ -328,8 +326,7 @@ bool BemfObserver::update(const BemfObserverInput& in) noexcept {
     // freewheeling through a body diode.  That is what demagnetisation looks
     // like, and how long it lasts depends on current and speed, so no fixed
     // blanking window covers it reliably.  Discarding railed samples outright
-    // is both simpler and safer than trying to time the window; VESC gates the
-    // same way with its `ph_now_raw > min && ph_now_raw < (VIN - min)` term.
+    // is both simpler and safer than trying to time the window
     const float rail = clampf(params_.rail_margin, 0.0f, 0.3f) * in.bus_voltage;
     if (in.v_float < rail || in.v_float > in.bus_voltage - rail) {
         return false;
@@ -444,7 +441,7 @@ bool BemfObserver::update(const BemfObserverInput& in) noexcept {
         // v_diff == 0 (inside the deadband): hold whatever state we are in.
     } else {
         // Only positive contributions, so a noise dip cannot unwind the flux
-        // already accumulated (VESC does the same with `if (v_diff > 0)`).
+        // already accumulated.
         const float prev = (v_diff_prev_ > 0.0f) ? v_diff_prev_ : 0.0f;
         const float now  = (v_diff > 0.0f) ? v_diff : 0.0f;
         integrator_ += 0.5f * (prev + now) * dt_;

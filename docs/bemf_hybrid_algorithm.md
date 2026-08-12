@@ -108,7 +108,7 @@ if (speed_steps_per_sec < 0.0f)     sign = -sign;   // REVERSE
 v_diff = sign * (V_float - V_ref) * polarity_;
 ```
 
-`v_diff` is then negative before the ZC and positive after it on every step and in both directions, and detection reduces to one "crosses zero upwards" test at the true neutral. This mirrors VESC's per-`comm_step` sign table in `mcpwm.c`.
+`v_diff` is then negative before the ZC and positive after it on every step and in both directions, and detection reduces to one "crosses zero upwards" test at the true neutral.
 
 Normalising the polarity is what removes the amplitude dependence of the old two-threshold scheme. Detecting at `0.55 * Vbus` instead of at the neutral means waiting for the BEMF to climb `0.05 * Vbus` past zero, which takes `0.025 * (Vbus / E) * T_step` seconds, where `E` is the BEMF plateau. The resulting phase error is **6 degrees at E = 0.25 * Vbus and 15 degrees at E = 0.1 * Vbus** - it scales with load and speed instead of staying constant, and below `E = 0.05 * Vbus` the signal never reaches the threshold at all and no ZC is ever detected.
 
@@ -118,7 +118,7 @@ Normalising the polarity is what removes the amplitude dependence of the old two
 
 By default `V_ref = bus_voltage / 2`. `bus_voltage` comes through a different divider (169k/18k) and a different ADC channel than the phase taps (10k/2.2k), so their tolerance mismatch appears as a fixed offset on the ZC and therefore as a fixed commutation phase error.
 
-Setting `use_virtual_neutral` switches the reference to `(Vu + Vv + Vw) / 3`, which travels the same divider path and cancels that mismatch, as VESC does when it has no hardware `ADC_V_ZERO` node. The measured difference is then `(2/3) * e_c`, which the observer scales back by 1.5 so the integrator limit means the same thing in both modes.
+Setting `use_virtual_neutral` switches the reference to `(Vu + Vv + Vw) / 3`, which travels the same divider path and cancels that mismatch. The measured difference is then `(2/3) * e_c`, which the observer scales back by 1.5 so the integrator limit means the same thing in both modes.
 
 **On this board the virtual neutral is not usable at normal bus voltages.** The 10k/2.2k divider saturates the 3.3 V ADC input at 18.3 V of phase voltage, so the phase sitting at Vbus rails out for any bus above that and the mean of the three readings is wrong. Enabling `use_virtual_neutral` requires changing the divider (roughly 10k/1.0k for a 36 V bus).
 
@@ -142,7 +142,7 @@ Keeping the *age* rather than assuming the previous tick means samples that fell
 
 ### Rail guard
 
-A floating phase pinned to 0 V or Vbus is not measuring BEMF - it is freewheeling through a body diode. Samples outside `[rail_margin * Vbus, (1 - rail_margin) * Vbus]` are discarded outright and do not advance any detection state. This is the same idea as VESC's `ph_now_raw > min && ph_now_raw < (VIN - min)` term, and it is what actually makes demagnetisation harmless (see section 4).
+A floating phase pinned to 0 V or Vbus is not measuring BEMF - it is freewheeling through a body diode. Samples outside `[rail_margin * Vbus, (1 - rail_margin) * Vbus]` are discarded outright and do not advance any detection state.
 
 ### Synthetic Step Mapping
 
@@ -166,7 +166,7 @@ delay_ticks_ = (target - t_since_zc_) / dt_;
 
 This is the original scheme. It works, but the delay depends on a speed estimate that is itself driven by this observer's own events: a late ZC produces a late event, which makes the PLL read a lower speed, which lengthens the delay, which makes the next event later still. It also degrades whenever the rotor accelerates inside a step.
 
-**`FLUX_INTEGRATE`** (default) is VESC's `COMM_MODE_INTEGRATE`. It integrates `v_diff` from the interpolated crossing and fires when the integral reaches `integrator_limit_vs`:
+**`FLUX_INTEGRATE`** (default). It integrates `v_diff` from the interpolated crossing and fires when the integral reaches `integrator_limit_vs`:
 
 ```cpp
 integrator_ += 0.5f * (max(v_prev, 0) + max(v_now, 0)) * dt_;   // positive contributions only
@@ -179,7 +179,7 @@ Only positive contributions are accumulated, so a noise dip cannot unwind flux t
 
 **Learning the limit.** With `auto_learn_limit` set and `integrator_limit_vs` left at 0, the observer learns the limit during the hybrid handover: on steps where it detected a ZC but the *Hall sensors* placed the commutation, the flux accumulated between the two is exactly the 30-degree integral it should be aiming for, and it is low-pass filtered into `learned_limit_` with `learn_alpha`. Until a value is learned, `FLUX_INTEGRATE` falls back to the timed countdown, so the observer is usable from the first step.
 
-**Phase advance.** `phase_advance` (0..0.9) scales the limit (or the countdown) down, moving the commutation earlier by that fraction of the 30-degree arc. VESC does the same through `sl_phase_advance_at_br`.
+**Phase advance.** `phase_advance` (0..0.9) scales the limit (or the countdown) down, moving the commutation earlier by that fraction of the 30-degree arc.
 
 ### Recovering from a late bridge
 
@@ -197,7 +197,7 @@ Two mechanisms cover this, and the second is the one that matters:
 time_since_comm_ < max(blanking_cycles * dt, blanking_fraction * last_step_period)
 ```
 
-A fixed tick count alone is wrong at both ends of the speed range: too short for a large motor at low speed, and longer than the whole 30-degree arc at high speed. At 2400 steps/s a step is only 8.3 PWM cycles, so the original fixed 2-cycle window already consumes a quarter of it. `blanking_fraction` (default 0.20, clamped below 0.45 so blanking always ends before the 30-degree point) makes the window scale with speed, the way VESC gates on `pwm_cycles_sum > last_pwm_cycles_sum / 2`.
+A fixed tick count alone is wrong at both ends of the speed range: too short for a large motor at low speed, and longer than the whole 30-degree arc at high speed. At 2400 steps/s a step is only 8.3 PWM cycles, so the original fixed 2-cycle window already consumes a quarter of it. `blanking_fraction` (default 0.20, clamped below 0.45 so blanking always ends before the 30-degree point) makes the window scale with speed.
 
 **Rail guard.** How long demagnetization actually lasts depends on phase current, inductance and speed, so no fixed window covers it reliably - and the sample right after a too-short window is both the most contaminated one and the one the detector leans on hardest. Discarding railed samples (section 3) removes the dependence on getting the window right: a freewheeling phase is pinned to a rail by definition, so it is filtered out whether or not the timer agreed.
 
@@ -331,29 +331,7 @@ Defined in `libecu/include/algorithms/bemf_observer.hpp`.
 | `STM32G431/Core/Src/main.cpp`                       | Wiring: constructs `BemfObserver`, configures parameters, registers with controller.      |
 | `tests/test_bemf_observer/`                         | Host harness: commutation accuracy and amplitude estimate under noise.                     |
 
-## 10. Relationship to VESC
-
-The detector is modelled on VESC's 6-step BLDC path (`motor/mcpwm.c`, `mcpwm_adc_int_handler`). What was taken, and what differs:
-
-| VESC (`mcpwm.c`) | open-ecu `BemfObserver` |
-|---|---|
-| Per-`comm_step` sign table (`+ph1, -ph2, +ph3, -ph1, +ph2, -ph3`) | Same idea, derived from step parity plus direction and table convention |
-| `mcpwm_vzero = ADC_V_ZERO`, or `(ADC_V_L1+L2+L3)/3` when not commutated or duty < 0.2 | `Vbus/2` by default; `(Vu+Vv+Vw)/3` behind `use_virtual_neutral`. No hardware V_ZERO node on this board, and the phase dividers clip above 18.3 V |
-| `if (abs(v_diff) < 10) v_diff = 0;` | `zc_deadband_volts`, auto-scaled to 1% of Vbus |
-| `ph_now_raw > min && ph_now_raw < (VIN - min)` | `rail_margin` guard |
-| `pwm_cycles_sum > last_pwm_cycles_sum / 2` gate | `blanking_fraction` of the measured step period |
-| `cycle_integrator += v_diff / switching_frequency_now` then compare against `cycle_int_limit_running` | `FLUX_INTEGRATE`, same integral, limit in V*s |
-| `cycle_int_limit_running` computed from `sl_cycle_int_limit`, `sl_bemf_coupling_k / rpm`, `sl_phase_advance_at_br` | Single learned `integrator_limit_vs` plus `phase_advance`; the RPM-dependent terms compensate a coupling effect that has not been characterised on this hardware |
-| `val_sample = duty / 2` | Already matched: `Stm32Pwm::calculateAdcTriggerCompare` sets `CCR4 = CCR_phase / 2` |
-| `commutate()` drives the bridge directly | Emits a synthetic Hall event into `MotorPLL`, which drives the bridge |
-
-Not adopted:
-
-- **Whole-step ZC quantisation.** VESC runs at a higher and adaptive switching frequency, so it can afford to quantise the crossing to a PWM tick. At a fixed 20 kHz with steps as short as 8 cycles, the sub-sample interpolation added here is worth more than anything else in the list.
-- **RPM-dependent integrator limits.** `sl_bemf_coupling_k` compensates capacitive/inductive coupling from the driven phases into the floating one, which is hardware-specific. The learned single constant is the simpler starting point; if the commutation angle turns out to drift with speed on the bench, that is the term to add.
-- **Direct commutation.** Feeding the PLL instead of the bridge is a genuine advantage of this architecture: the PLL low-pass filters ZC jitter and keeps producing angle between events, so a single missed or mistimed crossing does not directly become a mistimed commutation. Keep it.
-
-## 11. Measured behaviour
+## 10. Measured behaviour
 
 `tests/test_bemf_observer/run.sh` builds a host harness that models a trapezoidal BLDC, samples the floating phase once per PWM cycle the way the injected ADC does, and closes the commutation loop on the observer. The rotor is kinematic, so the metric is the true rotor angle at which the observer emits its synthetic event, in electrical degrees, against the sector boundary it names. "bias" is the mean, "jitter" the standard deviation about the mean, "missed" the number of steps that produced no event and had to be forced by the harness watchdog.
 
@@ -398,7 +376,7 @@ The pre-rewrite detector (fixed `0.55`/`0.45 * Vbus` hysteresis pair, fixed 2-cy
 
 A jitter of ~90 degrees is not jitter, it is loss of lock - the loop was not tracking at all in those rows. The two outright failures, 2400 steps/s and weak BEMF, are exactly the two failure modes predicted analytically in section 3: a fixed 2-cycle blanking window against an 8-cycle step, and a signal that never climbs `0.05 * Vbus` past the neutral. These numbers are no longer reproducible from the current harness.
 
-## 12. BEMF amplitude estimate (for model-based current control)
+## 11. BEMF amplitude estimate (for model-based current control)
 
 `BemfObserver::getAmplitude()` returns a `BemfAmplitude` describing the back-EMF the observer is currently seeing. It exists so a current command can be computed from the motor's physics instead of leaving a PID to discover the operating point every time.
 
