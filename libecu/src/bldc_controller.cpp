@@ -29,6 +29,7 @@ BldcController::BldcController(
     , commutation_controller_(commutation_controller)
     , adc_interface_(adc_interface)
     , bemf_observer_(nullptr)
+    , current_feedforward_(nullptr)
     , bemf_divider_direct_mode_(false)
     , motor_pll_(pwm_interface_.getFrequency(), params.max_speed_rps * commutation_controller.getNumPoles() * BLDC_NUM_PHASES, params.useInverseCommTable)
     , pid_speed_controller_()
@@ -43,6 +44,7 @@ BldcController::BldcController(
     , last_pid_update_time_us_(0)
     , filtered_target_speed_(0.0f)
     , filtered_measured_speed_(0.0f)
+    , filtered_measured_current_(0.0f)
     , limited_target_speed_(0.0f)
 
 {
@@ -52,6 +54,7 @@ BldcController::BldcController(
     status_.duty_cycle = 0.0f;
     status_.target_current = 0.0f;
     status_.measured_current = 0.0f;
+    status_.measured_current_filtered = 0.0f;
     status_.bus_voltage = 0.0f;
     status_.bemf_voltage_u = 0.0f;
     status_.bemf_voltage_v = 0.0f;
@@ -73,8 +76,13 @@ BldcController::BldcController(
     params_.pid_current_mode.max_output = params_.max_current;
 
     params_.pid_current_regulator.sample_time_s = 1.0f / float(pwm_interface_.getFrequency());
-    params_.pid_current_regulator.min_output = 0.0f;
-    params_.pid_current_regulator.max_output = 1.0f;
+    // Output limits come from the caller. With a feed-forward attached the PI
+    // has to be able to trim *downwards*, so min_output must be allowed to go
+    // negative; fall back to [0,1] when the caller left them unset.
+    if (params_.pid_current_regulator.max_output <= params_.pid_current_regulator.min_output) {
+        params_.pid_current_regulator.min_output = 0.0f;
+        params_.pid_current_regulator.max_output = 1.0f;
+    }
 
     current_controller_.setParameters(params_.pid_current_regulator);
     pid_speed_controller_.setParameters(params_.pid_current_mode);
@@ -260,6 +268,7 @@ void BldcController::setDriveMode(DriveMode mode) noexcept
         status_.target_current = 0.0f;
         pid_speed_controller_.reset();
         current_controller_.reset();
+        filtered_measured_current_ = 0.0f;
     } else {
         pwm_interface_.enable(true);
     }
@@ -402,6 +411,19 @@ uint32_t BldcController::calculateOpenLoopStepInterval(float speed_rps) noexcept
 
 void BldcController::setBemfObserver(BemfObserver* observer) noexcept {
     bemf_observer_ = observer;
+}
+
+void BldcController::setCurrentFeedforward(CurrentFeedforward* ff) noexcept {
+    CriticalSection cs;
+    current_feedforward_ = ff;
+}
+
+CurrentFeedforward::Info BldcController::getFeedforwardInfo() const noexcept {
+    CriticalSection cs;
+    if (!current_feedforward_) {
+        return CurrentFeedforward::Info{};
+    }
+    return current_feedforward_->getInfo();
 }
 
 BemfObserver::BemfInfo BldcController::getBemfInfo() const noexcept {
@@ -548,12 +570,45 @@ void BldcController::pwmInterruptHandler() noexcept {
     if (bus_voltage > params_.max_voltage)
         setDriveMode(DriveMode::NEUTRAL);
 
-    // Run current controller
-    float duty_cycle = current_controller_.update(target_current, measured_current);
+    // Model-based feed-forward: most of the duty at speed is just cancelling
+    // back-EMF, and that part is computable.  The PI is then left trimming the
+    // model error rather than building the whole operating point out of
+    // integral action.
+    float duty_ff = 0.0f;
+    if (current_feedforward_) {
+        CurrentFeedforwardInput ff_in;
+        ff_in.target_current      = target_current;
+        ff_in.measured_current    = measured_current;
+        ff_in.bus_voltage         = bus_voltage;
+        ff_in.speed_steps_per_sec = motor_pll_.getSpeedStepsSec();
+        if (bemf_observer_) {
+            const BemfAmplitude amp = bemf_observer_->getAmplitude();
+            ff_in.bemf_peak_volts = amp.peak_volts;
+            ff_in.bemf_valid      = amp.valid && bemf_observer_->getInfo().bemf_active;
+        } else {
+            ff_in.bemf_peak_volts = 0.0f;
+            ff_in.bemf_valid      = false;
+        }
+        duty_ff = current_feedforward_->update(ff_in);
+    }
+
+    // Run current controller as a trim on top of the feed-forward
+    float duty_cycle = duty_ff + current_controller_.update(target_current, measured_current);
+    duty_cycle = std::max(0.0f, std::min(duty_cycle, params_.max_duty_cycle));
 
     {
         CriticalSection cs;
+        // Report a filtered current: the raw value is a single ADC sample per
+        // PWM cycle, and sampling that at 100 Hz aliases the chopping ripple
+        // into the telemetry. Control and +OSC keep the raw value.
+        const float i_alpha = params_.measured_current_lpf_alpha;
+        if (i_alpha > 0.0f && i_alpha < 1.0f) {
+            filtered_measured_current_ += i_alpha * (measured_current - filtered_measured_current_);
+        } else {
+            filtered_measured_current_ = measured_current;
+        }
         status_.measured_current = measured_current;
+        status_.measured_current_filtered = filtered_measured_current_;
         status_.duty_cycle = duty_cycle;
         status_.bus_voltage = bus_voltage;
         status_.pll_angle = motor_pll_.getAngle();

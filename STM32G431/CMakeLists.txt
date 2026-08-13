@@ -135,6 +135,7 @@ file(GLOB LIBECU_CORE_SOURCES
     "../libecu/src/at_command_processor.cpp"
     "../libecu/src/platform/crc16.cpp"
     "../libecu/src/bemf_observer.cpp"
+    "../libecu/src/current_feedforward.cpp"
 )
 
 file(GLOB LIBECU_HAL_SOURCES

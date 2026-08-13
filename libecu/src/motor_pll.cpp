@@ -69,14 +69,14 @@ void MotorPLL::updateTick() noexcept {
     time_since_last_hall_ += DT_;
 
     /* Hall wire break detection.
-     * While locked, the rotor crosses one Hall step every 1/|angle_per_second_|
-     * seconds (angle_per_second_ is in steps/sec), so an edge must arrive within
-     * that period.  A silent line past the deadline means a broken Hall wire or
-     * a dead sensor.  Outside of sync the estimated speed is not trustworthy, so
-     * only HALL_TIMEOUT_SEC applies there. */
+     * While locked and actually turning, the rotor crosses one Hall step every
+     * 1/|angle_per_second_| seconds (angle_per_second_ is in steps/sec), so an
+     * edge must arrive within that period.  A silent line past the deadline
+     * means a broken Hall wire or a dead sensor.
+     */
     if (is_sync) {
         const float speed_abs = std::abs(angle_per_second_);
-        if (time_since_last_hall_ > 1.5*(1.0f / speed_abs))
+        if (speed_abs > SYNC_SPEED && time_since_last_hall_ > 1.5f * (1.0f / speed_abs))
             is_hall_fault_ = true;
     }
 

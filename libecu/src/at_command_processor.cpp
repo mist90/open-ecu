@@ -527,7 +527,7 @@ void AtCommandProcessor::sendTelemetry(const MotorStatus& status) noexcept {
             status.current_speed_rps,
             status.duty_cycle,
             status.target_current,
-            status.measured_current,
+            status.measured_current_filtered,
             status.bus_voltage,
             status.pll_angle);
 

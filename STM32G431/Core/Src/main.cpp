@@ -7,6 +7,7 @@
 #include "../../libecu/hal/stm32g4/stm32_adc.hpp"
 #include "../../libecu/include/algorithms/commutation_controller.hpp"
 #include "../../libecu/include/algorithms/bemf_observer.hpp"
+#include "../../libecu/include/algorithms/current_feedforward.hpp"
 #include "../../libecu/include/algorithms/pid_controller.hpp"
 #include "../../libecu/include/platform/critical_section.hpp"
 #include <stdint.h>
@@ -40,6 +41,25 @@
 // once BEMF has the loop it keeps it all the way down to that speed.
 #define BLDC_BEMF_LOW_RPS   6.0f
 #define BLDC_BEMF_HIGH_RPS  6.9f
+// Electrical model for the current feed-forward, identified by
+// tests/test_bemf_replay over 14 captured operating points (0.30 V rms fit).
+//
+// Measured on hardware against a PI-only build.  The back-EMF term alone gave
+// no improvement - the PI is already fast enough that there was nothing to win.
+// The dI/dt term does help, once its gain is scaled sanely: mean current error
+// drops 26-36% and the commutation ripple at 8 RPS drops 39%.  See docs
+// section 12 for the numbers and for what the term is really doing.
+// R_eff is an upper bound: it absorbs the dead-time and diode drops, which a
+// no-load sweep cannot separate from the winding resistance.
+// L is an upper bound (the demag window quantises to whole PWM cycles), so it
+// is a scale factor here rather than a measured inductance: what is actually
+// tuned is the product di_dt_gain * 2 * L * f_pwm = 4.2 V/A.  If L is ever
+// measured properly, rescale di_dt_gain to keep that product, or the current
+// loop will be silently detuned.
+#define BLDC_FF_ENABLED         true
+#define BLDC_KE_V_S_PER_RAD_E   1.2336e-2f
+#define BLDC_R_PHASE_OHM        0.658f
+#define BLDC_L_PHASE_H          0.0052f
 #else
 #define PERIODIC_TIMER_FREQ 100
 #define PWM_TIMER_FREQ 20000
@@ -53,6 +73,11 @@
 // tests/test_bemf_replay against captures from this motor before trusting them.
 #define BLDC_BEMF_LOW_RPS   40.0f
 #define BLDC_BEMF_HIGH_RPS  60.0f
+// Not identified for this motor - run the identification before enabling.
+#define BLDC_FF_ENABLED         false
+#define BLDC_KE_V_S_PER_RAD_E   0.0f
+#define BLDC_R_PHASE_OHM        0.0f
+#define BLDC_L_PHASE_H          0.0f
 #endif
 
 //#define LEGACY_POT_CONTROL
@@ -72,6 +97,7 @@ static libecu::HallGpioConfig hall_config{A__GPIO_Port, A__Pin, B__Pin, Z__Pin};
 static libecu::Stm32TimHallSensor hall_sensor(hall_config);
 static libecu::Stm32Adc adc_driver;
 static libecu::BemfObserver bemf_observer(PWM_TIMER_FREQ);
+static libecu::CurrentFeedforward current_feedforward(PWM_TIMER_FREQ);
 static libecu::CommutationController* commutation_controller = nullptr;
 static libecu::BldcController* motor_controller = nullptr;
 static libecu::UartAtBridge* g_at_processor = nullptr;
@@ -253,6 +279,7 @@ int main(void)
     motor_params.acceleration_rate = BLDC_MAX_ACCELERATION;  // RPS/s
     motor_params.target_speed_lpf_alpha = 0.0f;  // LPF smoothing for noisy potentiometer input
     motor_params.measured_speed_lpf_alpha = 0.5f; // LPF smoothing for noisy velocity measurement
+    motor_params.measured_current_lpf_alpha = 0.005f; // 10 ms at 20 kHz; telemetry only
     motor_params.control_frequency = PERIODIC_TIMER_FREQ;
     motor_params.pid_voltage_mode = {0.05f, 0.05f}; // Speed PID for VOLTAGE_MODE (outputs duty cycle 0.0-1.0)
     motor_params.pid_voltage_mode.integral_max = 0.8f;
@@ -264,9 +291,14 @@ int main(void)
     motor_params.pid_current_mode.integral_min = -4.0f;
     motor_params.pid_current_mode.kb = 2.0f;
 
-    motor_params.pid_current_regulator = {0.1f, 50.0f}; // Current PID for CURRENT_MODE (outputs duty cycle 0..1.0)
+    motor_params.pid_current_regulator = {0.1f, 50.0f}; // Current PID for CURRENT_MODE (outputs duty cycle)
+    motor_params.pid_current_regulator.max_output = 1.0f;
     motor_params.pid_current_regulator.integral_max = 1.0f;
-    motor_params.pid_current_regulator.integral_min = 0.0f;
+    // With the feed-forward attached the PI is a *trim*, so it must be able to
+    // subtract as well as add. Allowing a full -1.0 means it can always null
+    // out the feed-forward completely if the model turns out to be wrong.
+    motor_params.pid_current_regulator.min_output = BLDC_FF_ENABLED ? -1.0f : 0.0f;
+    motor_params.pid_current_regulator.integral_min = BLDC_FF_ENABLED ? -1.0f : 0.0f;
     motor_params.pid_current_regulator.kb = 5.0f;
     motor_params.useInverseCommTable = BLDC_INVERTION;
 
@@ -309,11 +341,31 @@ int main(void)
     bemf_params.use_virtual_neutral = true;
     bemf_observer.setParameters(bemf_params);
 
+    // Model-based feed-forward for the inner current loop. At 8 RPS about 0.82
+    // of the duty is pure back-EMF cancellation; computing it leaves the PI
+    // trimming only the model error instead of integrating the whole operating
+    // point from zero.
+    libecu::CurrentFeedforwardParams ff_params = current_feedforward.getParameters();
+    ff_params.enabled           = BLDC_FF_ENABLED;
+    ff_params.ke_v_s_per_rad    = BLDC_KE_V_S_PER_RAD_E;
+    ff_params.r_phase_ohm       = BLDC_R_PHASE_OHM;
+    ff_params.l_phase_h         = BLDC_L_PHASE_H;
+    ff_params.v_offset          = 0.0f;   // R_eff already absorbs it
+    ff_params.use_observer_bemf = true;   // measured E when the observer is running
+    // Scaled from a hardware sweep: raw gain is 2*L*f/Vbus = 6.7 duty per amp of
+    // error, so gain 1.0 hits the 0.10 clamp at 15 mA and degenerates into a
+    // relay - measured as a PWM-rate limit cycle and 23% duty chatter.  0.02
+    // keeps it proportional over the ~0.4 A commutation transient.
+    ff_params.di_dt_gain        = 0.02f;
+    ff_params.max_duty          = motor_params.max_duty_cycle;
+    current_feedforward.setParameters(ff_params);
+
     motor_controller = new libecu::BldcController(
         pwm_driver, hall_sensor, *commutation_controller,
         motor_params, &adc_driver);
 
     //motor_controller->setBemfObserver(&bemf_observer);
+    motor_controller->setCurrentFeedforward(&current_feedforward);
 
     if (!motor_controller->initialize()) {
         Error_Handler();

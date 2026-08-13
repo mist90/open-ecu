@@ -17,6 +17,7 @@
 #include "algorithms/pid_controller.hpp"
 #include "algorithms/motor_pll.hpp"
 #include "algorithms/bemf_observer.hpp"
+#include "algorithms/current_feedforward.hpp"
 
 namespace libecu {
 
@@ -49,6 +50,19 @@ struct MotorControlParams {
     float acceleration_rate;  ///< Acceleration rate (RPS/s), 0 = disabled
     float target_speed_lpf_alpha; ///< LPF alpha for target speed (0.0-1.0), 0 = disabled, 1.0 = no filtering
     float measured_speed_lpf_alpha; ///< LPF alpha for target speed (0.0-1.0), 0 = disabled, 1.0 = no filtering
+    /**
+     * LPF alpha for the *reported* measured current, applied per PWM cycle.
+     *
+     * The raw current is one ADC sample per PWM cycle of a chopped waveform, so
+     * reading it at the 100 Hz telemetry rate aliases badly - consecutive +TM
+     * lines can differ by an amp with nothing actually changing. This filter
+     * only affects what is reported; the control loop and the +OSC capture keep
+     * using the raw value.
+     *
+     * 0.005 at 20 kHz is a 10 ms time constant, matched to the telemetry period.
+     * 0 or 1 disables it.
+     */
+    float measured_current_lpf_alpha;
     uint32_t control_frequency; ///< Control loop frequency (Hz)
     bool useInverseCommTable; ///< Use inverse six-step commutation table
     PidParameters pid_voltage_mode; ///< Velocity PID parameters for voltage mode (outputs duty cycle)
@@ -75,7 +89,8 @@ struct MotorStatus {
     float target_speed_rps;   ///< Target motor speed (RPS)
     float duty_cycle;         ///< Current duty cycle
     float target_current;     ///< Target motor current (A)
-    float measured_current;   ///< Measured motor current (A)
+    float measured_current;   ///< Measured motor current (A), raw per-PWM-cycle sample
+    float measured_current_filtered; ///< Measured current after the telemetry LPF (A)
     float bus_voltage;         ///< Measured bus voltage (V)
     float pll_angle;          ///< Rotor angle from PLL (degrees, 0-360)
     float bemf_voltage_u;     ///< Phase U voltage (V, pre-divider)
@@ -269,6 +284,21 @@ public:
      */
     BemfObserver::BemfInfo getBemfInfo() const noexcept;
 
+    /**
+     * @brief Attach a model-based feed-forward for the inner current loop
+     *
+     * When set, its duty is added to the current PI output in CURRENT_MODE, so
+     * the PI only has to trim the model error.
+     *
+     * @param ff Pointer to a CurrentFeedforward (nullptr to disable)
+     * @note The current PI must be allowed a negative output for this to work
+     *       in both directions - see main.cpp.
+     */
+    void setCurrentFeedforward(CurrentFeedforward* ff) noexcept;
+
+    /// @brief Feed-forward telemetry snapshot; zeroed when none is attached
+    CurrentFeedforward::Info getFeedforwardInfo() const noexcept;
+
     void hallSensorInterruptHandler() noexcept;
 
     /**
@@ -288,6 +318,7 @@ private:
     CommutationController& commutation_controller_;
     AdcInterface* adc_interface_;
     BemfObserver* bemf_observer_;
+    CurrentFeedforward* current_feedforward_;
     bool bemf_divider_direct_mode_;
 
     // Owned components
@@ -318,7 +349,8 @@ private:
 
     // Target speed filtering state (LPF → slew rate limiter cascade)
     float filtered_target_speed_;            ///< LPF-filtered target speed
-    float filtered_measured_speed_;           ///< LPF-filtered measured speed
+    float filtered_measured_speed_;
+    float filtered_measured_current_;           ///< LPF-filtered measured current, telemetry only
     float limited_target_speed_;             ///< Rate-limited target speed (after LPF)
 
 

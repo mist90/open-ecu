@@ -393,7 +393,7 @@ Each line is a newline-terminated tuple (uses `\n` only, not `\r\n`):
 | cur_speed | float | Current measured speed in RPS |
 | duty | float | Current duty cycle |
 | tgt_cur | float | Target current in Amperes |
-| meas_cur | float | Measured current in Amperes |
+| meas_cur | float | Measured current in Amperes, low-pass filtered (`measured_current_lpf_alpha`, 10 ms by default). The raw per-PWM-cycle sample would alias the chopping ripple at the 100 Hz telemetry rate; use `AT+OSC` for the unfiltered waveform |
 | bus_volt | float | Bus voltage in Volts |
 | pll_angle | float | PLL rotor angle in steps (0.0-6.0, one electrical period) |
 
