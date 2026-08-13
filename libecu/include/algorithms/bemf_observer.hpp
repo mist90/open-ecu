@@ -250,6 +250,7 @@ public:
         float   integrator_vs;      ///< Flux integral accumulated since the ZC (V*s)
         float   integrator_limit;   ///< Limit currently in force (V*s)
         float   zc_fraction;        ///< Sub-sample position of the ZC inside the last PWM tick
+        float   t_since_zc_s;       ///< Seconds since the interpolated crossing (0 if none yet)
         float   last_step_period_s; ///< Measured duration of the previous commutation step
     };
 

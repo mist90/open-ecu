@@ -329,6 +329,20 @@ Defined in `libecu/include/algorithms/bemf_observer.hpp`.
 - **`zc_deadband_volts` is a floor, not a filter.** Sizing it above the noise costs samples in the 30-degree arc, which matters at high speed where there are only a handful. The sweep in `tests/test_bemf_observer` shows the tradeoff: at 2400 steps/s with 0.8 V rms noise, going from a 0.24 V deadband to 2.4 V raises the mean error from 3.7 to 11.2 degrees and starts dropping steps. Prefer the automatic 1% of Vbus and let `zc_confirm_samples` and the integrator do the noise rejection.
 - **`blanking_cycles` scales with PWM frequency**; `blanking_fraction` does not. If you raise the PWM frequency, raise `blanking_cycles` proportionally to keep the same absolute demagnetization floor.
 - **Residual bias.** Firing on the tick at or after the target adds on average half a PWM period of lag - 1.8 degrees at 1200 steps/s, 3.6 at 2400. It is a known constant and can be dialled out with `phase_advance` if it matters.
+- **Pick the transition speeds from measurement, not from a guess.** Capture logs across the speed range with `utility/capture_log.py` and run `tests/test_bemf_replay` - the zero-crossing jitter column shows where the detector becomes trustworthy. On MOTOR_1 (40 poles, 31 V bus), from 8-second captures at each speed:
+
+  | steps/s | RPS | ZC jitter |
+  |---|---|---|
+  | 619 | 5.16 | 12.5 deg |
+  | 652 | 5.43 | 10.5 deg |
+  | 742 | 6.18 | 4.6 deg |
+  | 787 | 6.56 | 5.1 deg |
+  | 829 | 6.91 | 6.2 deg |
+  | 960 | 8.00 | 1.5 deg |
+
+  The detector goes from unusable to good between 652 and 742 steps/s, so *both* thresholds are placed above that knee (720 / 828 steps/s). Setting `transition_speed_low` far below the knee is the dangerous half: `transition_speed_high` only decides where BEMF *takes over*, but once it has the loop it keeps it all the way down to `transition_speed_low`. The original 500 steps/s put that fallback in the 13-degree region.
+- **The thresholds are per motor and belong in RPS.** One electrical step is 60 degrees, so `steps/sec = RPS * num_poles * 3`. The same numeric threshold in steps/sec means completely different mechanical speeds on a 40-pole and an 8-pole motor; `main.cpp` declares `BLDC_BEMF_LOW_RPS` / `BLDC_BEMF_HIGH_RPS` inside the per-motor block and converts.
+- **Check the band is worth having.** The usable sensorless range is `transition_speed_high` up to whatever the bus voltage allows. On MOTOR_1 at 31 V that is 828 steps/s to about 1200 steps/s - under 1.5:1 - because the motor is voltage-limited at ~10 RPS. A higher bus widens the band at the top; nothing widens it at the bottom except a cleaner signal.
 - **A wide transition zone helps.** `auto_learn_limit` only learns on steps that the Hall sensors commutated, so the band between `transition_speed_low` and `transition_speed_high` needs to be crossed slowly enough to collect a few tens of steps.
 
 ## 9. Key Source Files

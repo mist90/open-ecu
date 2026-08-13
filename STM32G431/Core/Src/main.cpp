@@ -26,6 +26,20 @@
 #define BLDC_MAX_SPEED 20.0f
 #define BLDC_MAX_ACCELERATION 5.0f
 #define BLDC_INVERTION false
+// Hall -> BEMF handover, in RPS. Measured with tests/test_bemf_replay over an
+// 8 s capture at each speed (utility/capture_log.py); the numbers are the
+// zero-crossing jitter against the Hall mid-step, in electrical degrees:
+//
+//   5.16 RPS (619 st/s) 12.5     6.56 RPS (787 st/s)  5.1
+//   5.43 RPS (652 st/s) 10.5     6.91 RPS (829 st/s)  6.2
+//   6.18 RPS (742 st/s)  4.6     8.00 RPS (960 st/s)  1.5
+//
+// The detector goes from unusable to good between 652 and 742 steps/s, so both
+// thresholds sit above that knee: the observer never drives commutation in the
+// 10-degree-jitter region.  transition_speed_low is the one that matters -
+// once BEMF has the loop it keeps it all the way down to that speed.
+#define BLDC_BEMF_LOW_RPS   6.0f
+#define BLDC_BEMF_HIGH_RPS  6.9f
 #else
 #define PERIODIC_TIMER_FREQ 100
 #define PWM_TIMER_FREQ 20000
@@ -35,6 +49,10 @@
 #define BLDC_MAX_SPEED 200.0f
 #define BLDC_MAX_ACCELERATION 100.0f
 #define BLDC_INVERTION true
+// Not measured on this motor - placeholders at 20%/30% of max speed. Re-run
+// tests/test_bemf_replay against captures from this motor before trusting them.
+#define BLDC_BEMF_LOW_RPS   40.0f
+#define BLDC_BEMF_HIGH_RPS  60.0f
 #endif
 
 //#define LEGACY_POT_CONTROL
@@ -252,9 +270,15 @@ int main(void)
     motor_params.pid_current_regulator.kb = 5.0f;
     motor_params.useInverseCommTable = BLDC_INVERTION;
 
-    // BEMF sensorless observer parameters
-    motor_params.bemf_transition_speed_low = 500.0f;    // steps/sec: below = Hall only
-    motor_params.bemf_transition_speed_high = 800.0f;   // steps/sec: above = BEMF only
+    // BEMF sensorless observer parameters.
+    // Thresholds are declared per motor in RPS and converted here: one
+    // electrical step is 60 degrees, so steps/sec = RPS * num_poles * 3.  The
+    // old values were hard-coded in steps/sec outside the per-motor block,
+    // which made them meaningless if BLDC_NUM_POLES changed.
+    motor_params.bemf_transition_speed_low =
+        BLDC_BEMF_LOW_RPS  * BLDC_NUM_POLES * 3.0f;   // below: Hall only
+    motor_params.bemf_transition_speed_high =
+        BLDC_BEMF_HIGH_RPS * BLDC_NUM_POLES * 3.0f;   // above: BEMF only
     motor_params.bemf_blanking_cycles = 2.0f;           // PWM cycles: demagnetization floor
     motor_params.bemf_blanking_fraction = 0.20f;        // ...or 20% of the step, whichever is longer
     motor_params.bemf_min_duty = 0.15f;            // ON-time sensing needs >6% duty; 15% with margin

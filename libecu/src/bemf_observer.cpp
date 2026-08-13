@@ -620,6 +620,7 @@ BemfObserver::BemfInfo BemfObserver::getInfo() const noexcept {
     info.integrator_vs      = integrator_;
     info.integrator_limit   = effectiveLimit();
     info.zc_fraction        = zc_fraction_;
+    info.t_since_zc_s       = t_since_zc_;
     info.last_step_period_s = last_step_period_;
     return info;
 }
