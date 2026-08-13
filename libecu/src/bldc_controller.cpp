@@ -29,7 +29,6 @@ BldcController::BldcController(
     , commutation_controller_(commutation_controller)
     , adc_interface_(adc_interface)
     , bemf_observer_(nullptr)
-    , current_feedforward_(nullptr)
     , bemf_divider_direct_mode_(false)
     , motor_pll_(pwm_interface_.getFrequency(), params.max_speed_rps * commutation_controller.getNumPoles() * BLDC_NUM_PHASES, params.useInverseCommTable)
     , pid_speed_controller_()
@@ -413,19 +412,6 @@ void BldcController::setBemfObserver(BemfObserver* observer) noexcept {
     bemf_observer_ = observer;
 }
 
-void BldcController::setCurrentFeedforward(CurrentFeedforward* ff) noexcept {
-    CriticalSection cs;
-    current_feedforward_ = ff;
-}
-
-CurrentFeedforward::Info BldcController::getFeedforwardInfo() const noexcept {
-    CriticalSection cs;
-    if (!current_feedforward_) {
-        return CurrentFeedforward::Info{};
-    }
-    return current_feedforward_->getInfo();
-}
-
 BemfObserver::BemfInfo BldcController::getBemfInfo() const noexcept {
     CriticalSection cs;
     if (!bemf_observer_) {
@@ -570,30 +556,10 @@ void BldcController::pwmInterruptHandler() noexcept {
     if (bus_voltage > params_.max_voltage)
         setDriveMode(DriveMode::NEUTRAL);
 
-    // Model-based feed-forward: most of the duty at speed is just cancelling
-    // back-EMF, and that part is computable.  The PI is then left trimming the
-    // model error rather than building the whole operating point out of
-    // integral action.
-    float duty_ff = 0.0f;
-    if (current_feedforward_) {
-        CurrentFeedforwardInput ff_in;
-        ff_in.target_current      = target_current;
-        ff_in.measured_current    = measured_current;
-        ff_in.bus_voltage         = bus_voltage;
-        ff_in.speed_steps_per_sec = motor_pll_.getSpeedStepsSec();
-        if (bemf_observer_) {
-            const BemfAmplitude amp = bemf_observer_->getAmplitude();
-            ff_in.bemf_peak_volts = amp.peak_volts;
-            ff_in.bemf_valid      = amp.valid && bemf_observer_->getInfo().bemf_active;
-        } else {
-            ff_in.bemf_peak_volts = 0.0f;
-            ff_in.bemf_valid      = false;
-        }
-        duty_ff = current_feedforward_->update(ff_in);
-    }
-
-    // Run current controller as a trim on top of the feed-forward
-    float duty_cycle = duty_ff + current_controller_.update(target_current, measured_current);
+    // Run current controller. Its gains come from the motor's electrical model
+    // (see current_loop_tuning.hpp), so the loop bandwidth is set by physics
+    // rather than by hand-tuning.
+    float duty_cycle = current_controller_.update(target_current, measured_current);
     duty_cycle = std::max(0.0f, std::min(duty_cycle, params_.max_duty_cycle));
 
     {

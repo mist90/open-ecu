@@ -17,7 +17,7 @@
 #include "algorithms/pid_controller.hpp"
 #include "algorithms/motor_pll.hpp"
 #include "algorithms/bemf_observer.hpp"
-#include "algorithms/current_feedforward.hpp"
+#include "algorithms/current_loop_tuning.hpp"
 
 namespace libecu {
 
@@ -284,21 +284,6 @@ public:
      */
     BemfObserver::BemfInfo getBemfInfo() const noexcept;
 
-    /**
-     * @brief Attach a model-based feed-forward for the inner current loop
-     *
-     * When set, its duty is added to the current PI output in CURRENT_MODE, so
-     * the PI only has to trim the model error.
-     *
-     * @param ff Pointer to a CurrentFeedforward (nullptr to disable)
-     * @note The current PI must be allowed a negative output for this to work
-     *       in both directions - see main.cpp.
-     */
-    void setCurrentFeedforward(CurrentFeedforward* ff) noexcept;
-
-    /// @brief Feed-forward telemetry snapshot; zeroed when none is attached
-    CurrentFeedforward::Info getFeedforwardInfo() const noexcept;
-
     void hallSensorInterruptHandler() noexcept;
 
     /**
@@ -318,7 +303,6 @@ private:
     CommutationController& commutation_controller_;
     AdcInterface* adc_interface_;
     BemfObserver* bemf_observer_;
-    CurrentFeedforward* current_feedforward_;
     bool bemf_divider_direct_mode_;
 
     // Owned components

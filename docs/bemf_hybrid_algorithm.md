@@ -329,7 +329,7 @@ Defined in `libecu/include/algorithms/bemf_observer.hpp`.
 - **`zc_deadband_volts` is a floor, not a filter.** Sizing it above the noise costs samples in the 30-degree arc, which matters at high speed where there are only a handful. The sweep in `tests/test_bemf_observer` shows the tradeoff: at 2400 steps/s with 0.8 V rms noise, going from a 0.24 V deadband to 2.4 V raises the mean error from 3.7 to 11.2 degrees and starts dropping steps. Prefer the automatic 1% of Vbus and let `zc_confirm_samples` and the integrator do the noise rejection.
 - **`blanking_cycles` scales with PWM frequency**; `blanking_fraction` does not. If you raise the PWM frequency, raise `blanking_cycles` proportionally to keep the same absolute demagnetization floor.
 - **Residual bias.** Firing on the tick at or after the target adds on average half a PWM period of lag - 1.8 degrees at 1200 steps/s, 3.6 at 2400. It is a known constant and can be dialled out with `phase_advance` if it matters.
-- **Pick the transition speeds from measurement, not from a guess.** Capture logs across the speed range with `utility/capture_log.py` and run `tests/test_bemf_replay` - the zero-crossing jitter column shows where the detector becomes trustworthy. On MOTOR_1 (40 poles, 31 V bus), from 8-second captures at each speed:
+- **Pick the transition speeds from measurement, not from a guess.** Capture logs across the speed range with `utility/capture_log.py` and replay them through the observer offline, scoring the detected zero-crossing against the midpoint between the bracketing Hall edges - Hall-driven captures make those edges an independent ground truth. The jitter of that error is what shows where the detector becomes trustworthy. (The replay harness used to produce the numbers below has since been removed; the method is what matters.) On MOTOR_1 (40 poles, 31 V bus), from 8-second captures at each speed:
 
   | steps/s | RPS | ZC jitter |
   |---|---|---|
@@ -357,6 +357,9 @@ Defined in `libecu/include/algorithms/bemf_observer.hpp`.
 | `libecu/src/bldc_controller.cpp`                    | ISR integration: `pwmInterruptHandler()`, `hallSensorInterruptHandler()`, `findFloatingPhase()`. |
 | `libecu/include/bldc_controller.hpp`                | `MotorControlParams` with BEMF fields, `setBemfObserver()`.                                |
 | `libecu/include/algorithms/motor_pll.hpp`           | `MotorPLL::updateHall()` / `updateTick()` / `getNextHall()` API.                           |
+| `libecu/include/algorithms/current_loop_tuning.hpp` | `tuneCurrentPi()` - current-loop PI gains from L, R, Vbus and a bandwidth.                  |
+| `utility/capture_log.py`                            | Spins the motor to a speed and captures a `+TM`/`+OSC` log; verifies commands took.        |
+| `utility/capture_torque_step.py`                    | Square-waves the current setpoint in torque mode for current-loop transients.               |
 | `STM32G431/Core/Src/main.cpp`                       | Wiring: constructs `BemfObserver`, configures parameters, registers with controller.      |
 | `tests/test_bemf_observer/`                         | Host harness: commutation accuracy and amplitude estimate under noise.                     |
 
@@ -405,7 +408,7 @@ The pre-rewrite detector (fixed `0.55`/`0.45 * Vbus` hysteresis pair, fixed 2-cy
 
 A jitter of ~90 degrees is not jitter, it is loss of lock - the loop was not tracking at all in those rows. The two outright failures, 2400 steps/s and weak BEMF, are exactly the two failure modes predicted analytically in section 3: a fixed 2-cycle blanking window against an 8-cycle step, and a signal that never climbs `0.05 * Vbus` past the neutral. These numbers are no longer reproducible from the current harness.
 
-## 11. BEMF amplitude estimate (for model-based current control)
+## 11. BEMF amplitude estimate
 
 `BemfObserver::getAmplitude()` returns a `BemfAmplitude` describing the back-EMF the observer is currently seeing. It exists so a current command can be computed from the motor's physics instead of leaving a PID to discover the operating point every time.
 
@@ -445,128 +448,81 @@ From `tests/test_bemf_observer/run.sh`, against the modelled amplitude:
 
 Noise barely moves it - the fit averages it out. The consistent small **negative** bias is a real systematic, not noise: commutation runs a couple of degrees late, so the first samples of a step still catch the tail of the trapezoid *plateau*, which is flat and drags the fitted slope down. It scales with the commutation lag, which is why it is -3 % at 2400 steps/s (lag ~2.4-3.8 degrees) and -1 % at 1200 (lag ~1.2 degrees). Fitting only the middle of the step would remove it; at 1-3 % it is smaller than the winding-resistance drift you get from a 40 K temperature rise, so it is left alone.
 
-### Using it for a feed-forward current command
+### Using it to tune the current loop
 
-In 6-step drive two phases are in series across the bridge, so the loop equation is
-
-```
-duty * Vbus = 2*E + 2*R_phase*I + 2*L_phase*dI/dt
-```
-
-Both driven phases contribute BEMF, hence `2*E`. In steady state the feed-forward duty for a target current is
+In 6-step drive two phases sit in series across the bridge, so the steady-state loop is
 
 ```
-duty_ff = (2*E + 2*R_phase*I_target) / Vbus
+duty * Vbus = 2*E + 2*R*I + 2*L*dI/dt + V0
 ```
 
-and the existing PID then only has to trim the model error - resistance drift with temperature, dead-time voltage loss, MOSFET and diode drops - instead of building the whole operating point out of integral action. That is what removes the windup and the slow recovery from saturation.
+The first instinct is to compute that expression at runtime and add it to the current PI as a feed-forward, leaving the PI to trim only the model error. That was implemented, measured, and **removed** - see below. What the model is actually good for here is setting the PI gains once, which is what the firmware does now.
 
-For a current *step* the inductive term matters:
-
-```
-duty_step = (2*E + 2*R_phase*I_target + 2*L_phase*(I_target - I_now)/dt) / Vbus
-```
-
-which is a deadbeat command; in practice clamp it, since `2*L/dt` is a large gain at 20 kHz.
-
-**`ke_v_s_per_rad` is the field that makes this work at all speeds.** `E` is only measured while the observer is receiving samples - above `min_duty`, with a phase floating, and realistically above the transition speed. But `ke` is a motor constant. Once learned, `predictBemfVolts(speed)` gives `E = ke * (pi/3) * speed_steps_per_sec` from the PLL speed alone, so the feed-forward model stays valid down to standstill where the observer itself is inactive:
-
-```cpp
-const libecu::BemfAmplitude a = controller.getBemfAmplitude();
-const float e = a.valid ? a.peak_volts
-                        : observer.predictBemfVolts(pll_speed_steps_sec);
-const float duty_ff = (2.0f * e + 2.0f * R_phase * i_target) / bus_voltage;
-```
-
-Two parameters the observer cannot supply and that have to come from a motor datasheet or a bench measurement: `R_phase` and `L_phase` (line-to-neutral). A DC injection test at standstill gives `R_phase`; a small-signal step or an LCR meter across two terminals gives `2*L_phase`.
-
-`BldcController::getBemfAmplitude()` is a `CriticalSection`-guarded passthrough, since the estimate is updated from the PWM ISR.
-
-### The `CurrentFeedforward` class
-
-`libecu/include/algorithms/current_feedforward.hpp` implements the above, following the same shape as `BemfObserver`: a parameter struct pushed in with `setParameters()`, a per-cycle input struct, and an `Info` telemetry snapshot broken down by contribution. It is attached with `BldcController::setCurrentFeedforward()` and its output is added to the current PI in `CURRENT_MODE`.
-
-E comes from the observer when `use_observer_bemf` is set and the observer is actually running, and from `ke * omega_e` otherwise - so the model stays valid at standstill and below the BEMF transition speed, where the observer produces nothing.
-
-**The PI must be allowed a negative output.** It is a trim now, not the whole command, so it has to be able to subtract. `main.cpp` sets `pid_current_regulator.min_output` and `integral_min` to `-1.0` when the feed-forward is enabled, which means the PI can null the feed-forward out completely if the model turns out to be wrong. The `BldcController` constructor no longer hard-codes that range - it only falls back to `[0,1]` when the caller leaves both limits unset.
-
-**The deadbeat term is off by default.** At 20 kHz with L in the millihenry range, `2*L/dt` is of order 200 V per amp of current error, so an unscaled `2*L*dI/dt` saturates the bridge on a 0.1 A transient. `di_dt_gain` defaults to 0 and `max_di_dt_duty` clamps it when enabled. Do not turn it on until L is properly measured - the demag-window estimate in section 12 is only an upper bound.
-
-### Validation against the captures
-
-`tests/test_bemf_replay` feeds each captured operating point through the class and compares the commanded duty against what the PI actually settled on in the log:
-
-| log | duty recorded | duty feed-forward | residual |
-|---|---|---|---|
-| 1 RPS | 0.150 | 0.126 | +0.024 |
-| 3 RPS | 0.310 | 0.324 | -0.014 |
-| 5 RPS | 0.520 | 0.526 | -0.006 |
-| 7 RPS | 0.720 | 0.723 | -0.003 |
-| 9 RPS | 0.930 | 0.924 | +0.006 |
-
-Mean |residual| 0.0072 duty over 14 points, worst 0.024. From 4 RPS upwards the feed-forward supplies 98.7-99.5% of the duty, so the PI is left trimming about one percent instead of integrating the entire operating point from zero. The worst point is 1 RPS, which is the capture already known to be unreliable.
-
-### Measured on hardware: it does not help (yet)
-
-The offline prediction above says the model is right. It does **not** follow that enabling it improves the loop, and on this hardware it does not. Two firmware images were built differing only in `BLDC_FF_ENABLED`, flashed in turn, and captured at the same operating points:
-
-| variant | 5 RPS mean \|I_err\| | 8 RPS mean \|I_err\| | ramp 4->8 mean \|I_err\| | ramp 4->8 max |
-|---|---|---|---|---|
-| PI only | 0.139 A | 0.181 A | 0.157 A | 0.640 A |
-| feed-forward, unfiltered | 0.235 A | 0.233 A | 0.228 A | 1.100 A |
-| feed-forward + BEMF low-pass | 0.140 A | 0.198 A | 0.160 A | 1.170 A |
-
-The first attempt was clearly **worse**. `MotorPLL::getSpeedStepsSec()` returns `angle_error * kp + integral`, and with `kp = 100` against an error clamped to +-0.5 steps the proportional part alone swings +-50 steps/s at the PWM rate, stepping at every Hall edge. Multiplied by `2*ke*(pi/3)/Vbus` that is roughly +-4% duty injected into the bridge every cycle. Measured cycle-to-cycle duty change confirmed it: 0.93 with the feed-forward against 0.72 without, at 5 RPS.
-
-`bemf_lpf_alpha` (25 ms at 20 kHz) removes that and brings the loop back to parity - but only to parity. **No configuration beat PI-only on any metric measured.**
-
-The reason is that the existing loop is not short of authority: `ki = 50` at 20 kHz builds full duty in about 32 ms, while the acceleration limiter asks for roughly 0.1 duty per second. Time-to-speed on the ramp was 1.00-1.01 s for all three variants, set by the slew limiter rather than by the current loop. A feed-forward removes integral windup and speeds up recovery from saturation; this test creates neither, so it cannot show a benefit.
-
-### The torque-step test
-
-The obvious objection to the above is that a speed ramp never exercises what a feed-forward is for. So the harder transient was run too: `CLOSED_LOOP_TORQUE` mode with the current setpoint square-waving 0.5 <-> 2.5 A at 12.5 Hz (`utility/capture_torque_step.py`), fast enough that the rotor cannot respond mechanically and the speed stays put.
-
-| variant | speed | mean \|I_err\| | p95 | I sd |
-|---|---|---|---|---|
-| PI only | 8.82 RPS | 0.823 A | 1.970 A | 0.923 A |
-| feed-forward | 8.98 RPS | 0.890 A | 2.160 A | 1.018 A |
-
-Still no gain. The reason shows up in a single clean step edge caught inside one `+OSC` burst:
+Linearising about any operating point (the back-EMF is a slow disturbance, not part of this dynamic):
 
 ```
-step 0.5 -> 2.5 A, PI only
-  cycle    0    2    5   10   20   40
-  duty    67   83   77   78   79   77     %
-  I      1.1  1.5  2.1  2.1  2.1  2.3     A
+dI/dduty = Vbus / (2R + 2L*s)
 ```
 
-The PI moves the duty from 67% to 83% in **two PWM cycles (100 us)** and the current is settled inside **1.05 ms**. Against a plant whose open-loop electrical time constant is `L/R ~= 5 mH / 0.66 ohm ~= 7.6 ms`, the closed loop is already about seven times faster than the winding it is driving. There is no headroom left for a feed-forward to take.
+A PI has a zero at `1/Ti` with `Ti = kp/ki`. Put it on the plant pole (`Ti = L/R`) and the open loop collapses to a pure integrator `kp*Vbus/(2L*s)`, whose crossover is `w_c = kp*Vbus/(2L)`. Solving at a chosen bandwidth:
 
-So the **back-EMF term alone is worth nothing here** - and that was as far as the first round of testing went, with `BLDC_L_PHASE_H` left at 0 because L had only been bounded, not measured.
+```
+kp = 2*L*w_c / Vbus
+ki = 2*R*w_c / Vbus        (which makes Ti = L/R automatically)
+```
 
-### The dI/dt term does help - the sizing was the problem
+`libecu/include/algorithms/current_loop_tuning.hpp` implements exactly this as `tuneCurrentPi()`; `main.cpp` calls it at startup from the per-motor constants and falls back to the previous hand-tuned gains for a motor that has not been identified.
 
-Setting `l_phase_h` to the identified 5.2 mH and sweeping `di_dt_gain` on hardware, at 5 and 8 RPS:
+Verified on hardware - `AT+CPID?` reads back `0.141, 132.087`, giving `Ti = 1.067 ms` against `L/R = 1.064 ms`. The cancellation is exact, which is the whole point.
 
-| | 5 RPS swing | 5 RPS \|I_err\| | 5 RPS p95 | 8 RPS swing | 8 RPS \|I_err\| | 8 RPS p95 | duty swing |
+### Correcting L
+
+The gains depend on L, and the demagnetisation-window figure from section 11 (5.2 mH) is **wrong for this purpose** - it is an upper bound whose points mostly sat on the 3-PWM-cycle quantisation floor. A far better estimate falls out of the closed-loop current step response, which costs nothing to measure:
+
+```
+L = kp * Vbus / (2 * w_measured)
+```
+
+With the step settling in ~1.05 ms at `kp = 0.1`, that gives **L ~= 0.7 mH** - an order of magnitude below the demag figure. `BLDC_L_PHASE_H` uses the step-response value.
+
+### Bandwidth is now the only knob
+
+The old hand-tuned `kp = 0.1, ki = 50` correspond to **~356 Hz** by the same formula, so they were always a point on this one-parameter family. Making the parameter explicit is most of the benefit. Measured sweep at 5 and 8 RPS, against the old gains:
+
+| | 5 RPS swing | 5 RPS \|I_err\| | 5 RPS p95 | 8 RPS swing | 8 RPS \|I_err\| | 8 RPS p95 | duty change/cycle |
 |---|---|---|---|---|---|---|---|
-| PI only | 0.30 A | 0.139 A | 0.277 A | 0.54 A | 0.181 A | 0.423 A | 3-4 % |
-| feed-forward, L = 0 | 0.43 A | 0.140 A | 0.299 A | 0.51 A | 0.198 A | 0.494 A | 5 % |
-| + dI/dt, gain 1.00 | - | - | - | 0.39 A | 0.213 A | 0.606 A | **23 %** |
-| + dI/dt, **gain 0.02** | 0.38 A | **0.089 A** | **0.259 A** | **0.33 A** | **0.134 A** | 0.449 A | 7-10 % |
-| + dI/dt, gain 0.04 | 0.50 A | 0.077 A | 0.299 A | 0.23 A | 0.106 A | 0.483 A | 9-19 % |
+| old, ~356 Hz | 0.32 A | 0.141 A | 0.287 A | 0.50 A | 0.185 A | 0.435 A | 0.72 / 1.28 |
+| **500 Hz** | 0.31 A | **0.119 A** | **0.260 A** | 0.50 A | **0.168 A** | 0.436 A | 0.98 / 1.80 |
+| 800 Hz | **0.25 A** | **0.092 A** | **0.258 A** | 0.64 A | **0.140 A** | 0.481 A | 1.58 / 2.95 |
 
-"swing" is the median current excursion across a commutation, stacked over 70-120 commutations.
+"swing" is the median current excursion across a commutation, stacked over 170-280 commutations.
 
-At **gain 1.0** the term is not a feed-forward at all. The raw gain is `2*L*f_pwm/Vbus = 6.7` duty per amp, so the 0.10 clamp is reached at 15 mA of error and the term degenerates into a bang-bang relay: the current trace shows a clear PWM-rate limit cycle (`0.70 0.92 0.65 0.84 0.59 0.78`) and duty chatters by 23%. Tracking gets worse, which is what "do not enable this" was originally based on.
+Mean error improves monotonically with bandwidth, but at 8 RPS the higher setting costs 26% more commutation swing and 11% more p95: the faster loop reacts harder to the commutation discontinuity, part of which is a measurement artefact rather than real current (the shunt being read changes phase at every step). **500 Hz ships** because it never regresses. Raise `BLDC_ILOOP_BW_HZ` if mean accuracy matters more than worst-case excursion.
 
-Scaled so the clamp corresponds to the real ~0.4 A commutation transient, **gain 0.02** improves mean current error by 26-36% at both speeds, cuts the 8 RPS commutation ripple by 39%, and at 5 RPS improves p95 as well - the only configuration where nothing regresses. Gain 0.04 tracks better still but doubles the duty activity and makes the 5 RPS ripple worse, so 0.02 is what ships.
+### Why the runtime feed-forward was removed
 
-**Be clear about what this term is.** It keys off `target - measured`, not off the setpoint derivative, so it is feedback, not feed-forward: a clamped extra proportional gain of `di_dt_gain * 2*L*f_pwm/Vbus = 0.13` duty per amp, roughly doubling the current PI's `kp` of 0.1. That is *why* it helps - the proportional gain was low - and it means much the same result should be reachable by raising `pid_current_regulator.kp` directly with a clamp. It also means the 5.2 mH is a scale factor rather than a measured inductance: what is tuned is the product `di_dt_gain * 2 * L * f_pwm = 4.2 V/A`. If L is ever measured properly, rescale `di_dt_gain` to preserve that product or the loop is silently detuned.
+A `CurrentFeedforward` class computed `(2E + 2R*I + 2L*dI/dt)/Vbus` every PWM cycle and added it to the PI output. Offline it looked excellent - fed the captured operating points, it predicted the recorded duty to a mean residual of 0.0072 duty over 14 points, supplying 98.7-99.5% of it. That is a statement about the *model*, not about the loop, and the two came apart on hardware:
 
-`BLDC_FF_ENABLED` therefore ships **true**, with `di_dt_gain = 0.02`. The back-EMF half still earns nothing measurable on this drive; it is the dI/dt half that pays.
+- **The back-EMF term earned nothing.** Two images differing only in the enable flag measured neutral-to-slightly-worse at steady speed, on a 4->8 RPS ramp, and on 12.5 Hz torque steps. The reason is visible in a single captured step edge: the PI moves duty 67% -> 83% in two PWM cycles and the current settles in 1.05 ms, against a plant time constant of `L/R ~= 1.1 ms`. The loop was already faster than the winding; there was no headroom to take.
+- **The first attempt was actively worse.** `MotorPLL::getSpeedStepsSec()` is `angle_error*kp + integral`, and with `kp = 100` against an error clamped to +-0.5 steps the proportional part swings +-50 steps/s at the PWM rate. Multiplied by `2*ke*(pi/3)/Vbus` that is ~+-4% duty injected every cycle. Measured cycle-to-cycle duty change went 0.72 -> 0.93 at 5 RPS. A low-pass on the back-EMF term fixed it, but only back to parity.
+- **The dI/dt term did help - because it was not a feed-forward.** It keys off `target - measured`, so it is a clamped extra proportional gain of `di_dt_gain * 2*L*f_pwm/Vbus` duty per amp. Tuned to `0.02` it gave an effective `kp` of 0.233 and cut mean current error 26-36%. The analytic formula above asks for `kp = 0.225` at 800 Hz. **The knob found by sweeping hardware and the gain predicted by the model agree to 4%** - which is what showed the term was redundant with correct PI tuning.
 
-**Caveat on the measurement.** The `+OSC` capture is a burst of 512 samples with long gaps, covering only ~2% of wall time, so paired transients are largely a matter of luck - one usable step edge out of ~125 fired. Triggering the burst on a setpoint change instead of free-running would make this test conclusive rather than indicative.
+At `di_dt_gain = 1.0` the raw gain is 6.7 duty/A, so the 0.10 clamp is reached at 15 mA of error and the term degenerates into a bang-bang relay: a clear PWM-rate limit cycle (`0.70 0.92 0.65 0.84 0.59 0.78`) with 23% duty chatter and worse tracking.
+
+So the feed-forward is gone and the model sets the gains instead. Firmware dropped 95496 -> 94260 bytes.
+
+### What the removal gives up
+
+Two things, neither currently costly:
+
+- **Disturbance feed-forward.** No choice of `kp`/`ki` replaces feeding the back-EMF forward - it is a disturbance, not loop dynamics. Measured to be worth nothing on this drive, but that is a property of this plant, not a general result.
+- **Bus-voltage tracking.** Both gains scale with `1/Vbus` and are computed once for `BLDC_NOMINAL_VBUS`. The feed-forward divided by the live `bus_voltage` every cycle and so self-corrected; a pack sagging 20% now detunes the loop 20%. If that ever matters, recompute the gains on a slow timer from the measured bus rather than reinstating the feed-forward.
+
+### Caveats on the constants
+
+- **`R = 0.658 ohm` is an upper bound** and `ki` scales directly with it. A no-load speed sweep cannot separate winding resistance from dead-time and diode drops, so if the true resistance is lower, `ki` is proportionally too high and `Ti` no longer sits on the plant pole. A DC injection test at standstill would settle it and is the highest-value measurement outstanding.
+- `ke` is solid: 1.208e-2 over 9 points, 1.234e-2 over 14, and it is confirmed independently by the observer's own amplitude fit.
+
 
 ## References
 

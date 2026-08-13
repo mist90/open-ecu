@@ -86,7 +86,7 @@ struct BemfObserverParams {
 };
 
 /**
- * @brief Back-EMF amplitude estimate, for model-based (feed-forward) control
+ * @brief Back-EMF amplitude estimate
  *
  * Recovered from a least-squares fit of the polarity-normalised BEMF ramp
  * across one commutation step.  Within a step the floating winding sits in the
@@ -98,18 +98,17 @@ struct BemfObserverParams {
  * The fit uses every sample that survived the rail guard, so its noise scales
  * as 1/sqrt(n) instead of taking a single peak reading.
  *
- * Intended use - the 6-step voltage loop with two phases in series is
+ * Two uses:
+ *  - telemetry (`AT+BEMF`), where it is the headline signal-quality number
+ *  - identification: `ke_v_s_per_rad` is a motor constant, and together with R
+ *    and L it sets the current-loop PI gains once at startup - see
+ *    algorithms/current_loop_tuning.hpp
  *
- *      duty * Vbus = 2*E + 2*R_phase*I + 2*L_phase*dI/dt
- *
- * so a feed-forward duty for a target current is
- *
- *      duty_ff = (2*E + 2*R_phase*I_target) / Vbus
- *
- * leaving the PID to trim only the model error.  `ke_v_s_per_rad` is the term
- * that makes this work below the BEMF transition speed too: E is only measured
- * while the observer runs, but ke is a motor constant, so once learned the
- * model can predict E = ke * omega from the PLL speed at any speed.
+ * It is deliberately *not* consumed by a runtime feed-forward.  That was
+ * implemented and measured on hardware, and the back-EMF term earned nothing:
+ * the current PI already settles in ~1 ms against a plant time constant of
+ * L/R ~= 1.1 ms, so there was no headroom to take.  See section 12 of
+ * docs/bemf_hybrid_algorithm.md.
  */
 struct BemfAmplitude {
     float    peak_volts;          ///< |e| plateau, line-to-neutral (V)
