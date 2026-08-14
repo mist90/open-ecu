@@ -141,7 +141,30 @@ struct HallMonitorParams {
      * and three times below the fault signature at the top of the speed range.
      */
 
-    float   erratic_threshold;   ///< Accumulated non-advancing edges that latch a fault
+    /**
+     * Fraction of edges that may fail to advance the position, 0..1; 0 disables.
+     *
+     * A *count* cannot be used here, because the benign level scales with the
+     * edge rate and therefore with speed. Measured on real hardware at 6 RPS
+     * under 2 A of load, healthy running sat at a surplus of 14-21 edges
+     * against an edge accumulator of ~345 - about 6% - and an absolute
+     * threshold of 20 tripped on it. The same 6% at 9 RPS would be 27.
+     *
+     * The ratio is what stays put: real rotor dither at a sector boundary is a
+     * few percent of edges, while genuine chatter approaches 100% because the
+     * edges cancel completely.
+     */
+    float   erratic_fraction;
+
+    /**
+     * Minimum accumulated edges before the fraction is judged.
+     *
+     * A ratio computed from two or three edges is meaningless. Below roughly
+     * 20 steps/sec the accumulator never reaches this, which leaves the
+     * detector inactive at crawling speed - acceptable, since chatter there
+     * neither damages anything nor misleads the PLL much.
+     */
+    float   erratic_min_edges;
 
     bool    require_drive_active;///< Only accumulate while the bridge is driving
 };
@@ -208,7 +231,7 @@ public:
      */
     struct Info {
         float     invalid_score;   ///< Leaky accumulator for illegal codes
-        float     erratic_score;   ///< Leaky accumulator for non-advancing edges
+        float     erratic_score;   ///< Non-advancing edges as a fraction of all edges (0..1)
         float     edge_accum;      ///< Leaky edge count
         float     advance_accum;   ///< Leaky *signed* net advance, in steps
         uint32_t  invalid_events;  ///< Illegal-code runs counted since reset

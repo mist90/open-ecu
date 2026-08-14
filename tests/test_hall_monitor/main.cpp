@@ -128,8 +128,8 @@ int main() {
             peak = std::max(peak, m.getInfo().erratic_score);
             spin(m, r, 600.0f, 0.4f);          // recover
         }
-        printf("       peak bounce score over 6 bursts of 8 edges: %.1f "
-               "(threshold %.1f)\n", peak, m.getParameters().erratic_threshold);
+        printf("       peak erratic fraction over 6 bursts of 8 edges: %.3f "
+               "(threshold %.2f)\n", peak, m.getParameters().erratic_fraction);
         check(!m.isFaulted(), "six separated bounce bursts do not fault");
     }
 
@@ -199,6 +199,35 @@ int main() {
         }
         printf("       %u transient illegal codes at 1 PWM period each\n", glitches);
         check(!m.isFaulted(), "measured healthy glitch rate does not fault");
+    }
+
+    // ---- 4c. loaded running with real rotor dither -------------------------
+    // From a captured false positive: at 6 RPS under 2 A, about 6% of Hall
+    // transitions failed to advance - genuine dither at the sector boundary.
+    // The absolute-count threshold of 20 tripped on this; the fraction must not.
+    {
+        HallMonitor m(PWM_FREQ);
+        Rotor r;
+        std::mt19937 rng(7);
+        std::uniform_real_distribution<float> u(0.0f, 1.0f);
+        float peak = 0.0f;
+        for (uint32_t k = 0; k < static_cast<uint32_t>(4.0f / DT); ++k) {
+            r.sector += 720.0f * DT;
+            if (r.sector >= 6.0f) r.sector -= 6.0f;
+            uint8_t now = r.sample();
+            // 6% of the time, emit the previous sector once more before moving
+            // on - a rotor stepping back over the boundary and returning.
+            if (now != r.last_reported && u(rng) < 0.06f) {
+                const uint8_t back = static_cast<uint8_t>((r.last_reported + 5) % 6);
+                m.tick(true); m.onPosition(back, true);
+                m.tick(true); m.onPosition(r.last_reported, true);
+            }
+            feed(m, r.last_reported, now, true);
+            peak = std::max(peak, m.getInfo().erratic_score);
+        }
+        printf("       loaded dither: peak erratic fraction %.3f (threshold %.2f)\n",
+               peak, m.getParameters().erratic_fraction);
+        check(!m.isFaulted(), "6%% non-advancing edges under load does not fault");
     }
 
     // ---- 5. disconnected loom (all lines at the pull level) ---------------

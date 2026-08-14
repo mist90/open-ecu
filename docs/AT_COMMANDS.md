@@ -629,7 +629,7 @@ Unbuffered, like `+PLL` and `+BEMF`. Every field is a leaky accumulator or a run
 |-------|------|-------------|
 | fault | int | 0 = none, 1 = INVALID_CODE, 2 = ERRATIC_SEQUENCE. Latched until `AT+HCLEAR` |
 | invalid_score | float | Leaky accumulator of illegal 000/111 codes. Counting is **disabled** by default (see below) |
-| erratic_score | float | Leaky accumulator of edges that made no net progress. Faults at 20.0 |
+| erratic_score | float | Non-advancing edges as a **fraction** of all edges (0..1). Faults at 0.35 |
 | edge_accum | float | Leaky edge count; divide by `decay_time_s` (0.5) for edges/sec |
 | invalid_events | uint32 | Illegal-code readings since reset |
 | edges | uint32 | Hall transitions since reset |
@@ -659,7 +659,7 @@ The two scores are the useful numbers, because each is directly comparable to it
   A 20x gap, so the 300 us threshold sits six times above the benign maximum and three times below the fault signature.
 
 - **`invalid_score` is counting, and counting does not work here.** At 9 RPS the benign rate settles it near 1766, while a genuinely stuck line would settle it near 90 - the benign rate is twenty times the fault signature, so no threshold separates them. `invalid_threshold` therefore defaults to 0 (disabled). Enable it only on hardware where illegal codes are genuinely rare.
-- **`erratic_score` is the position-corruption margin.** Measured maximum in health across 2-9 RPS: **0.00** against a threshold of 20. Bounce on this hardware produces illegal codes but never a wrong-but-valid position, so the sequence itself stays clean.
+- **`erratic_score` is the position-corruption margin, expressed as a fraction.** It is deliberately not a count: a count scales with the edge rate, so any absolute threshold is really a speed limit. A captured false positive showed this - at 6 RPS under 2 A of load, healthy running produced a surplus of 14-21 non-advancing edges against ~345 total, and the old absolute threshold of 20 tripped on it. As a fraction that is 0.06, against a threshold of 0.35. Unloaded running measures near 0.00; genuine chatter approaches 1.0 because the edges cancel completely.
 - **`edge_accum / 0.5` is the edge rate**, which should equal the electrical speed in steps/sec. A large mismatch against `+TM:cur_speed` means edges are being lost or manufactured.
 
 A latched fault forces `DriveMode::NEUTRAL`. It does *not* re-assert every cycle - it latches once, so a persistent condition reads as a fault rather than as commands being silently ignored.

@@ -303,7 +303,7 @@ int main(void)
     motor_params.pid_voltage_mode.integral_min = 0.0f;
     motor_params.pid_voltage_mode.kb = 2.0f;
 
-    motor_params.pid_current_mode = {0.5f, 1.0f}; // Speed PID for CURRENT_MODE (outputs current, A)
+    motor_params.pid_current_mode = {1.0f, 2.0f}; // Speed PID for CURRENT_MODE (outputs current, A)
     motor_params.pid_current_mode.integral_max = 12.0f;
     motor_params.pid_current_mode.integral_min = -4.0f;
     motor_params.pid_current_mode.kb = 2.0f;
@@ -389,7 +389,11 @@ int main(void)
     hall_params.invalid_threshold      = 0.0f;    // counting is useless here
     hall_params.invalid_debounce       = 1;
     hall_params.invalid_persist_time_s = 0.0003f; // 6x the benign max, 3x below the fault
-    hall_params.erratic_threshold      = 20.0f;   // measured max in health: 0.00
+    // Fraction, not a count: the count scales with edge rate. A loaded run at
+    // 6 RPS / 2 A measured a healthy fraction of ~0.06 while an absolute
+    // threshold of 20 tripped on it (surplus 21 of 351 edges).
+    hall_params.erratic_fraction       = 0.35f;
+    hall_params.erratic_min_edges      = 10.0f;
     hall_params.require_drive_active   = true;
 
     motor_controller = new libecu::BldcController(

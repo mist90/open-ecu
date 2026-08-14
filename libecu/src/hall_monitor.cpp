@@ -47,7 +47,8 @@ HallMonitor::HallMonitor(float pwm_frequency) noexcept
     params_.invalid_threshold      = 0.0f;    // disabled - see the header
     params_.invalid_debounce       = 1;       // readings are already deferred
     params_.invalid_persist_time_s = 0.0003f; // 300 us standing illegal code
-    params_.erratic_threshold      = 20.0f;
+    params_.erratic_fraction       = 0.35f;   // healthy under load measures ~0.06
+    params_.erratic_min_edges      = 10.0f;
     params_.require_drive_active   = true;
 }
 
@@ -144,16 +145,20 @@ void HallMonitor::evaluate() noexcept {
     // Healthy motion advances one step per edge in a consistent direction, so
     // edge_accum_ == |advance_accum_|.  Chatter piles up edges that cancel, and
     // the surplus is the fault signal.  No direction input is needed.
+    // Express it as a *fraction* of all edges, not a count: the count scales
+    // with the edge rate, so any absolute threshold is really a speed limit.
     const float surplus = edge_accum_ - std::fabs(advance_accum_);
-    erratic_score_ = (surplus > 0.0f) ? surplus : 0.0f;
+    erratic_score_ = (edge_accum_ >= params_.erratic_min_edges && surplus > 0.0f)
+                   ? (surplus / edge_accum_)
+                   : 0.0f;
 
     // A threshold of zero disables that detector.
     if (fault_ == HallFault::NONE) {
         if (params_.invalid_threshold > 0.0f &&
             invalid_score_ >= params_.invalid_threshold) {
             fault_ = HallFault::INVALID_CODE;
-        } else if (params_.erratic_threshold > 0.0f &&
-                   erratic_score_ >= params_.erratic_threshold) {
+        } else if (params_.erratic_fraction > 0.0f &&
+                   erratic_score_ >= params_.erratic_fraction) {
             fault_ = HallFault::ERRATIC_SEQUENCE;
         }
     }
