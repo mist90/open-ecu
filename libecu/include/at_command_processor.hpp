@@ -10,7 +10,6 @@
 #include <cstdint>
 
 #include "algorithms/motor_pll.hpp"
-#include "algorithms/bemf_observer.hpp"
 #include "algorithms/hall_monitor.hpp"
 
 namespace libecu {
@@ -129,33 +128,6 @@ public:
     bool isPllTelemetryEnabled() const noexcept;
 
     /**
-     * @brief Send BEMF observer telemetry line (+BEMF:)
-     *
-     * Unbuffered: one line per call, emitted straight to the UART, unlike
-     * AT+OSC.  Telemetry runs at 100 Hz while commutation runs at up to a few
-     * thousand steps per second, so every field here is either a per-step
-     * aggregate, a filtered value, or a sticky counter - an instantaneous
-     * per-sample reading would be an arbitrary point inside a random step.
-     *
-     * @param info Observer state snapshot
-     * @param amp  Back-EMF amplitude estimate
-     */
-    void sendBemfTelemetry(const BemfObserver::BemfInfo& info,
-                           const BemfAmplitude& amp) noexcept;
-
-    /**
-     * @brief Enable or disable BEMF telemetry output
-     * @param enabled True to enable +BEMF output
-     */
-    void setBemfTelemetryEnabled(bool enabled) noexcept;
-
-    /**
-     * @brief Check if BEMF telemetry is enabled
-     * @return True if +BEMF output is enabled
-     */
-    bool isBemfTelemetryEnabled() const noexcept;
-
-    /**
      * @brief Send Hall health telemetry line (+HSTATUS:)
      *
      * Unbuffered, one line per call.  Every field is either a leaky
@@ -245,7 +217,6 @@ private:
     bool telemetry_enabled_;
     bool osc_streaming_;
     bool pll_telemetry_enabled_;
-    bool bemf_telemetry_enabled_;
     bool hall_telemetry_enabled_;
 
     // Oscilloscope single buffer with two phases

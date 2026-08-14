@@ -62,16 +62,8 @@ test-compile: all
 	@echo "Objects: $(OBJECTS)"
 	@echo "Library: $(LIBRARY)"
 
-# Test executable
-TEST_SRC = $(TEST_DIR)/test_bemf_observer.cpp
-TEST_EXE = $(BUILD_DIR)/test_bemf_observer
-
-# Build and run the host-side BEMF observer test harness
-test: all $(TEST_EXE)
-	./$(TEST_EXE)
-
-$(TEST_EXE): $(TEST_SRC) $(LIBRARY) | $(BUILD_DIR)
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -I. $(TEST_SRC) -L$(LIB_DIR) -llibecu -o $@
+# Host-side test harnesses live in tests/<name>/ and each carries its own
+# run.sh, so there is no single test target here any more.
 
 # Show library info
 info:

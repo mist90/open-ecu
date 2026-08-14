@@ -16,7 +16,6 @@ AtCommandProcessor::AtCommandProcessor(BldcController* controller) noexcept
       telemetry_enabled_(true),
       osc_streaming_(false),
       pll_telemetry_enabled_(false),
-      bemf_telemetry_enabled_(false),
       hall_telemetry_enabled_(false),
       osc_write_index_(0),
       osc_read_index_(0),
@@ -168,7 +167,7 @@ namespace {
 /** Command IDs for AT command dispatch */
 enum class CommandId : uint8_t {
     Unknown,
-    Spd, Cur, Dut, Mode, EMode, DMode, Spid, Cpid, PllId, Pll, Bemf, HStatus, HClear, Ver, Status, Tm, Osc, Maxvals
+    Spd, Cur, Dut, Mode, EMode, DMode, Spid, Cpid, PllId, Pll, HStatus, HClear, Ver, Status, Tm, Osc, Maxvals
 };
 
 CommandId matchCommand(const char* cmd) noexcept {
@@ -181,7 +180,6 @@ CommandId matchCommand(const char* cmd) noexcept {
     if (std::strncmp(cmd, "SPID", 4) == 0) return CommandId::Spid;
     if (std::strncmp(cmd, "CPID", 4) == 0) return CommandId::Cpid;
     if (std::strncmp(cmd, "PLLID", 5) == 0) return CommandId::PllId;
-    if (std::strncmp(cmd, "BEMF", 4) == 0) return CommandId::Bemf;
     if (std::strncmp(cmd, "SPD", 3) == 0) return CommandId::Spd;
     if (std::strncmp(cmd, "CUR", 3) == 0) return CommandId::Cur;
     if (std::strncmp(cmd, "DUT", 3) == 0) return CommandId::Dut;
@@ -518,17 +516,6 @@ void AtCommandProcessor::processCommand() noexcept {
         break;
     }
 
-    case CommandId::Bemf: {
-        if (query) {
-            sendIntResponse("BEMF", bemf_telemetry_enabled_ ? 1 : 0);
-        } else {
-            int val = parseIntParam(valuePtr);
-            setBemfTelemetryEnabled(val == 1);
-            sendOk();
-        }
-        break;
-    }
-
     default:
         sendError();
         break;
@@ -602,42 +589,6 @@ void AtCommandProcessor::setHallTelemetryEnabled(bool enabled) noexcept {
 
 bool AtCommandProcessor::isHallTelemetryEnabled() const noexcept {
     return hall_telemetry_enabled_;
-}
-
-void AtCommandProcessor::sendBemfTelemetry(const BemfObserver::BemfInfo& info,
-                                           const BemfAmplitude& amp) noexcept {
-    if (!bemf_telemetry_enabled_) {
-        return;
-    }
-
-    // Step period is reported in microseconds: 833 reads better than 0.000833,
-    // and integer microseconds is 0.5% resolution even at the top of the range.
-    const unsigned step_us = static_cast<unsigned>(info.last_step_period_s * 1e6f);
-
-    char buf[96];
-    int len = std::snprintf(buf, sizeof(buf), "+BEMF:%.3f;%.6f;%.6f;%u;%u;%d;%u;%d;%d;%lu\n",
-            amp.peak_volts,
-            amp.ke_v_s_per_rad,
-            info.integrator_limit,
-            step_us,
-            static_cast<unsigned>(amp.fit_samples),
-            static_cast<int>(info.polarity),
-            static_cast<unsigned>(info.synthetic_step),
-            static_cast<int>(info.bemf_active),
-            static_cast<int>(info.sync_lost),
-            static_cast<unsigned long>(info.sync_loss_count));
-
-    if (len > 0 && static_cast<std::size_t>(len) < sizeof(buf)) {
-        write(buf, static_cast<std::size_t>(len));
-    }
-}
-
-void AtCommandProcessor::setBemfTelemetryEnabled(bool enabled) noexcept {
-    bemf_telemetry_enabled_ = enabled;
-}
-
-bool AtCommandProcessor::isBemfTelemetryEnabled() const noexcept {
-    return bemf_telemetry_enabled_;
 }
 
 void AtCommandProcessor::setPllTelemetryEnabled(bool enabled) noexcept {

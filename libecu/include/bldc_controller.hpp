@@ -16,7 +16,6 @@
 #include "algorithms/commutation_controller.hpp"
 #include "algorithms/pid_controller.hpp"
 #include "algorithms/motor_pll.hpp"
-#include "algorithms/bemf_observer.hpp"
 #include "algorithms/current_loop_tuning.hpp"
 #include "algorithms/hall_monitor.hpp"
 
@@ -70,16 +69,6 @@ struct MotorControlParams {
     PidParameters pid_current_mode; ///< Velocity PID parameters for current mode (outputs current)
     PidParameters pid_current_regulator; ///< Current PID parameters for current mode (outputs duty cycle)
 
-    // BEMF sensorless parameters
-    float bemf_transition_speed_low;   ///< Below this speed (steps/sec): Hall only
-    float bemf_transition_speed_high;  ///< Above this speed (steps/sec): BEMF only
-    float bemf_blanking_cycles;        ///< Demagnetization blanking floor in PWM cycles
-    float bemf_blanking_fraction;      ///< Extra blanking as a fraction of the step period (0..0.45)
-    float bemf_min_duty;               ///< Minimum duty cycle for ON-time BEMF sensing (below: Hall only)
-    float bemf_zc_deadband_volts;      ///< ZC noise floor in Volts; 0 = auto (1% of Vbus)
-    uint8_t bemf_zc_confirm_samples;   ///< Consecutive positive samples needed to accept a ZC
-    float bemf_integrator_limit_vs;    ///< Flux limit from ZC to commutation (V*s); 0 = learn it
-    float bemf_phase_advance;          ///< 0..0.9: fraction of the 30-degree arc removed
 };
 
 /**
@@ -97,7 +86,6 @@ struct MotorStatus {
     float bemf_voltage_u;     ///< Phase U voltage (V, pre-divider)
     float bemf_voltage_v;     ///< Phase V voltage (V, pre-divider)
     float bemf_voltage_w;     ///< Phase W voltage (V, pre-divider)
-    bool bemf_active;         ///< true if BEMF mode is driving commutation
     int8_t current_pid_saturation; ///< +1/-1 if duty is clamped high/low, else 0 (for speed PID anti-windup)
     uint8_t target_position;   ///< Driven motor position
     uint8_t measured_position;   ///< Measured motor position
@@ -275,30 +263,6 @@ public:
      */
     const MotorControlParams& getParams() const noexcept { return params_; }
 
-    /**
-     * @brief Set BEMF observer for hybrid Hall/BEMF sensorless mode
-     * @param observer Pointer to BemfObserver (nullptr to disable BEMF mode)
-     */
-    void setBemfObserver(BemfObserver* observer) noexcept;
-
-    /**
-     * @brief Back-EMF amplitude estimate from the observer
-     *
-     * Intended as the plant term of a model-based (feed-forward) current
-     * command.  All fields are zero when no observer is attached.
-     *
-     * @note Read under a CriticalSection - the estimate is updated from the
-     *       PWM ISR.
-     */
-    BemfAmplitude getBemfAmplitude() const noexcept;
-
-    /**
-     * @brief Observer state snapshot for telemetry
-     *
-     * Zeroed when no observer is attached.
-     */
-    BemfObserver::BemfInfo getBemfInfo() const noexcept;
-
     void hallSensorInterruptHandler() noexcept;
 
     /**
@@ -317,7 +281,7 @@ private:
     HallInterface& hall_interface_;
     CommutationController& commutation_controller_;
     AdcInterface* adc_interface_;
-    BemfObserver* bemf_observer_;
+    /// Phase-voltage divider mode passed to AdcInterface::readPhaseVoltage()
     bool bemf_divider_direct_mode_;
 
     // Owned components
@@ -368,13 +332,6 @@ private:
     float applyAccelerationLimit(float target_speed, float dt) noexcept;
 
     float getCurrentFromActivePhase() noexcept;
-
-    /**
-     * @brief Find the floating (OFF) phase in current commutation state
-     * @param channel Output: the floating phase channel
-     * @return true if a floating phase was found
-     */
-    bool findFloatingPhase(PwmChannel& channel) noexcept;
 
     /**
      * @brief Calculate step interval from target speed for open-loop control

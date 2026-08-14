@@ -6,7 +6,6 @@
 #include "../../libecu/hal/stm32g4/stm32_hall_sensor.hpp"
 #include "../../libecu/hal/stm32g4/stm32_adc.hpp"
 #include "../../libecu/include/algorithms/commutation_controller.hpp"
-#include "../../libecu/include/algorithms/bemf_observer.hpp"
 #include "../../libecu/include/algorithms/pid_controller.hpp"
 #include "../../libecu/include/platform/critical_section.hpp"
 #include <stdint.h>
@@ -26,27 +25,11 @@
 #define BLDC_MAX_SPEED 20.0f
 #define BLDC_MAX_ACCELERATION 5.0f
 #define BLDC_INVERTION false
-// Hall -> BEMF handover, in RPS. Measured with tests/test_bemf_replay over an
-// 8 s capture at each speed (utility/capture_log.py); the numbers are the
-// zero-crossing jitter against the Hall mid-step, in electrical degrees:
-//
-//   5.16 RPS (619 st/s) 12.5     6.56 RPS (787 st/s)  5.1
-//   5.43 RPS (652 st/s) 10.5     6.91 RPS (829 st/s)  6.2
-//   6.18 RPS (742 st/s)  4.6     8.00 RPS (960 st/s)  1.5
-//
-// The detector goes from unusable to good between 652 and 742 steps/s, so both
-// thresholds sit above that knee: the observer never drives commutation in the
-// 10-degree-jitter region.  transition_speed_low is the one that matters -
-// once BEMF has the loop it keeps it all the way down to that speed.
-#define BLDC_BEMF_LOW_RPS   6.0f
-#define BLDC_BEMF_HIGH_RPS  6.9f
-// Electrical model for the current feed-forward, identified by
-// tests/test_bemf_replay over 14 captured operating points (0.30 V rms fit).
-//
 // Electrical model of one phase, used to compute the current-loop PI gains
 // (see libecu/include/algorithms/current_loop_tuning.hpp).
 //
-// ke and R come from tests/test_bemf_replay over 14 captured operating points.
+// ke and R were identified from a captured no-load speed sweep over 14
+// operating points (0.30 V rms fit).
 // L is NOT the demag-window figure (5.2 mH) - that quantises to whole PWM
 // cycles and over-estimated by an order of magnitude. This value is backed out
 // of the measured closed-loop current step: L = kp*Vbus/(2*w_measured), with
@@ -77,12 +60,8 @@
 #define BLDC_MAX_SPEED 200.0f
 #define BLDC_MAX_ACCELERATION 100.0f
 #define BLDC_INVERTION true
-// Not measured on this motor - placeholders at 20%/30% of max speed. Re-run
-// tests/test_bemf_replay against captures from this motor before trusting them.
-#define BLDC_BEMF_LOW_RPS   40.0f
-#define BLDC_BEMF_HIGH_RPS  60.0f
-// Not identified for this motor - run tests/test_bemf_replay on captures from
-// it before trusting these. Zero L or R falls back to the hand-tuned gains.
+// Not identified for this motor - run a no-load speed sweep against captures
+// from it before trusting these. Zero L or R falls back to the hand-tuned gains.
 #define BLDC_KE_V_S_PER_RAD_E   0.0f
 #define BLDC_R_PHASE_OHM        0.0f
 #define BLDC_L_PHASE_H          0.0f
@@ -114,7 +93,6 @@ static libecu::Stm32Pwm pwm_driver(&htim1);
 static libecu::HallGpioConfig hall_config{A__GPIO_Port, A__Pin, B__Pin, Z__Pin};
 static libecu::Stm32TimHallSensor hall_sensor(hall_config);
 static libecu::Stm32Adc adc_driver;
-static libecu::BemfObserver bemf_observer(PWM_TIMER_FREQ);
 static libecu::CommutationController* commutation_controller = nullptr;
 static libecu::BldcController* motor_controller = nullptr;
 static libecu::UartAtBridge* g_at_processor = nullptr;
@@ -254,8 +232,9 @@ int main(void)
         Error_Handler();
     }
 
-    // BEMF phase voltage divider: 22kOhm / 2.2kOhm -> ratio 11.0, full scale
-    // 3.3 V * 11.0 = 36.3 V, just above the 36 V over-voltage trip.
+    // Phase voltage divider: 22kOhm / 2.2kOhm -> ratio 11.0, full scale
+    // 3.3 V * 11.0 = 36.3 V, just above the 36 V over-voltage trip.  Feeds the
+    // per-phase voltages reported by +TM and +OSC.
     libecu::BemfVoltageSensorParameters bemf_voltage_params;
     bemf_voltage_params.r_up = 22000.0f;
     bemf_voltage_params.r_down = 2200.0f;
@@ -332,45 +311,6 @@ int main(void)
     motor_params.pid_current_regulator.kb = 5.0f;
     motor_params.useInverseCommTable = BLDC_INVERTION;
 
-    // BEMF sensorless observer parameters.
-    // Thresholds are declared per motor in RPS and converted here: one
-    // electrical step is 60 degrees, so steps/sec = RPS * num_poles * 3.  The
-    // old values were hard-coded in steps/sec outside the per-motor block,
-    // which made them meaningless if BLDC_NUM_POLES changed.
-    motor_params.bemf_transition_speed_low =
-        BLDC_BEMF_LOW_RPS  * BLDC_NUM_POLES * 3.0f;   // below: Hall only
-    motor_params.bemf_transition_speed_high =
-        BLDC_BEMF_HIGH_RPS * BLDC_NUM_POLES * 3.0f;   // above: BEMF only
-    motor_params.bemf_blanking_cycles = 2.0f;           // PWM cycles: demagnetization floor
-    motor_params.bemf_blanking_fraction = 0.20f;        // ...or 20% of the step, whichever is longer
-    motor_params.bemf_min_duty = 0.15f;            // ON-time sensing needs >6% duty; 15% with margin
-    motor_params.bemf_zc_deadband_volts = 0.0f;    // 0 = auto: 1% of Vbus
-    motor_params.bemf_zc_confirm_samples = 2;      // reject single-sample noise spikes
-    motor_params.bemf_integrator_limit_vs = 0.0f;  // 0 = learn it from Hall-driven steps
-    motor_params.bemf_phase_advance = 0.0f;        // no advance
-
-    libecu::BemfObserverParams bemf_params = bemf_observer.getParameters();
-    bemf_params.blanking_cycles = motor_params.bemf_blanking_cycles;
-    bemf_params.blanking_fraction = motor_params.bemf_blanking_fraction;
-    bemf_params.min_duty = motor_params.bemf_min_duty;
-    bemf_params.zc_deadband_volts = motor_params.bemf_zc_deadband_volts;
-    bemf_params.zc_confirm_samples = motor_params.bemf_zc_confirm_samples;
-    bemf_params.transition_speed_low = motor_params.bemf_transition_speed_low;
-    bemf_params.transition_speed_high = motor_params.bemf_transition_speed_high;
-    bemf_params.is_inverse_commutation = motor_params.useInverseCommTable;
-    bemf_params.timing_mode = libecu::BemfTimingMode::FLUX_INTEGRATE;
-    bemf_params.integrator_limit_vs = motor_params.bemf_integrator_limit_vs;
-    bemf_params.phase_advance = motor_params.bemf_phase_advance;
-    bemf_params.auto_learn_limit = true;
-    // The 22k/2.2k dividers reach 36.3 V full scale, so the phase sitting at
-    // Vbus no longer rails out and (Vu+Vv+Vw)/3 is a usable neutral.  It
-    // travels the same divider path as the floating phase, so divider
-    // tolerance mismatch and common-mode pickup cancel instead of showing up
-    // as a fixed zero-crossing offset.  The observer falls back to Vbus/2 by
-    // itself on any sample where a phase tap looks clipped.
-    bemf_params.use_virtual_neutral = true;
-    bemf_observer.setParameters(bemf_params);
-
     // Hall health thresholds, sized from a measurement on this hardware
     // (AT+HSTATUS with the detectors disabled, swept 2-9 RPS):
     //
@@ -399,8 +339,6 @@ int main(void)
     motor_controller = new libecu::BldcController(
         pwm_driver, hall_sensor, *commutation_controller,
         motor_params, &adc_driver);
-
-    //motor_controller->setBemfObserver(&bemf_observer);
 
     motor_controller->setHallMonitorParams(hall_params);
 
@@ -469,10 +407,6 @@ int main(void)
             }
             if (at_processor.isHallTelemetryEnabled()) {
                 at_processor.sendHallTelemetry(motor_controller->getHallInfo());
-            }
-            if (at_processor.isBemfTelemetryEnabled()) {
-                at_processor.sendBemfTelemetry(motor_controller->getBemfInfo(),
-                                               motor_controller->getBemfAmplitude());
             }
         }
 
