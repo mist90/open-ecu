@@ -60,7 +60,7 @@ BldcController::BldcController(
     status_.bemf_voltage_v = 0.0f;
     status_.bemf_voltage_w = 0.0f;
     status_.bemf_active = false;
-    status_.current_pid_saturated = false;
+    status_.current_pid_saturation = 0;
     status_.target_position = 0xFF;
     status_.measured_position = 0xFF;
     status_.is_running = false;
@@ -166,7 +166,7 @@ void BldcController::update() noexcept
                     limited_target,
                     status.current_speed_rps,
                     dt,
-                    status.current_pid_saturated
+                    status.current_pid_saturation
                 );
 
                 // Electric mode determines how to use PID output
@@ -587,8 +587,18 @@ void BldcController::pwmInterruptHandler() noexcept {
     // Run current controller. Its gains come from the motor's electrical model
     // (see current_loop_tuning.hpp), so the loop bandwidth is set by physics
     // rather than by hand-tuning.
-    float duty_cycle = current_controller_.update(target_current, measured_current);
-    duty_cycle = std::max(0.0f, std::min(duty_cycle, params_.max_duty_cycle));
+    float duty_raw = current_controller_.update(target_current, measured_current);
+    float duty_cycle = std::max(0.0f, std::min(duty_raw, params_.max_duty_cycle));
+
+    // Saturation is reported from the *clamped* duty, not from the regulator's
+    // own limits: max_duty_cycle is applied here, outside the PI, so the PI
+    // reports itself unsaturated while the bridge is in fact wide open. The
+    // sign tells the speed loop which way it is stuck; see PidController.
+    int8_t duty_saturation = static_cast<int8_t>(current_controller_.saturationSign());
+    if (duty_saturation == 0) {
+        duty_saturation = (duty_raw > params_.max_duty_cycle) ? 1
+                        : (duty_raw < 0.0f)                   ? -1 : 0;
+    }
 
     {
         CriticalSection cs;
@@ -607,7 +617,7 @@ void BldcController::pwmInterruptHandler() noexcept {
         status_.bus_voltage = bus_voltage;
         status_.pll_angle = motor_pll_.getAngle();
         status_.bemf_active = bemf_active;
-        status_.current_pid_saturated = current_controller_.isSaturated();
+        status_.current_pid_saturation = duty_saturation;
         if (status_.target_position != new_position) {
             commutation_controller_.update(new_position, duty_cycle);
             status_.target_position = new_position;
