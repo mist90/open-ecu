@@ -270,6 +270,16 @@ private:
     volatile OscPhase osc_phase_;
     std::int32_t osc_sample_counter_;
     uint8_t crc_index_;  ///< Index for accumulating CRC hex digits
+
+    /**
+     * Partially accumulated received CRC.
+     *
+     * The four hex digits of a frame's CRC do not necessarily arrive within a
+     * single process() call - the loop drains whatever the UART has buffered
+     * and returns, which at 2 Mbaud is regularly in the middle of them.  So the
+     * accumulator has to be state, not a local.
+     */
+    uint16_t received_crc_;
 };
 
 } // namespace libecu

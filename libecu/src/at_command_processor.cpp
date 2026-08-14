@@ -22,7 +22,8 @@ AtCommandProcessor::AtCommandProcessor(BldcController* controller) noexcept
       osc_read_index_(0),
       osc_phase_(OscPhase::Accumulating),
       osc_sample_counter_(0),
-      crc_index_(0) {
+      crc_index_(0),
+      received_crc_(0) {
 }
 
 void AtCommandProcessor::process() noexcept {
@@ -96,21 +97,17 @@ void AtCommandProcessor::process() noexcept {
                 break;
             }
 
-            char crc_buf[5];
-            crc_buf[crc_index_] = c;
+            if (crc_index_ == 0) {
+                received_crc_ = 0;
+            }
+            received_crc_ = static_cast<uint16_t>((received_crc_ << 4) | hexValue(c));
             crc_index_++;
 
             if (crc_index_ < 4) {
                 break;
             }
 
-            crc_buf[4] = '\0';
-
-            uint16_t received_crc = 0;
-            for (int i = 0; i < 4; ++i) {
-                received_crc = (received_crc << 4) | hexValue(crc_buf[i]);
-            }
-
+            const uint16_t received_crc = received_crc_;
             std::size_t cmd_len = std::strlen(command_buffer_);
             uint16_t computed_crc = crc16_compute(
                 reinterpret_cast<const uint8_t*>(command_buffer_), cmd_len);
