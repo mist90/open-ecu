@@ -298,12 +298,12 @@ int main(void)
     motor_params.measured_speed_lpf_alpha = 0.5f; // LPF smoothing for noisy velocity measurement
     motor_params.measured_current_lpf_alpha = 0.005f; // 10 ms at 20 kHz; telemetry only
     motor_params.control_frequency = PERIODIC_TIMER_FREQ;
-    motor_params.pid_voltage_mode = {0.05f, 0.05f}; // Speed PID for VOLTAGE_MODE (outputs duty cycle 0.0-1.0)
+    motor_params.pid_voltage_mode = {0.1f, 0.2f}; // Speed PID for VOLTAGE_MODE (outputs duty cycle 0.0-1.0)
     motor_params.pid_voltage_mode.integral_max = 0.8f;
     motor_params.pid_voltage_mode.integral_min = 0.0f;
     motor_params.pid_voltage_mode.kb = 2.0f;
 
-    motor_params.pid_current_mode = {0.25f, 0.5f}; // Speed PID for CURRENT_MODE (outputs current, A)
+    motor_params.pid_current_mode = {0.5f, 1.0f}; // Speed PID for CURRENT_MODE (outputs current, A)
     motor_params.pid_current_mode.integral_max = 12.0f;
     motor_params.pid_current_mode.integral_min = -4.0f;
     motor_params.pid_current_mode.kb = 2.0f;
