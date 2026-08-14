@@ -521,14 +521,13 @@ Enable or disable continuous PLL (Phase-Locked Loop) telemetry streaming. When e
 Each line is a newline-terminated tuple (uses `\n` only, not `\r\n`):
 
 ```
-+PLL:<angle_per_second>;<pll_integral>;<time_since_last_hall>;<angle>;<hall_state_raw>;<is_sync>
++PLL:<angle_per_second>;<pll_integral>;<angle>;<hall_state_raw>;<is_sync>
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
 | angle_per_second | float | PLL-estimated rotor speed in steps/sec (6 steps = 1 electrical revolution) |
 | pll_integral | float | PI integrator term in steps/sec (clamped to ±max_electrical_speed) |
-| time_since_last_hall | float | Seconds since last Hall sensor edge (resets to 0 on each edge, 5s timeout) |
 | angle | float | PLL-estimated rotor angle in steps [0..6) (6 steps = 1 electrical revolution) |
 | hall_state_raw | int | Actual Hall sensor reading [0..5] (raw GPIO state before any filtering) |
 | is_sync | int | PLL synchronized with Hall sensor flag (1 = tracking, 0 = snapping angle to Hall) |
@@ -536,9 +535,9 @@ Each line is a newline-terminated tuple (uses `\n` only, not `\r\n`):
 **Example:**
 
 ```
-+PLL:291.158;218.631;0.0018;3.142;4;1
-+PLL:295.430;220.104;0.0009;0.571;5;1
-+PLL:288.712;219.502;0.0021;5.028;2;0
++PLL:291.158;218.631;3.142;4;1
++PLL:295.430;220.104;0.571;5;1
++PLL:288.712;219.502;5.028;2;0
 ```
 
 **Note:** The `angle` field mirrors `+TM:pll_angle` (same value, sampled at the same tick). Position fields `meas_pos` and `tgt_pos` remain `+TM:`-only. To compute the PLL tracking error, use `+TM:` fields: `error = measured_position - pll_angle` (wrapped to [-3, +3] per electrical period). The slip threshold is 3.0 steps.
@@ -606,6 +605,75 @@ Reading the line:
 - **Is the model usable?** `ke` should be constant across the whole speed range. It is the term to pin into a feed-forward current model (see `docs/bemf_hybrid_algorithm.md` section 12).
 
 For raw per-sample phase voltages, use `AT+OSC` - that is what its capture buffer is for.
+
+## Hall Health Telemetry (AT+HSTATUS)
+
+Enable or disable continuous Hall sensor health telemetry. When enabled, the controller emits a `+HSTATUS:` line at 100Hz containing the state of the `HallMonitor`.
+
+Unbuffered, like `+PLL` and `+BEMF`. Every field is a leaky accumulator or a running total rather than an instantaneous sample, so a 100Hz poll sees the same picture the monitor does - a raw Hall reading at this rate would be an arbitrary point between commutations.
+
+| | |
+|---|---|
+| **Command** | `AT+HSTATUS=<0|1>*<CRC>\r\n` |
+| **Query** | `AT+HSTATUS?*<CRC>\r\n` |
+| **Response** | `OK\r\n` |
+| **Query response** | `+HSTATUS:1\r\n` |
+
+### Format
+
+```
++HSTATUS:<fault>;<invalid_score>;<erratic_score>;<edge_accum>;<invalid_events>;<edges>;<last_pos>;<standing_us>
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| fault | int | 0 = none, 1 = INVALID_CODE, 2 = ERRATIC_SEQUENCE. Latched until `AT+HCLEAR` |
+| invalid_score | float | Leaky accumulator of illegal 000/111 codes. Counting is **disabled** by default (see below) |
+| erratic_score | float | Leaky accumulator of edges that made no net progress. Faults at 20.0 |
+| edge_accum | float | Leaky edge count; divide by `decay_time_s` (0.5) for edges/sec |
+| invalid_events | uint32 | Illegal-code readings since reset |
+| edges | uint32 | Hall transitions since reset |
+| last_pos | uint8 | Last valid decoded position (0-5) |
+| standing_us | float | Microseconds the latest reading has been an illegal code. **This is the detector**; faults at `invalid_persist_time_s` (300 us) |
+
+**Example:**
+
+```
++HSTATUS:0;0.00;0.00;301.50;0;18422;3;0
++HSTATUS:0;0.00;0.00;298.12;41;18512;5;50
++HSTATUS:1;0.00;0.00;44.80;37;18544;2;312
+```
+
+### Reading it
+
+The two scores are the useful numbers, because each is directly comparable to its threshold - they are the margin you have against a false trip.
+
+- **`standing_us` is the fault detector.** Illegal codes turn out to be common on intact wiring - Hall bounce, strongly speed dependent - but they are always *transient*, because a bouncing line keeps raising interrupts and the next reading is valid. A stuck line has nothing left to raise an edge, so its illegal code stands for a whole commutation step. Measured on MOTOR_1 at 31 V:
+
+  | speed | illegal/s | max standing | step period |
+  |---|---|---|---|
+  | 6 RPS | 0 | 0 us | 1389 us |
+  | 8 RPS | 44 | 0 us | 1042 us |
+  | 9 RPS | 3532 | **50 us** | 926 us |
+
+  A 20x gap, so the 300 us threshold sits six times above the benign maximum and three times below the fault signature.
+
+- **`invalid_score` is counting, and counting does not work here.** At 9 RPS the benign rate settles it near 1766, while a genuinely stuck line would settle it near 90 - the benign rate is twenty times the fault signature, so no threshold separates them. `invalid_threshold` therefore defaults to 0 (disabled). Enable it only on hardware where illegal codes are genuinely rare.
+- **`erratic_score` is the position-corruption margin.** Measured maximum in health across 2-9 RPS: **0.00** against a threshold of 20. Bounce on this hardware produces illegal codes but never a wrong-but-valid position, so the sequence itself stays clean.
+- **`edge_accum / 0.5` is the edge rate**, which should equal the electrical speed in steps/sec. A large mismatch against `+TM:cur_speed` means edges are being lost or manufactured.
+
+A latched fault forces `DriveMode::NEUTRAL`. It does *not* re-assert every cycle - it latches once, so a persistent condition reads as a fault rather than as commands being silently ignored.
+
+## Clear Hall Fault (AT+HCLEAR)
+
+Release a latched Hall fault and zero the monitor's accumulators. Use after dealing with the wiring; if the fault condition is still present it will latch again within milliseconds.
+
+| | |
+|---|---|
+| **Command** | `AT+HCLEAR*<CRC>\r\n` |
+| **Response** | `OK\r\n` |
+
+The drive stays in `NEUTRAL` after clearing - re-enable it with `AT+DMODE`.
 
 ## PLL Gain Tuning (AT+PLLID)
 
@@ -686,4 +754,6 @@ ERROR\r\n
 | `AT+TM=<0|1>` | Set | 0, 1 | `OK` |
 | `AT+PLL=<0|1>` | Set/Query | 0, 1 | `OK` / `+PLL:1` |
 | `AT+BEMF=<0|1>` | Set/Query | 0, 1 | `OK` / `+BEMF:1` |
+| `AT+HSTATUS=<0|1>` | Set/Query | 0, 1 | `OK` / `+HSTATUS:1` |
+| `AT+HCLEAR` | Action | -- | `OK` |
 | `AT+OSC=<0|1>` | Set/Query | 0, 1 | `OK` / `+OSC:1` |

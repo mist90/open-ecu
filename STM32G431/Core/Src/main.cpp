@@ -371,11 +371,34 @@ int main(void)
     bemf_params.use_virtual_neutral = true;
     bemf_observer.setParameters(bemf_params);
 
+    // Hall health thresholds, sized from a measurement on this hardware
+    // (AT+HSTATUS with the detectors disabled, swept 2-9 RPS):
+    //
+    //   speed    illegal/s   max standing time   step period
+    //   6 RPS         0            0 us            1389 us
+    //   8 RPS        44            0 us            1042 us
+    //   9 RPS      3532           50 us             926 us
+    //
+    // Illegal codes are common on intact wiring here - Hall bounce, strongly
+    // speed dependent - but always transient, because a bouncing line keeps
+    // raising EXTI and the next reading is valid. A stuck line has nothing left
+    // to raise an edge, so its illegal code stands for a whole step. Counting
+    // cannot separate those (benign is 20x the fault rate); duration can.
+    libecu::HallMonitorParams hall_params;
+    hall_params.decay_time_s           = 0.5f;
+    hall_params.invalid_threshold      = 0.0f;    // counting is useless here
+    hall_params.invalid_debounce       = 1;
+    hall_params.invalid_persist_time_s = 0.0003f; // 6x the benign max, 3x below the fault
+    hall_params.erratic_threshold      = 20.0f;   // measured max in health: 0.00
+    hall_params.require_drive_active   = true;
+
     motor_controller = new libecu::BldcController(
         pwm_driver, hall_sensor, *commutation_controller,
         motor_params, &adc_driver);
 
     //motor_controller->setBemfObserver(&bemf_observer);
+
+    motor_controller->setHallMonitorParams(hall_params);
 
     if (!motor_controller->initialize()) {
         Error_Handler();
@@ -439,6 +462,9 @@ int main(void)
             if (at_processor.isPllTelemetryEnabled()) {
                 libecu::MotorPLL::PllInfo pll_info = motor_controller->getPllInfo();
                 at_processor.sendPllTelemetry(pll_info);
+            }
+            if (at_processor.isHallTelemetryEnabled()) {
+                at_processor.sendHallTelemetry(motor_controller->getHallInfo());
             }
             if (at_processor.isBemfTelemetryEnabled()) {
                 at_processor.sendBemfTelemetry(motor_controller->getBemfInfo(),

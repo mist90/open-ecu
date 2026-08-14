@@ -18,6 +18,7 @@
 #include "algorithms/motor_pll.hpp"
 #include "algorithms/bemf_observer.hpp"
 #include "algorithms/current_loop_tuning.hpp"
+#include "algorithms/hall_monitor.hpp"
 
 namespace libecu {
 
@@ -203,6 +204,20 @@ public:
     MotorPLL::PllInfo getPllInfo() const noexcept;
 
     /**
+     * @brief Hall sensor health snapshot
+     *
+     * The monitor latches; clear it with clearHallFault() once the wiring has
+     * been dealt with.
+     */
+    HallMonitor::Info getHallInfo() const noexcept;
+
+    /// @brief Release a latched Hall fault
+    void clearHallFault() noexcept;
+
+    /// @brief Configure the Hall health monitor
+    void setHallMonitorParams(const HallMonitorParams& params) noexcept;
+
+    /**
      * @brief Set PLL base PI gains (kp_base, ki_base)
      * @param kp Base proportional gain
      * @param ki Base integral gain
@@ -306,6 +321,7 @@ private:
     bool bemf_divider_direct_mode_;
 
     // Owned components
+    HallMonitor hall_monitor_;
     MotorPLL motor_pll_;
     PidController pid_speed_controller_;     // Speed controller (outer loop)
     PidController current_controller_;       // Current controller (inner loop)

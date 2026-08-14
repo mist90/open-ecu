@@ -30,6 +30,7 @@ BldcController::BldcController(
     , adc_interface_(adc_interface)
     , bemf_observer_(nullptr)
     , bemf_divider_direct_mode_(false)
+    , hall_monitor_(pwm_interface_.getFrequency())
     , motor_pll_(pwm_interface_.getFrequency(), params.max_speed_rps * commutation_controller.getNumPoles() * BLDC_NUM_PHASES, params.useInverseCommTable)
     , pid_speed_controller_()
     , current_controller_()
@@ -293,6 +294,21 @@ void BldcController::setCurrentPid(float kp, float ki, float kd) noexcept
     current_controller_.reset();
 }
 
+HallMonitor::Info BldcController::getHallInfo() const noexcept {
+    CriticalSection cs;
+    return hall_monitor_.getInfo();
+}
+
+void BldcController::clearHallFault() noexcept {
+    CriticalSection cs;
+    hall_monitor_.clearFault();
+}
+
+void BldcController::setHallMonitorParams(const HallMonitorParams& params) noexcept {
+    CriticalSection cs;
+    hall_monitor_.setParameters(params);
+}
+
 MotorPLL::PllInfo BldcController::getPllInfo() const noexcept {
     CriticalSection cs;
     return motor_pll_.getInfo();
@@ -503,10 +519,20 @@ void BldcController::pwmInterruptHandler() noexcept {
         }
     }
 
+    // Hall health time base. Reads no hardware; it only decays the monitor's
+    // accumulators and ages a standing illegal code, both of which have to run
+    // on the PWM clock rather than on Hall events - those arrive at the
+    // commutation rate, which is exactly what is unreliable when a line breaks.
+    hall_monitor_.tick((dmode_ != DriveMode::NEUTRAL) && status_.is_running);
+
     // Process deferred Hall update (debounced re-read from stable GPIO state)
     if (hall_update_pending_) {
         hall_update_pending_ = false;
+        // One read, shared by the health monitor and the PLL, so they can never
+        // disagree and the lines are never sampled mid-transition.
         uint8_t hall_state = commutation_controller_.getCurrentPosition();
+        hall_monitor_.onPosition(hall_state,
+                                 (dmode_ != DriveMode::NEUTRAL) && status_.is_running);
         if (hall_state <= 5) {
             {
                 CriticalSection cs;
@@ -534,9 +560,11 @@ void BldcController::pwmInterruptHandler() noexcept {
         new_position = motor_pll_.getNextHall(dmode_);
     }
 
-    if (motor_pll_.isHallFault()) {
+    // Hall health. The monitor latches, so unlike the old PLL rule this does
+    // not re-assert every cycle; it has to be cleared explicitly once the
+    // wiring is dealt with.
+    if (hall_monitor_.isFaulted() && dmode_ != DriveMode::NEUTRAL) {
         setDriveMode(DriveMode::NEUTRAL);
-        motor_pll_.resetHallFault();
     }
 
     if (electric_mode == ElectricMode::VOLTAGE_MODE) {

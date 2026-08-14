@@ -11,6 +11,7 @@
 
 #include "algorithms/motor_pll.hpp"
 #include "algorithms/bemf_observer.hpp"
+#include "algorithms/hall_monitor.hpp"
 
 namespace libecu {
 
@@ -111,7 +112,7 @@ public:
 
     /**
      * @brief Send PLL telemetry line (+PLL:)
-     * @param info PLL internal state snapshot (angle_per_second, pll_integral, time_since_last_hall, angle, hall_state_raw, measured_speed, is_sync)
+     * @param info PLL internal state snapshot (angle_per_second, pll_integral, angle, hall_state_raw, is_sync)
      */
     void sendPllTelemetry(const MotorPLL::PllInfo& info) noexcept;
 
@@ -153,6 +154,30 @@ public:
      * @return True if +BEMF output is enabled
      */
     bool isBemfTelemetryEnabled() const noexcept;
+
+    /**
+     * @brief Send Hall health telemetry line (+HSTATUS:)
+     *
+     * Unbuffered, one line per call.  Every field is either a leaky
+     * accumulator or a running total, so a 100 Hz poll sees the same picture
+     * the monitor does - unlike a raw Hall sample, which at this rate would be
+     * an arbitrary point between commutations.
+     *
+     * @param info Hall monitor snapshot
+     */
+    void sendHallTelemetry(const HallMonitor::Info& info) noexcept;
+
+    /**
+     * @brief Enable or disable Hall health telemetry output
+     * @param enabled True to enable +HSTATUS output
+     */
+    void setHallTelemetryEnabled(bool enabled) noexcept;
+
+    /**
+     * @brief Check if Hall health telemetry is enabled
+     * @return True if +HSTATUS output is enabled
+     */
+    bool isHallTelemetryEnabled() const noexcept;
 
     // Configuration constants
     static constexpr std::size_t MAX_COMMAND_LENGTH = 64;
@@ -221,6 +246,7 @@ private:
     bool osc_streaming_;
     bool pll_telemetry_enabled_;
     bool bemf_telemetry_enabled_;
+    bool hall_telemetry_enabled_;
 
     // Oscilloscope single buffer with two phases
     enum class OscPhase : uint8_t {

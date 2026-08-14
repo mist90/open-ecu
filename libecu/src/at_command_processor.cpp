@@ -17,6 +17,7 @@ AtCommandProcessor::AtCommandProcessor(BldcController* controller) noexcept
       osc_streaming_(false),
       pll_telemetry_enabled_(false),
       bemf_telemetry_enabled_(false),
+      hall_telemetry_enabled_(false),
       osc_write_index_(0),
       osc_read_index_(0),
       osc_phase_(OscPhase::Accumulating),
@@ -170,13 +171,15 @@ namespace {
 /** Command IDs for AT command dispatch */
 enum class CommandId : uint8_t {
     Unknown,
-    Spd, Cur, Dut, Mode, EMode, DMode, Spid, Cpid, PllId, Pll, Bemf, Ver, Status, Tm, Osc, Maxvals
+    Spd, Cur, Dut, Mode, EMode, DMode, Spid, Cpid, PllId, Pll, Bemf, HStatus, HClear, Ver, Status, Tm, Osc, Maxvals
 };
 
 CommandId matchCommand(const char* cmd) noexcept {
     if (std::strncmp(cmd, "MAXVALS", 7) == 0) return CommandId::Maxvals;
     if (std::strncmp(cmd, "DMODE", 5) == 0) return CommandId::DMode;
     if (std::strncmp(cmd, "EMODE", 5) == 0) return CommandId::EMode;
+    if (std::strncmp(cmd, "HSTATUS", 7) == 0) return CommandId::HStatus;
+    if (std::strncmp(cmd, "HCLEAR", 6) == 0) return CommandId::HClear;
     if (std::strncmp(cmd, "STATUS", 6) == 0) return CommandId::Status;
     if (std::strncmp(cmd, "SPID", 4) == 0) return CommandId::Spid;
     if (std::strncmp(cmd, "CPID", 4) == 0) return CommandId::Cpid;
@@ -497,6 +500,27 @@ void AtCommandProcessor::processCommand() noexcept {
         break;
     }
 
+    case CommandId::HStatus: {
+        if (query) {
+            sendIntResponse("HSTATUS", hall_telemetry_enabled_ ? 1 : 0);
+        } else {
+            int val = parseIntParam(valuePtr);
+            setHallTelemetryEnabled(val == 1);
+            sendOk();
+        }
+        break;
+    }
+
+    case CommandId::HClear: {
+        if (controller_) {
+            controller_->clearHallFault();
+            sendOk();
+        } else {
+            sendError();
+        }
+        break;
+    }
+
     case CommandId::Bemf: {
         if (query) {
             sendIntResponse("BEMF", bemf_telemetry_enabled_ ? 1 : 0);
@@ -542,10 +566,9 @@ void AtCommandProcessor::sendPllTelemetry(const MotorPLL::PllInfo& info) noexcep
     }
 
     char buf[64];
-    int len = std::snprintf(buf, sizeof(buf), "+PLL:%.3f;%.3f;%.4f;%.3f;%u;%d\n",
+    int len = std::snprintf(buf, sizeof(buf), "+PLL:%.3f;%.3f;%.3f;%u;%d\n",
             info.angle_per_second,
             info.pll_integral,
-            info.time_since_last_hall,
             info.angle,
             static_cast<unsigned>(info.hall_state_raw),
             static_cast<int>(info.is_sync));
@@ -553,6 +576,35 @@ void AtCommandProcessor::sendPllTelemetry(const MotorPLL::PllInfo& info) noexcep
     if (len > 0 && static_cast<std::size_t>(len) < sizeof(buf)) {
         write(buf, static_cast<std::size_t>(len));
     }
+}
+
+void AtCommandProcessor::sendHallTelemetry(const HallMonitor::Info& info) noexcept {
+    if (!hall_telemetry_enabled_) {
+        return;
+    }
+
+    char buf[96];
+    int len = std::snprintf(buf, sizeof(buf), "+HSTATUS:%d;%.2f;%.2f;%.2f;%lu;%lu;%u;%.0f\n",
+            static_cast<int>(info.fault),
+            info.invalid_score,
+            info.erratic_score,
+            info.edge_accum,
+            static_cast<unsigned long>(info.invalid_events),
+            static_cast<unsigned long>(info.edges),
+            static_cast<unsigned>(info.last_position),
+            info.invalid_time_s * 1e6f);
+
+    if (len > 0 && static_cast<std::size_t>(len) < sizeof(buf)) {
+        write(buf, static_cast<std::size_t>(len));
+    }
+}
+
+void AtCommandProcessor::setHallTelemetryEnabled(bool enabled) noexcept {
+    hall_telemetry_enabled_ = enabled;
+}
+
+bool AtCommandProcessor::isHallTelemetryEnabled() const noexcept {
+    return hall_telemetry_enabled_;
 }
 
 void AtCommandProcessor::sendBemfTelemetry(const BemfObserver::BemfInfo& info,
