@@ -28,7 +28,6 @@ BldcController::BldcController(
     , hall_interface_(hall_interface)
     , commutation_controller_(commutation_controller)
     , adc_interface_(adc_interface)
-    , bemf_divider_direct_mode_(false)
     , hall_monitor_(pwm_interface_.getFrequency())
     , motor_pll_(pwm_interface_.getFrequency(), params.max_speed_rps * commutation_controller.getNumPoles() * BLDC_NUM_PHASES, params.useInverseCommTable)
     , pid_speed_controller_()
@@ -55,9 +54,6 @@ BldcController::BldcController(
     status_.measured_current = 0.0f;
     status_.measured_current_filtered = 0.0f;
     status_.bus_voltage = 0.0f;
-    status_.bemf_voltage_u = 0.0f;
-    status_.bemf_voltage_v = 0.0f;
-    status_.bemf_voltage_w = 0.0f;
     status_.current_pid_saturation = 0;
     status_.target_position = 0xFF;
     status_.measured_position = 0xFF;
@@ -440,18 +436,6 @@ void BldcController::pwmInterruptHandler() noexcept {
     }
 
     // ADC already converted all injected channels — reading registers adds no latency
-    float v_u = adc_interface_->readPhaseVoltage(PwmChannel::PHASE_U, bemf_divider_direct_mode_);
-    float v_v = adc_interface_->readPhaseVoltage(PwmChannel::PHASE_V, bemf_divider_direct_mode_);
-    float v_w = adc_interface_->readPhaseVoltage(PwmChannel::PHASE_W, bemf_divider_direct_mode_);
-
-    {
-        CriticalSection cs;
-        status_.bemf_voltage_u = v_u;
-        status_.bemf_voltage_v = v_v;
-        status_.bemf_voltage_w = v_w;
-    }
-
-    // Read bus voltage
     float bus_voltage = adc_interface_->readBusVoltage();
 
     // Hall health time base. Reads no hardware; it only decays the monitor's

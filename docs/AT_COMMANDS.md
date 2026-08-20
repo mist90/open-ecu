@@ -429,25 +429,22 @@ The oscilloscope uses a **single buffer with two-phase swapping** for safe captu
 
 | Parameter | Value |
 |-----------|-------|
-| Buffer size | 512 samples |
+| Buffer size | 1024 samples |
 | Capture rate | 40kHz (from PWM ISR) |
-| Burst duration | 512 / 40000 = 12.8ms per burst |
-| Swap trigger | Buffer full (write index reaches 512) |
+| Burst duration | 1024 / 40000 = 25.6ms per burst |
+| Swap trigger | Buffer full (write index reaches 1024) |
 
-When the write phase fills the buffer (write index reaches 512), the phase swaps under a critical section (interrupts disabled): the accumulated buffer becomes the output buffer, and the output buffer is reset for the next capture cycle.
+When the write phase fills the buffer (write index reaches 1024), the phase swaps under a critical section (interrupts disabled): the accumulated buffer becomes the output buffer, and the output buffer is reset for the next capture cycle.
 
 ### Captured Data
 
-Each sample captures seven values:
+Each sample captures four values:
 
 | Field | Type | Description |
 |-------|------|-------------|
 | duty_cycle | uint8 | Current duty cycle × 100 (0-100) |
 | target_current | float | Target current setpoint |
 | measured_current | float | Raw measured current from shunt |
-| bemf_voltage_u | float | Phase U terminal voltage (V) |
-| bemf_voltage_v | float | Phase V terminal voltage (V) |
-| bemf_voltage_w | float | Phase W terminal voltage (V) |
 | position | uint8 | Rotor position from Hall sensors |
 
 ### Output Format
@@ -455,7 +452,7 @@ Each sample captures seven values:
 Samples stream out as `\r\n`-terminated lines, one per call to `processOscOutput()`:
 
 ```
-+OSC:<sample_index>,<meas_cur_x1000>,<tgt_cur_x1000>,<duty_x100>,<volt_u_x1000>,<volt_v_x1000>,<volt_w_x1000>,<position>\r\n
++OSC:<sample_index>,<meas_cur_x1000>,<tgt_cur_x1000>,<duty_x100>,<position>\r\n
 ```
 
 | Field | Type | Description |
@@ -464,9 +461,6 @@ Samples stream out as `\r\n`-terminated lines, one per call to `processOscOutput
 | meas_cur_x1000 | int32 | `measured_current * 1000`, signed integer |
 | tgt_cur_x1000 | int32 | `target_current * 1000`, signed integer |
 | duty_x100 | uint8 | `duty_cycle * 100` (0-100), unsigned integer |
-| volt_u_x1000 | int32 | `bemf_voltage_u * 1000`, signed integer |
-| volt_v_x1000 | int32 | `bemf_voltage_v * 1000`, signed integer |
-| volt_w_x1000 | int32 | `bemf_voltage_w * 1000`, signed integer |
 | position | uint8 | Rotor position (Hall sensor, 0-5) |
 
 The end of a burst is signaled by an empty data line:
@@ -480,12 +474,12 @@ After the end-of-burst marker, oscilloscope continues capturing the next burst (
 **Example burst:**
 
 ```
-+OSC:0,1500,2000,35,1200,-600,-580,3
-+OSC:1,1485,2000,35,1195,-610,-575,3
-+OSC:2,1520,2000,35,1210,-590,-590,3
-+OSC:3,1490,2000,35,1205,-605,-585,4
++OSC:0,1500,2000,35,3
++OSC:1,1485,2000,35,3
++OSC:2,1520,2000,35,3
++OSC:3,1490,2000,35,4
 ...
-+OSC:511,1510,2000,35,1198,-598,-582,5
++OSC:1023,1510,2000,35,5
 +OSC:
 ```
 
@@ -495,9 +489,6 @@ To convert the scaled values back to physical units:
 measured_current_A = meas_cur_x1000 / 1000.0
 target_current_A   = tgt_cur_x1000 / 1000.0
 duty_cycle         = duty_x100 / 100.0
-voltage_u_V        = volt_u_x1000 / 1000.0
-voltage_v_V        = volt_v_x1000 / 1000.0
-voltage_w_V        = volt_w_x1000 / 1000.0
 ```
 
 ## PLL Telemetry (AT+PLL)

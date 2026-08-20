@@ -23,7 +23,7 @@
 #define BLDC_MAX_CURRENT 18.0f
 #define BLDC_MIN_CURRENT  -6.0f
 #define BLDC_MAX_SPEED 20.0f
-#define BLDC_MAX_ACCELERATION 5.0f
+#define BLDC_MAX_ACCELERATION 2.0f
 #define BLDC_INVERTION false
 // Electrical model of one phase, used to compute the current-loop PI gains
 // (see libecu/include/algorithms/current_loop_tuning.hpp).
@@ -183,7 +183,6 @@ extern "C" void motor_controller_pwm_interrupt_handler(void)
         g_at_processor->captureOscSample(
             static_cast<uint8_t>(status.duty_cycle * 100.0f),
             status.target_current, status.measured_current,
-            status.bemf_voltage_u, status.bemf_voltage_v, status.bemf_voltage_w,
             status.measured_position);
     }
 }
@@ -231,14 +230,6 @@ int main(void)
     if (!adc_driver.initialize(adc_calibration, voltage_params)) {
         Error_Handler();
     }
-
-    // Phase voltage divider: 22kOhm / 2.2kOhm -> ratio 11.0, full scale
-    // 3.3 V * 11.0 = 36.3 V, just above the 36 V over-voltage trip.  Feeds the
-    // per-phase voltages reported by +TM and +OSC.
-    libecu::BemfVoltageSensorParameters bemf_voltage_params;
-    bemf_voltage_params.r_up = 22000.0f;
-    bemf_voltage_params.r_down = 2200.0f;
-    adc_driver.initializeBemf(bemf_voltage_params);
 
     // Initialize ADC and OPAMP hardware (including calibration and starting conversions)
     if (!adc_driver.initializeHardware()) {

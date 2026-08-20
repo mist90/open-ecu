@@ -97,12 +97,9 @@ public:
      * @param duty_cycle Current duty cycle (0..100, pre-multiplied by 100)
      * @param target_current Target current
      * @param measured_current Measured current
-     * @param voltage_u Phase U voltage (V)
-     * @param voltage_v Phase V voltage (V)
-     * @param voltage_w Phase W voltage (V)
      * @param position Current commutation position (0-5)
      */
-    void captureOscSample(uint8_t duty_cycle, float target_current, float measured_current, float voltage_u, float voltage_v, float voltage_w, uint8_t position) noexcept;
+    void captureOscSample(uint8_t duty_cycle, float target_current, float measured_current, uint8_t position) noexcept;
 
     /**
      * @brief Process oscilloscope output (send one sample per call)
@@ -153,7 +150,7 @@ public:
 
     // Configuration constants
     static constexpr std::size_t MAX_COMMAND_LENGTH = 64;
-    static constexpr std::size_t OSC_BUFFER_SIZE = 512;
+    static constexpr std::size_t OSC_BUFFER_SIZE = 1024;
 
 private:
     /**
@@ -228,9 +225,6 @@ private:
     struct OscSample {
         float target_current;
         float measured_current;
-        float voltage_u;          ///< Phase U voltage (V)
-        float voltage_v;          ///< Phase V voltage (V)
-        float voltage_w;          ///< Phase W voltage (V)
         uint8_t duty_cycle;       ///< Duty cycle * 100 (0..100)
         uint8_t position;
     };

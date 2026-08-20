@@ -2,10 +2,10 @@
  * @file stm32_adc.cpp
  * @brief STM32G4 ADC implementation for 3-phase current sensing
  * @note Uses ADC injected channels triggered by TIM1_TRGO2 for PWM-synchronized sampling
- *       ADC1 JDR1: Phase U (OPAMP1_OUT via VOPAMP1)
+ *       ADC1 JDR1: Phase U current (OPAMP1_OUT via VOPAMP1)
  *       ADC1 JDR2: Vbus voltage divider (PA0 = ADC1_IN1)
- *       ADC2 JDR1: Phase V (OPAMP2_OUT via VOPAMP2)
- *       ADC2 JDR2: Phase W (OPAMP3_OUT via VOPAMP3_ADC2)
+ *       ADC2 JDR1: Phase V current (OPAMP2_OUT via VOPAMP2)
+ *       ADC2 JDR2: Phase W current (OPAMP3_OUT via VOPAMP3_ADC2)
  */
 
 #include "stm32_adc.hpp"
@@ -49,32 +49,17 @@ bool Stm32Adc::initializeHardware() noexcept {
     __HAL_RCC_GPIOA_CLK_ENABLE();
     __HAL_RCC_GPIOB_CLK_ENABLE();
 
-    /* Analog inputs: PA0(Vbus), PA1(OPAMP1), PA3, PA4(BEMF_U), PA5, PA7(OPAMP2) */
-    GPIO_InitStruct.Pin = GPIO_PIN_0|GPIO_PIN_1|GPIO_PIN_3|GPIO_PIN_4|GPIO_PIN_5|GPIO_PIN_7;
+    /* Analog inputs: PA0(Vbus), PA1(OPAMP1), PA3, PA5, PA7(OPAMP2) */
+    GPIO_InitStruct.Pin = GPIO_PIN_0|GPIO_PIN_1|GPIO_PIN_3|GPIO_PIN_5|GPIO_PIN_7;
     GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
     HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-    /* Analog inputs: PB0(OPAMP3), PB2, PB11(BEMF_W), PB12(Pot) */
-    GPIO_InitStruct.Pin = GPIO_PIN_0|GPIO_PIN_2|GPIO_PIN_11|GPIO_PIN_12;
+    /* Analog inputs: PB0(OPAMP3), PB2, PB12(Pot) */
+    GPIO_InitStruct.Pin = GPIO_PIN_0|GPIO_PIN_2|GPIO_PIN_12;
     GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
     HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
-
-    /* Analog input: PC4(BEMF_V) */
-    __HAL_RCC_GPIOC_CLK_ENABLE();
-    GPIO_InitStruct.Pin = GPIO_PIN_4;
-    GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
-    GPIO_InitStruct.Pull = GPIO_NOPULL;
-    HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
-
-    /* PB5: BEMF divider mode control (output, default LOW = through divider) */
-    GPIO_InitStruct.Pin = GPIO_PIN_5;
-    GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-    GPIO_InitStruct.Pull = GPIO_NOPULL;
-    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
-    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_5, GPIO_PIN_RESET);
 
     // Initialize OPAMPs first (analog front-end)
     initOPAMP1();
@@ -180,7 +165,7 @@ void Stm32Adc::initADC1() noexcept {
     sConfigInjected.InjectedSingleDiff = ADC_SINGLE_ENDED;
     sConfigInjected.InjectedOffsetNumber = ADC_OFFSET_NONE;
     sConfigInjected.InjectedOffset = 0;
-    sConfigInjected.InjectedNbrOfConversion = 3;  // 3 injected channels on ADC1 (Phase U current + Vbus + Phase W voltage)
+    sConfigInjected.InjectedNbrOfConversion = 2;  // 2 injected channels on ADC1 (Phase U current + Vbus)
     sConfigInjected.InjectedDiscontinuousConvMode = DISABLE;
     sConfigInjected.AutoInjectedConv = DISABLE;
     sConfigInjected.QueueInjectedContext = DISABLE;
@@ -203,7 +188,7 @@ void Stm32Adc::initADC1() noexcept {
     sConfigInjectedVbus.InjectedSingleDiff = ADC_SINGLE_ENDED;
     sConfigInjectedVbus.InjectedOffsetNumber = ADC_OFFSET_NONE;
     sConfigInjectedVbus.InjectedOffset = 0;
-    sConfigInjectedVbus.InjectedNbrOfConversion = 3;  // 3 injected channels: Phase U current + Vbus + Phase W voltage
+    sConfigInjectedVbus.InjectedNbrOfConversion = 2;  // 2 injected channels: Phase U current + Vbus
     sConfigInjectedVbus.InjectedDiscontinuousConvMode = DISABLE;
     sConfigInjectedVbus.AutoInjectedConv = DISABLE;
     sConfigInjectedVbus.QueueInjectedContext = DISABLE;
@@ -217,28 +202,6 @@ void Stm32Adc::initADC1() noexcept {
         Error_Handler();
     }
 
-    /** Configure Injected Channel 3: Phase W voltage BEMF (PB11 = ADC1_IN14)
-     */
-    ADC_InjectionConfTypeDef sConfigInjectedBemfW = {0};
-    sConfigInjectedBemfW.InjectedChannel = ADC_CHANNEL_14;
-    sConfigInjectedBemfW.InjectedRank = ADC_INJECTED_RANK_3;
-    sConfigInjectedBemfW.InjectedSamplingTime = ADC_SAMPLETIME_6CYCLES_5;
-    sConfigInjectedBemfW.InjectedSingleDiff = ADC_SINGLE_ENDED;
-    sConfigInjectedBemfW.InjectedOffsetNumber = ADC_OFFSET_NONE;
-    sConfigInjectedBemfW.InjectedOffset = 0;
-    sConfigInjectedBemfW.InjectedNbrOfConversion = 3;
-    sConfigInjectedBemfW.InjectedDiscontinuousConvMode = DISABLE;
-    sConfigInjectedBemfW.AutoInjectedConv = DISABLE;
-    sConfigInjectedBemfW.QueueInjectedContext = DISABLE;
-    sConfigInjectedBemfW.ExternalTrigInjecConv = ADC_EXTERNALTRIGINJEC_T1_TRGO2;
-    sConfigInjectedBemfW.ExternalTrigInjecConvEdge = ADC_EXTERNALTRIGINJECCONV_EDGE_RISING;
-    sConfigInjectedBemfW.InjecOversamplingMode = ENABLE;
-    sConfigInjectedBemfW.InjecOversampling = sConfigOversampling;
-
-    if (HAL_ADCEx_InjectedConfigChannel(&hadc1, &sConfigInjectedBemfW) != HAL_OK)
-    {
-        Error_Handler();
-    }
 }
 
 void Stm32Adc::initADC2() noexcept {
@@ -275,7 +238,7 @@ void Stm32Adc::initADC2() noexcept {
     sConfigInjected.InjectedSingleDiff = ADC_SINGLE_ENDED;
     sConfigInjected.InjectedOffsetNumber = ADC_OFFSET_NONE;
     sConfigInjected.InjectedOffset = 0;
-    sConfigInjected.InjectedNbrOfConversion = 4;  // 4 injected channels on ADC2 (V current + W current + U voltage + V voltage)
+    sConfigInjected.InjectedNbrOfConversion = 2;  // 2 injected channels on ADC2 (V current + W current)
     sConfigInjected.InjectedDiscontinuousConvMode = DISABLE;
     sConfigInjected.AutoInjectedConv = DISABLE;
     sConfigInjected.QueueInjectedContext = DISABLE;
@@ -293,24 +256,6 @@ void Stm32Adc::initADC2() noexcept {
      */
     sConfigInjected.InjectedChannel = ADC_CHANNEL_VOPAMP3_ADC2;
     sConfigInjected.InjectedRank = ADC_INJECTED_RANK_2;
-    if (HAL_ADCEx_InjectedConfigChannel(&hadc2, &sConfigInjected) != HAL_OK)
-    {
-        Error_Handler();
-    }
-
-    /** Configure Injected Channel 3: Phase U voltage BEMF (PA4 = ADC2_IN17)
-     */
-    sConfigInjected.InjectedChannel = ADC_CHANNEL_17;
-    sConfigInjected.InjectedRank = ADC_INJECTED_RANK_3;
-    if (HAL_ADCEx_InjectedConfigChannel(&hadc2, &sConfigInjected) != HAL_OK)
-    {
-        Error_Handler();
-    }
-
-    /** Configure Injected Channel 4: Phase V voltage BEMF (PC4 = ADC2_IN5)
-     */
-    sConfigInjected.InjectedChannel = ADC_CHANNEL_5;
-    sConfigInjected.InjectedRank = ADC_INJECTED_RANK_4;
     if (HAL_ADCEx_InjectedConfigChannel(&hadc2, &sConfigInjected) != HAL_OK)
     {
         Error_Handler();
@@ -396,24 +341,6 @@ uint32_t Stm32Adc::getRawAdcValue(PwmChannel channel) {
 uint32_t Stm32Adc::getRawAdcValue() {
     // Vbus voltage is on ADC1_IN1, injected channel rank 2
     return HAL_ADCEx_InjectedGetValue(&hadc1, ADC_INJECTED_RANK_2);
-}
-
-uint32_t Stm32Adc::getRawPhaseVoltage(PwmChannel channel) {
-    switch (channel) {
-        case PwmChannel::PHASE_U:
-            return HAL_ADCEx_InjectedGetValue(&hadc2, ADC_INJECTED_RANK_3);  // PA4, ADC2_IN17
-        case PwmChannel::PHASE_V:
-            return HAL_ADCEx_InjectedGetValue(&hadc2, ADC_INJECTED_RANK_4);  // PC4, ADC2_IN5
-        case PwmChannel::PHASE_W:
-            return HAL_ADCEx_InjectedGetValue(&hadc1, ADC_INJECTED_RANK_3);  // PB11, ADC1_IN14
-        default:
-            return 0;
-    }
-}
-
-void Stm32Adc::setBemfDividerMode(bool direct_mode) noexcept {
-    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_5,
-                      direct_mode ? GPIO_PIN_SET : GPIO_PIN_RESET);
 }
 
 float Stm32Adc::readPotentiometer(float max_value)

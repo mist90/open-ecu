@@ -83,9 +83,6 @@ struct MotorStatus {
     float measured_current_filtered; ///< Measured current after the telemetry LPF (A)
     float bus_voltage;         ///< Measured bus voltage (V)
     float pll_angle;          ///< Rotor angle from PLL (degrees, 0-360)
-    float bemf_voltage_u;     ///< Phase U voltage (V, pre-divider)
-    float bemf_voltage_v;     ///< Phase V voltage (V, pre-divider)
-    float bemf_voltage_w;     ///< Phase W voltage (V, pre-divider)
     int8_t current_pid_saturation; ///< +1/-1 if duty is clamped high/low, else 0 (for speed PID anti-windup)
     uint8_t target_position;   ///< Driven motor position
     uint8_t measured_position;   ///< Measured motor position
@@ -281,8 +278,6 @@ private:
     HallInterface& hall_interface_;
     CommutationController& commutation_controller_;
     AdcInterface* adc_interface_;
-    /// Phase-voltage divider mode passed to AdcInterface::readPhaseVoltage()
-    bool bemf_divider_direct_mode_;
 
     // Owned components
     HallMonitor hall_monitor_;

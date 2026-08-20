@@ -49,11 +49,12 @@ bool Stm32Pwm::initialize(uint32_t frequency, uint16_t dead_time_ns) {
         return false;
     }
 
-    // ADC trigger at mid-ON-time (CNT = CCR_up / 2) — BEMF sensing while high-side conducting
-    // Default to period_/4 (= 50% duty midpoint); updated dynamically in setChannelState/updateDutyCycle
+    // ADC trigger at the peak (CNT = ARR) — the middle of the OFF-time, furthest
+    // from the UP phase switching edges (at CNT = CCR). Static: the trigger no
+    // longer tracks duty cycle, so nothing rewrites CCR4 per commutation.
     TIM_OC_InitTypeDef sConfigOC4 = {0};
     sConfigOC4.OCMode = TIM_OCMODE_PWM1;
-    sConfigOC4.Pulse = period_ / 4;
+    sConfigOC4.Pulse = period_ - 1;
     sConfigOC4.OCPolarity = TIM_OCPOLARITY_HIGH;
     sConfigOC4.OCFastMode = TIM_OCFAST_DISABLE;
     sConfigOC4.OCIdleState = TIM_OCIDLESTATE_RESET;
@@ -65,10 +66,12 @@ bool Stm32Pwm::initialize(uint32_t frequency, uint16_t dead_time_ns) {
     // Enable CCR4 preload (shadow register)
     __HAL_TIM_ENABLE_OCxPRELOAD(tim_handle, TIM_CHANNEL_4);
 
-    // TRGO2 = OC4REF triggers ADC at mid-ON-time (high-side conducting, BEMF visible)
+    // TRGO2 = OC4REF triggers the ADCs mid-OFF-time, while both low-side
+    // switches freewheel and the shunt of the DOWN phase carries the full
+    // phase current.
     TIM_MasterConfigTypeDef sMasterConfig = {0};
     sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
-    sMasterConfig.MasterOutputTrigger2 = TIM_TRGO2_OC4REF;  // Trigger ADCs on OC4 match (center)
+    sMasterConfig.MasterOutputTrigger2 = TIM_TRGO2_OC4REF;  // Trigger ADCs on OC4 match (peak)
     sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
 
     if (HAL_TIMEx_MasterConfigSynchronization(tim_handle, &sMasterConfig) != HAL_OK) {
@@ -191,7 +194,6 @@ void Stm32Pwm::setChannelState(PwmChannel channel, PwmState state, float duty_cy
         case PwmState::UP:
             tim_instance->CCER &= ~(ccxp_bit | ccxnp_bit);
             __HAL_TIM_SET_COMPARE(tim_handle, tim_channel, compare_value);
-            __HAL_TIM_SET_COMPARE(tim_handle, TIM_CHANNEL_4, calculateAdcTriggerCompare(compare_value, period_));
             tim_instance->CCER |= (ccxe_bit | ccxne_bit);
             break;
 
@@ -210,7 +212,6 @@ void Stm32Pwm::updateDutyCycle(PwmChannel channel, float duty_cycle)
     uint32_t compare_value = calculateCompareValue(duty_cycle);
 
     __HAL_TIM_SET_COMPARE(tim_handle, tim_channel, compare_value);
-    __HAL_TIM_SET_COMPARE(tim_handle, TIM_CHANNEL_4, calculateAdcTriggerCompare(compare_value, period_));
 }
 
 void Stm32Pwm::enable(bool enable) {
