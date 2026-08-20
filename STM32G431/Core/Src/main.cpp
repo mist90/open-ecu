@@ -273,7 +273,7 @@ int main(void)
     motor_params.pid_voltage_mode.integral_min = 0.0f;
     motor_params.pid_voltage_mode.kb = 2.0f;
 
-    motor_params.pid_current_mode = {1.0f, 2.0f}; // Speed PID for CURRENT_MODE (outputs current, A)
+    motor_params.pid_current_mode = {0.5f, 2.0f}; // Speed PID for CURRENT_MODE (outputs current, A)
     motor_params.pid_current_mode.integral_max = 12.0f;
     motor_params.pid_current_mode.integral_min = -4.0f;
     motor_params.pid_current_mode.kb = 2.0f;
