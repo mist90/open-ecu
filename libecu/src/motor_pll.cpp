@@ -41,10 +41,22 @@ void MotorPLL::updateTick() noexcept {
     else if (angle_error < -LIMIT_ANGLE_ERROR)
         angle_error = -LIMIT_ANGLE_ERROR;
 
-    pll_step_error_filtered = (0.05f * std::abs(angle_error)) + (0.95f * pll_step_error_filtered);
+    // Lock metric: mean |angle_error| averaged over LOCK_WINDOW_EREV electrical
+    // revolutions.  The smoothing factor is derived from the current speed so
+    // the window stays one electrical revolution wide instead of one fixed
+    // slice of time - a fixed factor averages the Hall quantisation sawtooth
+    // only while the sector is short, and below roughly 3 RPS it starts
+    // tracking the sawtooth peaks and trips the detector every single sector.
+    float lock_alpha = std::abs(angle_per_second_) * DT_ / (ANGLE_MAX * LOCK_WINDOW_EREV);
+    if (lock_alpha < LOCK_ALPHA_MIN)
+        lock_alpha = LOCK_ALPHA_MIN;
+    else if (lock_alpha > LOCK_ALPHA_MAX)
+        lock_alpha = LOCK_ALPHA_MAX;
+
+    pll_step_error_filtered += lock_alpha * (std::abs(angle_error) - pll_step_error_filtered);
 
     if (is_sync) {
-        if (pll_step_error_filtered >= LIMIT_ANGLE_ERROR * 0.8f) {
+        if (pll_step_error_filtered >= LOCK_TRIP) {
             is_sync = false;
             reset_angle = true;
         }
@@ -125,6 +137,8 @@ void MotorPLL::reset() noexcept {
     angle_ = static_cast<float>(hall_state_raw_);
     angle_per_second_ = 0.0f;
     pll_integral_ = 0.0f;
+    pll_step_error_filtered = 0.0f;
+    is_sync = false;
 }
 
 float MotorPLL::getAngle() const noexcept {
@@ -132,7 +146,10 @@ float MotorPLL::getAngle() const noexcept {
 }
 
 float MotorPLL::getSpeedStepsSec() const noexcept {
-    return angle_per_second_;
+    // The integrator, not the PI output: see the declaration.  angle_ is still
+    // advanced by the full PI output, so phase tracking is unaffected - this
+    // only changes what the velocity loop and the telemetry read as "speed".
+    return pll_integral_;
 }
 
 MotorPLL::PllInfo MotorPLL::getInfo() const noexcept {

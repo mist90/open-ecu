@@ -47,6 +47,29 @@ public:
     static constexpr float SYNC_SPEED = 5.0f;
 
     /**
+     * @name Lock detector
+     *
+     * The Hall sensor only reports which 60-degree sector the rotor is in, so
+     * even a perfectly locked PLL sees a sawtooth angle error that ramps from
+     * +0.5 to -0.5 steps once per sector: mean |error| is 0.25 at every speed,
+     * peak |error| is 0.5 at every speed.  Loss of lock is what pins |error|
+     * at the 0.5 clamp, driving the mean towards 0.5 - hence the 0.4 trip
+     * level, which sits three quarters of the way from locked to unlocked.
+     *
+     * That only holds if the averaging window spans at least one sawtooth
+     * period, and the sawtooth period is 1/speed.  A fixed-tick filter cannot
+     * do that: sized for high speed it follows the sawtooth peaks at low
+     * speed and trips every sector.  So the window is specified in electrical
+     * revolutions and the smoothing factor is derived from the current speed.
+     */
+    ///@{
+    static constexpr float LOCK_WINDOW_EREV = 1.0f;   ///< Averaging window, electrical revolutions
+    static constexpr float LOCK_ALPHA_MIN = 1e-4f;    ///< Floor: keeps the metric alive at standstill
+    static constexpr float LOCK_ALPHA_MAX = 0.05f;    ///< Ceiling: >= 20 ticks of averaging at any speed
+    static constexpr float LOCK_TRIP = LIMIT_ANGLE_ERROR * 0.8f; ///< Mean |error| that means "lost"
+    ///@}
+
+    /**
      * @brief Constructor
      * @param freq_pwm PWM frequency in Hz (e.g., 40000.0f for 40 kHz)
      * @param is_inverse_commutation_table Use inverse six-step commutation table
@@ -100,7 +123,19 @@ public:
     /// @return Current estimated rotor angle in steps (0-5)
     float getAngle() const noexcept;
 
-    /// @return Current estimated electrical speed in steps/sec
+    /**
+     * @brief Current estimated electrical speed in steps/sec
+     *
+     * Returns the PI *integrator*, not the full PI output.  The proportional
+     * term is fed by the Hall quantisation sawtooth (see LOCK_WINDOW_EREV), so
+     * the PI output carries a kp*0.5 = +-50 steps/sec ripple at every speed -
+     * 5% of the reading at 8 RPS but 28% of it at 1.5 RPS.  The integrator
+     * carries the same information without that ripple, because the sawtooth
+     * is symmetric about zero and integrates away.  The angle is still
+     * integrated with the full PI output; only the reported speed differs.
+     *
+     * @return Estimated electrical speed in steps/sec, signed (negative in REVERSE)
+     */
     float getSpeedStepsSec() const noexcept;
 
     /**
