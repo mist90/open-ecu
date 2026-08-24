@@ -63,6 +63,21 @@ struct MotorControlParams {
      * 0 or 1 disables it.
      */
     float measured_current_lpf_alpha;
+
+    /**
+     * @brief PWM cycles to blank the current measurement for after a commutation
+     *
+     * For the first cycles after the phases change, the outgoing phase is still
+     * freewheeling through the body diodes, so the shunt of the nominal DOWN
+     * phase is not carrying the phase current. Those samples are wrong by up to
+     * an amp, and handing them to the current PI turns a measurement artefact
+     * into real duty modulation - which is torque ripple the motor can be heard
+     * and felt making. During the blanking window the duty is held and the PI
+     * is not updated, so the integrator cannot wind up on the bad samples.
+     *
+     * 0 disables blanking.
+     */
+    uint8_t current_blanking_cycles;
     uint32_t control_frequency; ///< Control loop frequency (Hz)
     bool useInverseCommTable; ///< Use inverse six-step commutation table
     PidParameters pid_voltage_mode; ///< Velocity PID parameters for voltage mode (outputs duty cycle)
@@ -298,6 +313,11 @@ private:
 
     // Deferred Hall update (debounce via PWM ISR re-read)
     volatile bool hall_update_pending_;      ///< Set by Hall ISR, processed by PWM ISR
+
+    /// PWM cycles since the last commutation; gates the current-measurement
+    /// blanking window (see MotorControlParams::current_blanking_cycles).
+    /// Saturates rather than wrapping, so a long sector cannot re-enter blanking.
+    uint8_t cycles_since_commutation_;
 
     // Open-loop timing control
     uint8_t open_loop_step_;                 ///< Current step in open-loop mode (0-5)

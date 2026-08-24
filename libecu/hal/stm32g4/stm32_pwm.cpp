@@ -94,11 +94,37 @@ bool Stm32Pwm::initialize(uint32_t frequency, uint16_t dead_time_ns) {
         return false;
     }
 
-    // CCRx preload disabled: CCR changes take effect immediately for current
-    // control loop. CCER (CCPC) is preloaded and applied on COM event in apply().
-    __HAL_TIM_DISABLE_OCxPRELOAD(tim_handle, TIM_CHANNEL_1);
-    __HAL_TIM_DISABLE_OCxPRELOAD(tim_handle, TIM_CHANNEL_2);
-    __HAL_TIM_DISABLE_OCxPRELOAD(tim_handle, TIM_CHANNEL_3);
+    // CCRx preload stays ENABLED (HAL_TIM_PWM_ConfigChannel sets OCxPE).
+    //
+    // It was previously disabled so that "CCR changes take effect immediately
+    // for the current control loop".  What that actually bought was a race: the
+    // current loop rewrites CCR from the TIM1 ISR, and with preload off that
+    // write lands in the *live* compare register while the counter is running.
+    // When the counter happens to be crossing the compare value at that moment
+    // the pulse for that period comes out short, long or split, and whether it
+    // does depends on where in the 50 us period the ISR finished - which moves
+    // with the optimisation level.
+    //
+    // Note on how much this was worth: it is NOT what caused the -Os/-O0
+    // "vibration" difference.  That turned out to be the demagnetisation window
+    // (see MotorControlParams::current_blanking_cycles), and preloading on its
+    // own only moved the number around.  Preload is here because the race is
+    // real, because it makes the PWM edge independent of ISR execution time,
+    // and because the CCR/phase-state split it forces is the shape sinusoidal
+    // modulation needs.
+    //
+    // Preloading only works because setChannelState() no longer encodes the
+    // DOWN phase as CCR=0.  Phase state now lives entirely in OCxM/CCxE/CCxNE,
+    // which CCPC preloads and the COM event applies; duty lives entirely in
+    // CCR, which OCxPE preloads and the update event applies.  The two are
+    // independent, so it does not matter that they latch on different events.
+    // (This split is what the VESC firmware does; encoding DOWN as CCR=0 while
+    // preloading CCR leaves a freshly commutated phase running on the previous
+    // phase's duty until the next update event.)
+    //
+    // Cost: a duty change waits for the next update event - in centre-aligned
+    // mode with RCR=0 that is at most half a PWM period, 25 us, about 4.5
+    // degrees of phase at the 500 Hz current-loop bandwidth.
 
     // Configure dead-time for complementary PWM outputs
     TIM_BreakDeadTimeConfigTypeDef sBreakDeadTimeConfig = {0};
@@ -163,17 +189,46 @@ bool Stm32Pwm::initialize(uint32_t frequency, uint16_t dead_time_ns) {
     return true;
 }
 
-void Stm32Pwm::setChannelState(PwmChannel channel, PwmState state, float duty_cycle) {
+namespace {
+
+/// OCxM output-compare mode field values (CCMRx), 4 bits wide including OCxM[3]
+constexpr uint32_t OCM_PWM1            = 0x6U;  ///< 0110: OCxREF high while CNT < CCR
+constexpr uint32_t OCM_FORCED_INACTIVE = 0x4U;  ///< 0100: OCxREF forced low, CCR ignored
+
+/**
+ * @brief Write the OCxM field for CH1..CH3 without touching the rest of CCMRx
+ *
+ * CCPC is enabled, so OCxM is preloaded here just like CCxE/CCxNE: the write
+ * only takes effect on the next COM event, which is what makes a commutation
+ * atomic across all three phases.
+ */
+void setOcMode(TIM_TypeDef* tim, uint32_t channel_index, uint32_t mode) noexcept {
+    switch (channel_index) {
+        case 0:  // CH1 -> CCMR1 OC1M at bit 4 (mask already covers OC1M[3] at bit 16)
+            tim->CCMR1 = (tim->CCMR1 & ~TIM_CCMR1_OC1M) | (mode << TIM_CCMR1_OC1M_Pos);
+            break;
+        case 1:  // CH2 -> CCMR1 OC2M at bit 12
+            tim->CCMR1 = (tim->CCMR1 & ~TIM_CCMR1_OC2M) | (mode << TIM_CCMR1_OC2M_Pos);
+            break;
+        default: // CH3 -> CCMR2 OC3M at bit 4
+            tim->CCMR2 = (tim->CCMR2 & ~TIM_CCMR2_OC3M) | (mode << TIM_CCMR2_OC3M_Pos);
+            break;
+    }
+}
+
+/// Clamp a duty request into the range the bridge can actually switch
+constexpr float clampDuty(float d) noexcept {
+    return d < 0.0f ? 0.0f : (d > 0.95f ? 0.95f : d);
+}
+
+} // namespace
+
+void Stm32Pwm::setChannelState(PwmChannel channel, PwmState state) {
     if (!enabled_)
         return;
-    // Clamp duty_cycle to valid range
-    if (duty_cycle < 0.0f) duty_cycle = 0.0f;
-    if (duty_cycle > 0.95f) duty_cycle = 0.95f;
 
     TIM_HandleTypeDef* tim_handle = static_cast<TIM_HandleTypeDef*>(htim_);
     TIM_TypeDef* tim_instance = (TIM_TypeDef*)tim_handle->Instance;
-    uint32_t tim_channel = getTimChannel(channel);
-    uint32_t compare_value = calculateCompareValue(duty_cycle);
 
     // Determine which channel we're configuring (0=CH1, 1=CH2, 2=CH3)
     uint32_t channel_index = static_cast<uint32_t>(channel);
@@ -186,6 +241,11 @@ void Stm32Pwm::setChannelState(PwmChannel channel, PwmState state, float duty_cy
     uint32_t ccxe_bit = (1UL << (0 + 4 * channel_index));   // CCxE
     uint32_t ccxne_bit = (1UL << (2 + 4 * channel_index));  // CCxNE
 
+    // No CCR is touched here - see the preload note in initialize().  The DOWN
+    // phase is expressed as "force OCxREF inactive" rather than "compare
+    // against zero", which is the same waveform (high side off, low side on
+    // through the complementary output) but leaves the compare register free to
+    // belong entirely to the current loop.
     switch (state) {
         case PwmState::OFF:
             tim_instance->CCER &= ~(ccxe_bit | ccxne_bit);
@@ -193,25 +253,38 @@ void Stm32Pwm::setChannelState(PwmChannel channel, PwmState state, float duty_cy
 
         case PwmState::UP:
             tim_instance->CCER &= ~(ccxp_bit | ccxnp_bit);
-            __HAL_TIM_SET_COMPARE(tim_handle, tim_channel, compare_value);
+            setOcMode(tim_instance, channel_index, OCM_PWM1);
             tim_instance->CCER |= (ccxe_bit | ccxne_bit);
             break;
 
         case PwmState::DOWN:
             tim_instance->CCER &= ~(ccxp_bit | ccxnp_bit);
-            __HAL_TIM_SET_COMPARE(tim_handle, tim_channel, 0);
+            setOcMode(tim_instance, channel_index, OCM_FORCED_INACTIVE);
             tim_instance->CCER |= (ccxe_bit | ccxne_bit);
             break;
     }
 }
 
-void Stm32Pwm::updateDutyCycle(PwmChannel channel, float duty_cycle)
+void Stm32Pwm::updateDutyCycle(float duty_u, float duty_v, float duty_w)
 {
     TIM_HandleTypeDef* tim_handle = static_cast<TIM_HandleTypeDef*>(htim_);
-    uint32_t tim_channel = getTimChannel(channel);
-    uint32_t compare_value = calculateCompareValue(duty_cycle);
+    TIM_TypeDef* tim_instance = (TIM_TypeDef*)tim_handle->Instance;
 
-    __HAL_TIM_SET_COMPARE(tim_handle, tim_channel, compare_value);
+    uint32_t ccr_u = calculateCompareValue(clampDuty(duty_u));
+    uint32_t ccr_v = calculateCompareValue(clampDuty(duty_v));
+    uint32_t ccr_w = calculateCompareValue(clampDuty(duty_w));
+
+    // UDIS blocks the update event for the duration of the write, so the three
+    // compare registers reload as one set.  Without it an update event landing
+    // between two of these stores latches a mix of the old and the new duty on
+    // different phases.  A suppressed update event is not queued - it is simply
+    // skipped, so the reload waits for the next one, at most half a period
+    // later.  Kept as short as possible for that reason.
+    tim_instance->CR1 |= TIM_CR1_UDIS;
+    tim_instance->CCR1 = ccr_u;
+    tim_instance->CCR2 = ccr_v;
+    tim_instance->CCR3 = ccr_w;
+    tim_instance->CR1 &= ~TIM_CR1_UDIS;
 }
 
 void Stm32Pwm::enable(bool enable) {

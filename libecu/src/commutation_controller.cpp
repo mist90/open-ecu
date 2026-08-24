@@ -49,9 +49,15 @@ void CommutationController::applyCommutationStep(const CommutationStep& step, fl
     cached_phase_w_state_ = step.phase_w;
 
     // Queue PWM states — changes are preloaded, not applied until apply() is called
-    pwm_interface_.setChannelState(PwmChannel::PHASE_U, step.phase_u, duty_cycle);
-    pwm_interface_.setChannelState(PwmChannel::PHASE_V, step.phase_v, duty_cycle);
-    pwm_interface_.setChannelState(PwmChannel::PHASE_W, step.phase_w, duty_cycle);
+    pwm_interface_.setChannelState(PwmChannel::PHASE_U, step.phase_u);
+    pwm_interface_.setChannelState(PwmChannel::PHASE_V, step.phase_v);
+    pwm_interface_.setChannelState(PwmChannel::PHASE_W, step.phase_w);
+
+    // Duty travels on its own path: it is preloaded against the timer's update
+    // event while the switching states above are preloaded against the COM
+    // event below. Both are atomic within themselves, and neither has to wait
+    // for the other, because no phase state is encoded in a compare register.
+    pwm_interface_.updateDutyCycle(duty_cycle);
 
     // Apply all three channel states atomically (TIM_EGR_COMG on STM32)
     pwm_interface_.apply();
@@ -59,16 +65,10 @@ void CommutationController::applyCommutationStep(const CommutationStep& step, fl
 
 void CommutationController::updateDutyCycle(float duty_cycle) noexcept
 {
-    // Update duty cycle without changing phase states
-    // Uses cached phase states from last commutation update
-
-    // Apply duty cycle to existing phase states (no state change)
-    if (cached_phase_u_state_ == PwmState::UP)
-        pwm_interface_.updateDutyCycle(PwmChannel::PHASE_U, duty_cycle);
-    else if (cached_phase_v_state_ == PwmState::UP)
-        pwm_interface_.updateDutyCycle(PwmChannel::PHASE_V, duty_cycle);
-    else
-        pwm_interface_.updateDutyCycle(PwmChannel::PHASE_W, duty_cycle);
+    // Update modulation depth without changing phase states. All three phases
+    // carry the same duty; the switching state set at the last commutation
+    // decides which of them actually modulates it.
+    pwm_interface_.updateDutyCycle(duty_cycle);
 }
 
 PwmState CommutationController::getPhaseState(PwmChannel channel) const noexcept

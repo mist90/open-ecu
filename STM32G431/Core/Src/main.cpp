@@ -267,6 +267,10 @@ int main(void)
     motor_params.target_speed_lpf_alpha = 0.0f;  // LPF smoothing for noisy potentiometer input
     motor_params.measured_speed_lpf_alpha = 0.5f; // LPF smoothing for noisy velocity measurement
     motor_params.measured_current_lpf_alpha = 0.005f; // 10 ms at 20 kHz; telemetry only
+    // Demagnetisation blanking: the current reading settles to its noise floor
+    // about nine PWM cycles after a commutation on this motor. Six covers the
+    // bulk of the transient without holding the duty for much of a short sector.
+    motor_params.current_blanking_cycles = 6;
     motor_params.control_frequency = PERIODIC_TIMER_FREQ;
     motor_params.pid_voltage_mode = {0.1f, 0.2f}; // Speed PID for VOLTAGE_MODE (outputs duty cycle 0.0-1.0)
     motor_params.pid_voltage_mode.integral_max = 0.8f;

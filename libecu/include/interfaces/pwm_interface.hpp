@@ -54,25 +54,42 @@ public:
     virtual bool initialize(uint32_t frequency, uint16_t dead_time_ns) = 0;
 
     /**
-     * @brief Set PWM state and modulation for a channel
+     * @brief Set the switching state of a channel
+     *
+     * Carries no duty cycle: which switches conduct and how long they conduct
+     * for are deliberately separate. A six-step commutation changes only the
+     * former, the current loop changes only the latter, and on hardware that
+     * latches them on different events (STM32 COM event vs. update event) any
+     * coupling between the two shows up as a glitched PWM period.
+     *
      * @param channel PWM channel
      * @param state PWM state (OFF/UP/DOWN)
-     * @param duty_cycle PWM duty cycle (0.0 to 1.0)
-     *                   For UP: High-side active for duty_cycle
-     *                   For DOWN: Low-side active for duty_cycle
-     *                   For OFF: duty_cycle is ignored (both switches disabled)
      */
-    virtual void setChannelState(PwmChannel channel, PwmState state, float duty_cycle = 0.0f) = 0;
+    virtual void setChannelState(PwmChannel channel, PwmState state) = 0;
 
     /**
-     * @brief Set PWM modulation for a channel
-     * @param channel PWM channel
-     * @param duty_cycle PWM duty cycle (0.0 to 1.0)
-     *                   For UP: High-side active for duty_cycle
-     *                   For DOWN: Low-side active for duty_cycle
-     *                   For OFF: duty_cycle is ignored (both switches disabled)
+     * @brief Set the modulation depth of all three phases as one atomic update
+     *
+     * Takes all three phases together rather than one at a time: the compare
+     * registers must reload as a set, otherwise an update event landing between
+     * two of them leaves the bridge running one phase on the new duty and
+     * another on the old one for a period.
+     *
+     * Six-step passes the same value three times - the per-phase switching state
+     * decides which phase actually modulates it. Independent values are what
+     * sinusoidal/space-vector modulation needs, which is why the three-phase
+     * form is the primitive.
+     *
+     * @param duty_u,duty_v,duty_w Per-phase duty cycle (0.0 to 1.0)
      */
-    virtual void updateDutyCycle(PwmChannel channel, float duty_cycle = 0.0f) = 0;
+    virtual void updateDutyCycle(float duty_u, float duty_v, float duty_w) = 0;
+
+    /**
+     * @brief Set the same modulation depth on all three phases (six-step)
+     */
+    void updateDutyCycle(float duty_cycle) noexcept {
+        updateDutyCycle(duty_cycle, duty_cycle, duty_cycle);
+    }
 
 /**
      * @brief Enable/disable PWM output
@@ -92,9 +109,10 @@ public:
      * Used for motor startup and balanced operation
      */
     void setNeutral() noexcept {
-        setChannelState(PwmChannel::PHASE_U, PwmState::OFF, 0.0f);
-        setChannelState(PwmChannel::PHASE_V, PwmState::OFF, 0.0f);
-        setChannelState(PwmChannel::PHASE_W, PwmState::OFF, 0.0f);
+        setChannelState(PwmChannel::PHASE_U, PwmState::OFF);
+        setChannelState(PwmChannel::PHASE_V, PwmState::OFF);
+        setChannelState(PwmChannel::PHASE_W, PwmState::OFF);
+        updateDutyCycle(0.0f);
         apply();
     }
 
