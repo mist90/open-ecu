@@ -8,8 +8,42 @@
 
 namespace libecu {
 
+namespace {
+
+/// Encode a dead time in nanoseconds into the TIM DTG[7:0] field.
+///
+/// DTG is piecewise: four ranges with steps of 1, 2, 8 and 16 tDTS. Rounding
+/// happens on the *tick* count, and the caller should read the value back with
+/// dtgToNanoseconds() rather than assume it got what it asked for.
+uint32_t nanosecondsToDtg(uint16_t ns, uint32_t tim_clock) noexcept {
+    // ticks = round(ns * f_tim / 1e9). 65535 ns * 170e6 = 1.1e13 needs 64 bits.
+    // Computing an integer tDTS *period* first and dividing by it - which this
+    // used to do - truncates 5.882 ns to 5 and inflates every dead time by 18 %.
+    const uint32_t ticks = static_cast<uint32_t>(
+        (static_cast<uint64_t>(ns) * tim_clock + 500000000ULL) / 1000000000ULL);
+
+    if (ticks <= 127)  return ticks;                          // step 1
+    if (ticks <= 254)  return 0x80U | ((ticks - 128U) / 2U);  // step 2
+    if (ticks <= 504)  return 0xC0U | ((ticks - 256U) / 8U);  // step 8
+    const uint32_t dtg = (ticks - 512U) / 16U;                // step 16
+    return 0xE0U | (dtg > 31U ? 31U : dtg);
+}
+
+/// Decode DTG[7:0] back to nanoseconds - what the hardware will actually do.
+uint16_t dtgToNanoseconds(uint32_t dtg, uint32_t tim_clock) noexcept {
+    uint32_t ticks;
+    if      ((dtg & 0x80U) == 0U)    ticks = dtg;                          // step 1
+    else if ((dtg & 0xC0U) == 0x80U) ticks = (64U + (dtg & 0x3FU)) * 2U;   // step 2
+    else if ((dtg & 0xE0U) == 0xC0U) ticks = (32U + (dtg & 0x1FU)) * 8U;   // step 8
+    else                             ticks = (32U + (dtg & 0x1FU)) * 16U;  // step 16
+    return static_cast<uint16_t>(
+        (static_cast<uint64_t>(ticks) * 1000000000ULL + tim_clock / 2U) / tim_clock);
+}
+
+} // namespace
+
 Stm32Pwm::Stm32Pwm(void* htim) noexcept
-    : htim_(htim), period_(0), dead_time_ns_(100), enabled_(false) {
+    : htim_(htim), period_(0), dead_time_ns_(100), actual_dead_time_ns_(0), enabled_(false) {
     frequency_ = 20000;
 }
 
@@ -132,37 +166,12 @@ bool Stm32Pwm::initialize(uint32_t frequency, uint16_t dead_time_ns) {
     sBreakDeadTimeConfig.OffStateIDLEMode = TIM_OSSI_DISABLE;
     sBreakDeadTimeConfig.LockLevel = TIM_LOCKLEVEL_OFF;
 
-    // Calculate dead-time register value
-    // tDTS = timer clock period, dead time is specified in tDTS units
-    // For STM32G4 TIM1 at 170MHz: tDTS ≈ 5.88ns (when CKD=00, no clock division)
-    uint32_t tim_clock = HAL_RCC_GetPCLK2Freq();  // 170MHz typically
-
-    // Avoid overflow: rearrange (dead_time_ns * tim_clock) / 1e9
-    // to: dead_time_ns / (1e9 / tim_clock)
-    // Calculate tDTS period in nanoseconds: 1e9 / tim_clock
-    uint32_t tDTS_ns = 1000000000UL / tim_clock;  // Period of one tDTS tick in nanoseconds
-    uint32_t dead_time_ticks = dead_time_ns_ / tDTS_ns;  // Dead time in tDTS ticks
-
-    // STM32 dead-time generator has different ranges based on DTG[7:0] value:
-    // DTG[7:5]=0xx: Dead time = DTG[6:0] × tDTS (0 to 127 ticks)
-    // DTG[7:5]=10x: Dead time = (128 + DTG[5:0]) × 2 × tDTS (128 to 254 ticks, step 2)
-    // DTG[7:5]=110: Dead time = (256 + DTG[4:0]) × 8 × tDTS (256 to 504 ticks, step 8)
-    // DTG[7:5]=111: Dead time = (512 + DTG[4:0]) × 16 × tDTS (512 to 1008 ticks, step 16)
-    if (dead_time_ticks <= 127) {
-        // Range 1: 0 to 127 ticks
-        sBreakDeadTimeConfig.DeadTime = dead_time_ticks;
-    } else if (dead_time_ticks <= 254) {
-        // Range 2: 128 to 254 ticks (steps of 2)
-        sBreakDeadTimeConfig.DeadTime = 0x80 | ((dead_time_ticks - 128) / 2);
-    } else if (dead_time_ticks <= 504) {
-        // Range 3: 256 to 504 ticks (steps of 8)
-        sBreakDeadTimeConfig.DeadTime = 0xC0 | ((dead_time_ticks - 256) / 8);
-    } else {
-        // Range 4: 512 to 1008 ticks (steps of 16)
-        uint32_t dtg_value = (dead_time_ticks - 512) / 16;
-        if (dtg_value > 31) dtg_value = 31;  // Clamp to max (DTG[4:0] is 5 bits)
-        sBreakDeadTimeConfig.DeadTime = 0xE0 | dtg_value;
-    }
+    // Dead time. See nanosecondsToDtg(); DTG is quantised, so what the hardware
+    // receives is read back with dtgToNanoseconds() and reported by
+    // getActualDeadTimeNs() rather than assumed.
+    uint32_t tim_clock = HAL_RCC_GetPCLK2Freq();  // 170 MHz typically
+    sBreakDeadTimeConfig.DeadTime = nanosecondsToDtg(dead_time_ns_, tim_clock);
+    actual_dead_time_ns_ = dtgToNanoseconds(sBreakDeadTimeConfig.DeadTime, tim_clock);
 
     sBreakDeadTimeConfig.BreakState = TIM_BREAK_DISABLE;
     sBreakDeadTimeConfig.BreakPolarity = TIM_BREAKPOLARITY_HIGH;

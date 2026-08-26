@@ -28,10 +28,24 @@ public:
     void enable(bool enable) override;
     void apply() override;
 
+    /**
+     * @brief Dead time actually programmed into DTG, in nanoseconds
+     *
+     * Not the requested value: DTG is quantised in tDTS units (5.882 ns at
+     * 170 MHz) and coarsens to steps of 2, 8 or 16 tDTS in the upper ranges, so
+     * the hardware can only ever approximate a request. Worth printing at boot
+     * - the requested figure was wrong by 18 % for years without anyone
+     * noticing, because nothing ever reported back what was applied.
+     *
+     * @return Programmed dead time (ns), or 0 before initialize()
+     */
+    uint16_t getActualDeadTimeNs() const noexcept { return actual_dead_time_ns_; }
+
 private:
     void* htim_;
     uint32_t period_;
     uint16_t dead_time_ns_;
+    uint16_t actual_dead_time_ns_;   ///< What DTG really encodes; see the getter
     bool enabled_;
 
     /**

@@ -52,6 +52,21 @@
 // more than worst-case excursion.
 #define BLDC_ILOOP_BW_HZ        500.0f
 #define BLDC_NOMINAL_VBUS       31.3f
+// Dead time, nanoseconds. MEASURED optimum - see docs/FOC_HANDOFF.md section 15.
+//
+// This board ran 235 ns for a long time (a units bug: a requested "200" became
+// 235), and 235 ns was too short - the two switches in a leg still overlapped
+// on every transition. Sweeping DC input power against dead time put the
+// optimum at 350 ns, which at 4.95 RPS took FOC from 0.66 A to 0.55 A and
+// six-step from 0.57 A to 0.54 A. That is ~1 W per *modulating* half-bridge -
+// three legs under FOC, one under six-step - and it is what the whole
+// "FOC looks less efficient" puzzle turned out to be.
+//
+// The loss curve is steep below the knee (cross-conduction) and shallow above
+// it (body-diode conduction plus the dV = Vbus*t_dead*f_sw distortion, 0.22 V
+// here). Re-sweep if the FETs, gate driver or PWM frequency change; the boot
+// line prints what the hardware actually received, which is not the request.
+#define BLDC_DEAD_TIME_NS       350
 #else
 #define PERIODIC_TIMER_FREQ 100
 #define PWM_TIMER_FREQ 20000
@@ -76,6 +91,7 @@
 // more than worst-case excursion.
 #define BLDC_ILOOP_BW_HZ        500.0f
 #define BLDC_NOMINAL_VBUS       24.0f
+#define BLDC_DEAD_TIME_NS       350
 #endif
 
 //#define LEGACY_POT_CONTROL
@@ -204,9 +220,14 @@ int main(void)
     MX_USART2_UART_Init();
 
     // Initialize motor control components
-    if (!pwm_driver.initialize(PWM_TIMER_FREQ, 200)) {  // PWM_TIMER_FREQ PWM, 200ns dead-time
+    if (!pwm_driver.initialize(PWM_TIMER_FREQ, BLDC_DEAD_TIME_NS)) {
         Error_Handler();
     }
+    // DTG is quantised, so print what the hardware really got rather than what
+    // was asked for - the two disagreed by 18 % until the conversion was fixed.
+    printf("PWM: %u Hz, dead time requested %u ns, programmed %u ns\n",
+           (unsigned)PWM_TIMER_FREQ, (unsigned)BLDC_DEAD_TIME_NS,
+           (unsigned)pwm_driver.getActualDeadTimeNs());
 
     if (!hall_sensor.initialize()) {
         Error_Handler();
