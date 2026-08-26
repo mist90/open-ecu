@@ -47,10 +47,24 @@
  * a burst adds a fixed amount and decays, while a sustained fault settles at
  * `rate * decay_time_s`.
  *
- * Bounce itself is detected without needing to know the rotation direction:
- * every healthy edge advances the position by one step in a consistent
- * direction, so over any window `edges == |net advance|`.  Chatter breaks that
- * equality - many edges, no net progress - and the surplus is the fault signal.
+ * Bounce is detected as **direction reversals per edge**, and still without
+ * needing to know the commanded direction: healthy rotation keeps turning the
+ * same way, so consecutive edges share a sign and reversals are rare, while
+ * chatter alternates A->B->A->B and reverses on *every* edge.
+ *
+ * This was originally written as `edges - |net advance|` over the decay window,
+ * on the reasoning that healthy motion gives `edges == |net advance|`.  That is
+ * true only while the direction is constant, and it produced a false fault the
+ * first time somebody turned the shaft back and forth by hand: the forward and
+ * backward edges cancel in the *signed* accumulator while the edge count keeps
+ * climbing, so a perfectly genuine reversal reads as 100 % chatter.  Measured
+ * from a bench capture - about 15 edges one way, then the other - it tripped
+ * ERRATIC_SEQUENCE and dropped the drive to NEUTRAL.
+ *
+ * Counting reversals instead costs a genuine change of direction exactly one
+ * event, which decays away, while leaving both the healthy baseline and the
+ * chatter signature where they were: a dither excursion A->B->A contributes two
+ * reversals, the same two events the old surplus counted.
  *
  * There is deliberately no "no edges for too long" rule.  A disconnected loom
  * already shows as an illegal code, and a rotor that has simply stopped is a
@@ -74,7 +88,7 @@ static constexpr uint8_t HALL_POSITION_INVALID = 0xFF;
 enum class HallFault : uint8_t {
     NONE = 0,
     INVALID_CODE,     ///< Illegal 000/111, either sustained or recurring
-    ERRATIC_SEQUENCE, ///< Sustained edges that make no net progress
+    ERRATIC_SEQUENCE, ///< Sustained edges that keep reversing direction
 };
 
 /**
@@ -142,17 +156,21 @@ struct HallMonitorParams {
      */
 
     /**
-     * Fraction of edges that may fail to advance the position, 0..1; 0 disables.
+     * Fraction of edges that reverse direction, 0..1; 0 disables.
      *
      * A *count* cannot be used here, because the benign level scales with the
      * edge rate and therefore with speed. Measured on real hardware at 6 RPS
-     * under 2 A of load, healthy running sat at a surplus of 14-21 edges
+     * under 2 A of load, healthy running sat at 14-21 non-advancing edges
      * against an edge accumulator of ~345 - about 6% - and an absolute
      * threshold of 20 tripped on it. The same 6% at 9 RPS would be 27.
      *
      * The ratio is what stays put: real rotor dither at a sector boundary is a
-     * few percent of edges, while genuine chatter approaches 100% because the
-     * edges cancel completely.
+     * few percent of edges, while genuine chatter approaches 100% because every
+     * edge undoes the one before it.
+     *
+     * Note this is reversals, not net progress - see the header comment. A
+     * sustained change of rotation direction, such as somebody turning the
+     * shaft by hand, costs one event rather than invalidating the whole window.
      */
     float   erratic_fraction;
 
@@ -231,9 +249,9 @@ public:
      */
     struct Info {
         float     invalid_score;   ///< Leaky accumulator for illegal codes
-        float     erratic_score;   ///< Non-advancing edges as a fraction of all edges (0..1)
+        float     erratic_score;   ///< Direction reversals as a fraction of all edges (0..1)
         float     edge_accum;      ///< Leaky edge count
-        float     advance_accum;   ///< Leaky *signed* net advance, in steps
+        float     reversal_accum;  ///< Leaky count of edges that reversed direction
         uint32_t  invalid_events;  ///< Illegal-code runs counted since reset
         uint8_t   invalid_run;     ///< Consecutive illegal readings
         float     invalid_time_s;  ///< How long the latest reading has been illegal
@@ -254,7 +272,12 @@ private:
     float    invalid_score_;
     float    erratic_score_;
     float    edge_accum_;
-    float    advance_accum_;
+    float    reversal_accum_;
+
+    /// Sign of the previous edge's step delta, 0 before the first edge. Only
+    /// a *change* of sign counts as a reversal, so the first edge after a
+    /// reset - and the single edge that turns a hand-rotation around - is free.
+    int8_t   last_delta_sign_;
 
     uint8_t  last_position_;
     bool     have_last_;

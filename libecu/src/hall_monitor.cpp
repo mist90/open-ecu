@@ -26,7 +26,8 @@ HallMonitor::HallMonitor(float pwm_frequency) noexcept
     , invalid_score_(0.0f)
     , erratic_score_(0.0f)
     , edge_accum_(0.0f)
-    , advance_accum_(0.0f)
+    , reversal_accum_(0.0f)
+    , last_delta_sign_(0)
     , last_position_(0)
     , have_last_(false)
     , invalid_run_(0)
@@ -41,7 +42,7 @@ HallMonitor::HallMonitor(float pwm_frequency) noexcept
     //  - a stuck line at 600 steps/s puts one illegal code per electrical
     //    revolution, i.e. ~100/s, settling the accumulator near 50
     //  - an isolated glitch or two peaks at 2 and fades
-    //  - sustained chatter above 40 non-advancing edges/s trips the erratic
+    //  - sustained chatter above 40 reversing edges/s trips the erratic
     //    detector, while a burst of fewer than 20 does not
     params_.decay_time_s           = 0.5f;
     params_.invalid_threshold      = 0.0f;    // disabled - see the header
@@ -61,7 +62,8 @@ void HallMonitor::clearFault() noexcept {
     invalid_score_   = 0.0f;
     erratic_score_   = 0.0f;
     edge_accum_      = 0.0f;
-    advance_accum_   = 0.0f;
+    reversal_accum_  = 0.0f;
+    last_delta_sign_ = 0;
     invalid_run_     = 0;
     invalid_time_    = 0.0f;
     invalid_counted_ = false;
@@ -84,9 +86,9 @@ void HallMonitor::tick(bool drive_active) noexcept {
     const float tau  = (params_.decay_time_s > 0.0f) ? params_.decay_time_s : 1e-3f;
     const float keep = 1.0f - (dt_ / tau);
     const float decay = (keep > 0.0f) ? keep : 0.0f;
-    invalid_score_ *= decay;
-    edge_accum_    *= decay;
-    advance_accum_ *= decay;
+    invalid_score_  *= decay;
+    edge_accum_     *= decay;
+    reversal_accum_ *= decay;
 
     const bool accumulate = drive_active || !params_.require_drive_active;
 
@@ -131,9 +133,19 @@ void HallMonitor::onPosition(uint8_t position, bool drive_active) noexcept {
             const int d = stepDelta(last_position_, position);
             last_position_ = position;
             ++edges_;
+
+            const int8_t sign = (d > 0) ? 1 : (d < 0 ? -1 : 0);
             if (accumulate) {
-                edge_accum_    += 1.0f;
-                advance_accum_ += static_cast<float>(d);
+                edge_accum_ += 1.0f;
+                // Only a *change* of direction scores. Turning the shaft around
+                // costs one event; chatter scores on every edge because each one
+                // undoes the last.
+                if (last_delta_sign_ != 0 && sign != 0 && sign != last_delta_sign_) {
+                    reversal_accum_ += 1.0f;
+                }
+            }
+            if (sign != 0) {
+                last_delta_sign_ = sign;
             }
         }
     }
@@ -142,14 +154,15 @@ void HallMonitor::onPosition(uint8_t position, bool drive_active) noexcept {
 }
 
 void HallMonitor::evaluate() noexcept {
-    // Healthy motion advances one step per edge in a consistent direction, so
-    // edge_accum_ == |advance_accum_|.  Chatter piles up edges that cancel, and
-    // the surplus is the fault signal.  No direction input is needed.
+    // Healthy motion keeps turning the same way, so consecutive edges share a
+    // sign and reversals are rare. Chatter alternates between two positions and
+    // reverses on every edge. No direction input is needed, and unlike the net
+    // -progress form this used to use, a genuine change of direction costs one
+    // event instead of cancelling the whole window (see the header).
     // Express it as a *fraction* of all edges, not a count: the count scales
     // with the edge rate, so any absolute threshold is really a speed limit.
-    const float surplus = edge_accum_ - std::fabs(advance_accum_);
-    erratic_score_ = (edge_accum_ >= params_.erratic_min_edges && surplus > 0.0f)
-                   ? (surplus / edge_accum_)
+    erratic_score_ = (edge_accum_ >= params_.erratic_min_edges && reversal_accum_ > 0.0f)
+                   ? (reversal_accum_ / edge_accum_)
                    : 0.0f;
 
     // A threshold of zero disables that detector.
@@ -169,7 +182,7 @@ HallMonitor::Info HallMonitor::getInfo() const noexcept {
     info.invalid_score  = invalid_score_;
     info.erratic_score  = erratic_score_;
     info.edge_accum     = edge_accum_;
-    info.advance_accum  = advance_accum_;
+    info.reversal_accum = reversal_accum_;
     info.invalid_events = invalid_events_;
     info.invalid_run    = invalid_run_;
     info.invalid_time_s = invalid_time_;

@@ -120,7 +120,17 @@ struct MotorControlParams {
  * @brief Motor status information
  */
 struct MotorStatus {
-    float current_speed_rps;  ///< Current motor speed (RPS)
+    /**
+     * @brief Measured motor speed (RPS), signed relative to the commanded direction
+     *
+     * Positive when the rotor turns the way DriveMode asks, negative when it
+     * turns against it - so in normal running it reads the same as it always
+     * did. The sign is what lets the velocity loop tell "too fast" from
+     * "going the wrong way"; a magnitude cannot, and feeding it one made the
+     * drive run away when the shaft was turned backwards. See the long note in
+     * BldcController::update().
+     */
+    float current_speed_rps;
     float target_speed_rps;   ///< Target motor speed (RPS)
     float duty_cycle;         ///< Current duty cycle
     float target_current;     ///< Target motor current (A)

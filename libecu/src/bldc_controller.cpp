@@ -150,12 +150,33 @@ bool BldcController::initialize() noexcept
 
 void BldcController::update() noexcept
 {
-    // The PLL reports signed electrical speed — negative in REVERSE, because the
-    // Hall sequence descends.  Direction is carried by dmode_, and the speed PID
-    // setpoint is always a magnitude (setTargetSpeed rejects negatives), so the
-    // feedback must be a magnitude too.  Feeding the signed value made the error
-    // term (target + |speed|) unable to reach zero, pinning the loop at max_current.
-    float speed_rps = std::abs(motor_pll_.getSpeedStepsSec()) / (params_.num_poles * BLDC_NUM_PHASES);
+    // Speed feedback, signed **relative to the commanded direction**: positive
+    // when the rotor turns the way dmode_ asks, negative when it turns against
+    // it. The PLL itself reports signed electrical speed in the Hall sequence's
+    // own frame - negative in REVERSE, because the sequence descends - so the
+    // direction sign converts one to the other.
+    //
+    // This used to be std::abs(). That fixed a real problem (the raw signed
+    // value cannot reach a magnitude setpoint in REVERSE, which pinned the loop
+    // at max_current) but replaced it with a worse one: a magnitude is blind to
+    // direction. At SPD=0 *any* rotation then gives error = 0 - |v| < 0, the
+    // PID winds its output down to min_current, and FOC turns that into
+    // negative Iq - which brakes a forward-turning rotor but *accelerates* a
+    // backward-turning one. Nudge the shaft the wrong way by hand and the motor
+    // ran away to its no-load ceiling: measured 8.61 RPS, duty 0.95, demand
+    // pinned at the -6 A floor.
+    //
+    // Six-step masked this for as long as it was the only algorithm: its
+    // current PI has min_output = 0 and its duty is clamped non-negative, so it
+    // cannot produce reverse torque at all and a negative demand merely coasts.
+    // FOC can, so the latent sign error became a runaway.
+    //
+    // Signed feedback fixes all four quadrants: turning against the command now
+    // yields a *positive* error and therefore corrective torque, while turning
+    // with it behaves exactly as before.
+    const float direction = (dmode_ == DriveMode::REVERSE) ? -1.0f : 1.0f;
+    float speed_rps = direction * motor_pll_.getSpeedStepsSec()
+                    / (params_.num_poles * BLDC_NUM_PHASES);
 
     float alpha = params_.measured_speed_lpf_alpha;
     if (alpha > 0.0f && alpha < 1.0f) {

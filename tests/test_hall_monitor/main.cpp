@@ -230,6 +230,46 @@ int main() {
         check(!m.isFaulted(), "6%% non-advancing edges under load does not fault");
     }
 
+    // ---- 4b. hand-rotating the shaft back and forth must not fault -------
+    // Regression for a measured false positive: with the erratic detector
+    // written as `edges - |net advance|`, forward and backward edges cancel in
+    // the signed accumulator while the edge count keeps climbing, so a genuine
+    // change of direction read as 100 % chatter and dropped the drive to
+    // NEUTRAL. Reproduces the bench capture: ~15 edges one way, then the other.
+    {
+        HallMonitor m(PWM_FREQ);
+        Rotor r;
+        float peak = 0.0f;
+        for (int sweep = 0; sweep < 6; ++sweep) {
+            // Slow, like a hand: ~10 steps/s, so roughly 15 edges per sweep.
+            const float spd = (sweep % 2 == 0) ? 10.0f : -10.0f;
+            spin(m, r, spd, 1.5f);
+            peak = std::max(peak, m.getInfo().erratic_score);
+        }
+        printf("       hand reversals: peak erratic fraction %.3f (threshold %.2f)\n",
+               peak, m.getParameters().erratic_fraction);
+        check(!m.isFaulted(), "reversing the shaft by hand does not fault");
+    }
+
+    // ---- 4c. a fast reversal, and many of them, still must not fault ------
+    // The original capture reversed while moving quickly. Direction changes are
+    // legitimate at any speed, so this must hold even when the reversals come
+    // thick and fast - what separates them from chatter is that each one is
+    // followed by sustained travel, not by an immediate undo.
+    {
+        HallMonitor m(PWM_FREQ);
+        Rotor r;
+        float peak = 0.0f;
+        for (int sweep = 0; sweep < 20; ++sweep) {
+            const float spd = (sweep % 2 == 0) ? 600.0f : -600.0f;
+            spin(m, r, spd, 0.05f);           // ~30 edges per sweep
+            peak = std::max(peak, m.getInfo().erratic_score);
+        }
+        printf("       fast reversals: peak erratic fraction %.3f (threshold %.2f)\n",
+               peak, m.getParameters().erratic_fraction);
+        check(!m.isFaulted(), "20 fast direction reversals do not fault");
+    }
+
     // ---- 5. disconnected loom (all lines at the pull level) ---------------
     for (int high = 0; high < 2; ++high) {
         HallMonitor m(PWM_FREQ);
