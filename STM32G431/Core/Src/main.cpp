@@ -5,7 +5,8 @@
 #include "../../libecu/hal/stm32g4/stm32_pwm.hpp"
 #include "../../libecu/hal/stm32g4/stm32_hall_sensor.hpp"
 #include "../../libecu/hal/stm32g4/stm32_adc.hpp"
-#include "../../libecu/include/algorithms/commutation_controller.hpp"
+#include "../../libecu/include/algorithms/six_step_algorithm.hpp"
+#include "../../libecu/include/algorithms/foc_algorithm.hpp"
 #include "../../libecu/include/algorithms/pid_controller.hpp"
 #include "../../libecu/include/platform/critical_section.hpp"
 #include <stdint.h>
@@ -93,7 +94,6 @@ static libecu::Stm32Pwm pwm_driver(&htim1);
 static libecu::HallGpioConfig hall_config{A__GPIO_Port, A__Pin, B__Pin, Z__Pin};
 static libecu::Stm32TimHallSensor hall_sensor(hall_config);
 static libecu::Stm32Adc adc_driver;
-static libecu::CommutationController* commutation_controller = nullptr;
 static libecu::BldcController* motor_controller = nullptr;
 static libecu::UartAtBridge* g_at_processor = nullptr;
 static volatile bool control_tick = false;
@@ -179,11 +179,7 @@ extern "C" void motor_controller_pwm_interrupt_handler(void)
 {
     if (motor_controller != nullptr) {
         motor_controller->pwmInterruptHandler();
-        libecu::MotorStatus status = motor_controller->getStatus();
-        g_at_processor->captureOscSample(
-            static_cast<uint8_t>(status.duty_cycle * 100.0f),
-            status.target_current, status.measured_current,
-            status.measured_position);
+        g_at_processor->captureOscSample(motor_controller->getStatus());
     }
 }
 
@@ -253,11 +249,8 @@ int main(void)
                                         adc_driver.getCalibration().offset_voltage_v,
                                         adc_driver.getCalibration().offset_voltage_w);
 
-    // Create component instances
-    // Using 8 pole pairs for commutation
-    commutation_controller = new libecu::CommutationController(pwm_driver, hall_sensor, BLDC_NUM_POLES);
-
     libecu::MotorControlParams motor_params;
+    motor_params.num_poles = BLDC_NUM_POLES;
     motor_params.max_duty_cycle = 0.95f;
     motor_params.max_current = BLDC_MAX_CURRENT;
     motor_params.min_current = BLDC_MIN_CURRENT;
@@ -306,6 +299,49 @@ int main(void)
     motor_params.pid_current_regulator.kb = 5.0f;
     motor_params.useInverseCommTable = BLDC_INVERTION;
 
+    // ---- FOC ---------------------------------------------------------------
+    // FOC is the default. Measured against six-step at 6.00 RPS on this motor
+    // (docs/FOC_HANDOFF.md section 9.5): current ripple 0.0308 A vs 0.2398 A -
+    // 7.8x smoother - holding the same speed on about 17 % less RMS phase
+    // current, i.e. roughly a third less copper loss, with Id regulated to
+    // -2 mA. Six-step is still built and one command away (AT+ALGO=0), which is
+    // what makes an A/B on the same run possible.
+    //
+    // Caveat worth knowing at boot: FOC has only been run FORWARD, at or below
+    // 8 RPS, under about 1 A. High modulation index - where the low-side
+    // sampling window shrinks and the worst-phase shunt rejection starts
+    // earning its keep - is still unexercised.
+    motor_params.algorithm = libecu::DriveAlgorithm::FOC;
+
+    motor_params.foc.max_modulation = 0.95f;
+    motor_params.foc.max_duty_cycle = motor_params.max_duty_cycle;
+    // -60 electrical degrees, derived from the six-step table geometry and the
+    // PLL's +1-step field offset (see foc_algorithm.hpp). A derivation, not a
+    // measurement - trim with AT+FANG on the bench before trusting the torque.
+    motor_params.foc.angle_offset_rad = -libecu::FOC_RAD_PER_STEP;
+    motor_params.foc.id_target = 0.0f;   // surface-magnet rotor: no reluctance to exploit
+    // Cross-coupling and back-EMF feed-forward stays off for bring-up. A wrong
+    // feed-forward is harder to diagnose than none; enable it once the plain
+    // loops are known good.
+    motor_params.foc.use_decoupling = false;
+    motor_params.foc.l_phase_h = BLDC_L_PHASE_H;
+    // ke is in V.s/rad_e, which is exactly the flux linkage the q-axis
+    // feed-forward needs.
+    motor_params.foc.flux_linkage_wb = BLDC_KE_V_S_PER_RAD_E;
+    motor_params.foc.anti_windup_kb = 1.0f;
+
+    // d/q current regulators. Same motor model and same target bandwidth as the
+    // six-step loop, but the gains differ because the FOC regulators see one
+    // phase rather than two in series and output volts rather than duty.
+    {
+        libecu::CurrentLoopModel floop;
+        floop.l_phase_h    = BLDC_L_PHASE_H;
+        floop.r_phase_ohm  = BLDC_R_PHASE_OHM;
+        floop.bus_voltage  = BLDC_NOMINAL_VBUS;
+        floop.bandwidth_hz = BLDC_ILOOP_BW_HZ;
+        motor_params.foc_current_regulator = libecu::tuneFocCurrentPi(floop);
+    }
+
     // Hall health thresholds, sized from a measurement on this hardware
     // (AT+HSTATUS with the detectors disabled, swept 2-9 RPS):
     //
@@ -332,8 +368,7 @@ int main(void)
     hall_params.require_drive_active   = true;
 
     motor_controller = new libecu::BldcController(
-        pwm_driver, hall_sensor, *commutation_controller,
-        motor_params, &adc_driver);
+        pwm_driver, hall_sensor, motor_params, &adc_driver);
 
     motor_controller->setHallMonitorParams(hall_params);
 

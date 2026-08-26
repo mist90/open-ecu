@@ -39,7 +39,9 @@ The firmware uses a layered architecture separating platform-independent control
 
 Located in `libecu/src/` and `libecu/include/`:
 
-- **CommutationController**: 6-step trapezoidal commutation with Hall sensor feedback
+- **SixStepAlgorithm**: 6-step trapezoidal commutation with Hall sensor feedback and an inner current loop
+- **FocAlgorithm**: Field-oriented control with space-vector modulation (SVPWM)
+- **MotorAlgorithm**: Common interface the two above implement; selected at runtime with `AT+ALGO` (FOC is the default)
 - **PidController**: Digital PID controller with anti-windup and derivative filtering
 - **SafetyMonitor**: Real-time fault detection (overcurrent, overtemperature, undervoltage)
 - **BldcController**: High-level motor controller integrating all subsystems
@@ -107,14 +109,14 @@ sudo apt install gcc-arm-none-eabi cmake stlink-tools openocd
 
 **Option 1: Multi-platform build script (Recommended)**
 ```bash
-# Build for default platform (STM32G431)
+# Build for default platform (STM32G431) - Release (-Os), the default
 ./build.sh
 
 # Build for specific platform
 ./build.sh --platform STM32G431
 
-# Release build (optimized for size)
-./build.sh --release
+# Debug build (-O0); see the ISR budget note in docs/FOC_HANDOFF.md
+./build.sh --debug
 
 # Clean build
 ./build.sh --clean
@@ -122,14 +124,14 @@ sudo apt install gcc-arm-none-eabi cmake stlink-tools openocd
 # Verbose output
 ./build.sh --verbose
 
-# Enable PWM ISR debug capture
-./build.sh --debug-pwm
+# Disable PWM ISR debug capture
+./build.sh --nodebug-pwm
 ```
 
 **Option 2: Platform-specific build**
 ```bash
 cd STM32G431
-./build.sh --release
+./build.sh
 ```
 
 **Option 3: STM32CubeIDE**
@@ -145,14 +147,14 @@ Build outputs:
 
 **Multi-platform flash script:**
 ```bash
-# Flash default platform (STM32G431) debug build
+# Flash default platform (STM32G431) release build
 ./flash.sh
 
 # Flash with specific method
 ./flash.sh --method openocd   # or stlink, dfu
 
-# Flash release build
-./flash.sh --release
+# Flash debug build
+./flash.sh --debug
 
 # Flash with verification
 ./flash.sh --verify
@@ -180,11 +182,12 @@ open-ecu/
 ├── libecu/                    # Platform-independent motor control library
 │   ├── include/
 │   │   ├── interfaces/        # Hardware abstraction interfaces
-│   │   ├── algorithms/        # Control algorithms (commutation, PID)
+│   │   ├── algorithms/        # Control algorithms (six-step, FOC, PID, PLL)
 │   │   └── safety/            # Safety monitoring
 │   ├── src/                   # Core algorithm implementations
 │   │   ├── bldc_controller.cpp
-│   │   ├── commutation_controller.cpp
+│   │   ├── six_step_algorithm.cpp
+│   │   ├── foc_algorithm.cpp
 │   │   └── pid_controller.cpp
 │   ├── hal/                   # Platform-specific HAL implementations
 │   │   └── stm32g4/           # STM32G4 drivers

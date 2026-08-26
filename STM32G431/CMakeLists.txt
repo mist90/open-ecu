@@ -129,7 +129,8 @@ file(GLOB STARTUP_FILE
 # libecu library sources (using platform-specific hal directory)
 file(GLOB LIBECU_CORE_SOURCES
     "../libecu/src/bldc_controller.cpp"
-    "../libecu/src/commutation_controller.cpp"
+    "../libecu/src/six_step_algorithm.cpp"
+    "../libecu/src/foc_algorithm.cpp"
     "../libecu/src/pid_controller.cpp"
     "../libecu/src/motor_pll.cpp"
     "../libecu/src/hall_monitor.cpp"

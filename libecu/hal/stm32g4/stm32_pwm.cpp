@@ -224,9 +224,13 @@ constexpr float clampDuty(float d) noexcept {
 } // namespace
 
 void Stm32Pwm::setChannelState(PwmChannel channel, PwmState state) {
-    if (!enabled_)
-        return;
-
+    // Deliberately NOT gated on enabled_. It used to be, and that made
+    // setNeutral() a no-op at boot: the OFF states were dropped, so CCER kept
+    // the channel-enable bits HAL_TIM_PWM_Start() had set, and the bridge was
+    // armed the instant anything configured the pins as alternate function.
+    // The register writes below are preloaded (CCPC) and reach no pin while the
+    // GPIOs are still inputs, so applying them early is free; what it buys is
+    // that "off" is recorded in the hardware rather than merely intended.
     TIM_HandleTypeDef* tim_handle = static_cast<TIM_HandleTypeDef*>(htim_);
     TIM_TypeDef* tim_instance = (TIM_TypeDef*)tim_handle->Instance;
 

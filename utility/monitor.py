@@ -251,21 +251,26 @@ class CurrentController(QWidget):
 
 class PidTuningWidget(QWidget):
 
-    def __init__(self, label: str, at_command: str, write_callback):
+    def __init__(self, label: str, at_command: str, write_callback,
+                 fields: tuple = ("Kp", "Ki", "Kd"), max_value: float = 100.0):
         super().__init__()
         self._write = write_callback
         self._at_command = at_command
-        self._init_ui(label)
+        # AT+FPID takes only kp,ki, and its gains are in volts per amp - ki is
+        # around 2067 on MOTOR_1, which does not fit the 0..100 range the
+        # duty-output loops use. Hence both being configurable.
+        self._fields = fields
+        self._init_ui(label, max_value)
 
-    def _init_ui(self, label: str):
+    def _init_ui(self, label: str, max_value: float):
         group = QGroupBox(label)
         row = QHBoxLayout(group)
 
-        for name in ("Kp", "Ki", "Kd"):
+        for name in self._fields:
             row.addWidget(QLabel(f"{name}:"))
             spin = QDoubleSpinBox()
             spin.setDecimals(4)
-            spin.setRange(0.0, 100.0)
+            spin.setRange(0.0, max_value)
             spin.setSingleStep(0.001)
             spin.setMinimumWidth(80)
             setattr(self, f"spin_{name.lower()}", spin)
@@ -281,16 +286,16 @@ class PidTuningWidget(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(group)
 
-    def set_values(self, kp: float, ki: float, kd: float):
+    def set_values(self, kp: float, ki: float, kd: float = 0.0):
         self.spin_kp.setValue(kp)
         self.spin_ki.setValue(ki)
-        self.spin_kd.setValue(kd)
+        if hasattr(self, "spin_kd"):
+            self.spin_kd.setValue(kd)
 
     def _on_apply(self):
-        kp = self.spin_kp.value()
-        ki = self.spin_ki.value()
-        kd = self.spin_kd.value()
-        cmd = format_at_command(f"{self._at_command}={kp:.4f},{ki:.4f},{kd:.4f}")
+        vals = [getattr(self, f"spin_{n.lower()}").value() for n in self._fields]
+        args = ",".join(f"{v:.4f}" for v in vals)
+        cmd = format_at_command(f"{self._at_command}={args}")
         self._write(cmd.encode("ascii"))
 
 
@@ -312,6 +317,18 @@ class ControlPanel(QWidget):
 
         self.current_ctrl = CurrentController(self._write)
         layout.addWidget(self.current_ctrl)
+
+        # Electrical algorithm selector (AT+ALGO). Orthogonal to control mode:
+        # this picks how the bridge is driven, the modes below pick what is
+        # being regulated.
+        algo_layout = QHBoxLayout()
+        algo_layout.addWidget(QLabel("Algorithm:"))
+        self.algorithm_combo = QComboBox()
+        self.algorithm_combo.addItems(["6-STEP", "FOC (SVPWM)"])
+        self.algorithm_combo.setCurrentIndex(1)  # FOC is the firmware default
+        self.algorithm_combo.currentIndexChanged.connect(self._on_algorithm_changed)
+        algo_layout.addWidget(self.algorithm_combo)
+        layout.addLayout(algo_layout)
 
         # Control mode selector
         ctrl_mode_layout = QHBoxLayout()
@@ -336,18 +353,31 @@ class ControlPanel(QWidget):
         self.spid_widget = PidTuningWidget("Speed PID (AT+SPID)", "AT+SPID", self._write)
         layout.addWidget(self.spid_widget)
 
-        self.cpid_widget = PidTuningWidget("Current PID (AT+CPID)", "AT+CPID", self._write)
+        # One current-loop box per algorithm, and only the active one is shown.
+        # They are not interchangeable: CPID outputs duty and sees two phases in
+        # series, FPID outputs volts and sees one, so on MOTOR_1 the gains are
+        # 0.141/132 and 2.20/2067 respectively. Showing both at once invites
+        # someone to type one set into the other.
+        self.cpid_widget = PidTuningWidget("Current PID (AT+CPID, 6-step)", "AT+CPID", self._write)
         layout.addWidget(self.cpid_widget)
+
+        self.fpid_widget = PidTuningWidget("FOC d/q Current PI (AT+FPID, V/A)", "AT+FPID",
+                                           self._write, fields=("Kp", "Ki"),
+                                           max_value=1_000_000.0)
+        layout.addWidget(self.fpid_widget)
 
         self.group = group
         self.setLayout(layout)
+        self._update_algorithm_widgets()
         self._update_enabled_states()
 
     def set_enabled(self, enabled: bool):
+        self.algorithm_combo.setEnabled(enabled)
         self.control_mode_combo.setEnabled(enabled)
         self.drive_mode_combo.setEnabled(enabled)
         self.spid_widget.setEnabled(enabled)
         self.cpid_widget.setEnabled(enabled)
+        self.fpid_widget.setEnabled(enabled)
         self._update_enabled_states()
 
     def set_max_speed(self, max_rps: float):
@@ -365,6 +395,27 @@ class ControlPanel(QWidget):
         self._write(cmd.encode("ascii"))
         self._update_enabled_states()
         self._query_pid_params()
+
+    def _on_algorithm_changed(self, index: int):
+        if self._suppress_mode_signal:
+            return
+        self._write(format_at_command(f"AT+ALGO={index}").encode("ascii"))
+        self._update_algorithm_widgets()
+        self._query_pid_params()
+
+    def _update_algorithm_widgets(self):
+        foc = self.algorithm_combo.currentIndex() == 1
+        self.cpid_widget.setVisible(not foc)
+        self.fpid_widget.setVisible(foc)
+
+    def _set_algorithm_from_firmware(self, index: int):
+        self._suppress_mode_signal = True
+        self.algorithm_combo.setCurrentIndex(index)
+        self._update_algorithm_widgets()
+        self._suppress_mode_signal = False
+
+    def _set_fpid_from_firmware(self, kp: float, ki: float):
+        self.fpid_widget.set_values(kp, ki)
 
     def _on_drive_mode_changed(self, index: int):
         if self._suppress_mode_signal:
@@ -388,6 +439,7 @@ class ControlPanel(QWidget):
     def _query_pid_params(self):
         self._write(format_at_command("AT+SPID?").encode("ascii"))
         self._write(format_at_command("AT+CPID?").encode("ascii"))
+        self._write(format_at_command("AT+FPID?").encode("ascii"))
 
     def _set_control_mode_from_firmware(self, index: int):
         self._suppress_mode_signal = True
@@ -625,9 +677,10 @@ class ContinuousTab(QWidget):
 class CurrentWaveformTab(QWidget):
     """Captures +OSC bursts from AT oscilloscope output."""
 
+    # (index, meas_mA, tgt_mA, duty%, position, id_mA, iq_mA, angle_deg_e)
     def __init__(self, write_callback=None):
         super().__init__()
-        self._osc_samples: list[tuple[int, int, int, int, int]] = []
+        self._osc_samples: list[tuple[int, int, int, int, int, int, int, int]] = []
         self._osc_active = False
         self._write = write_callback
         self._init_ui()
@@ -639,29 +692,60 @@ class CurrentWaveformTab(QWidget):
         self.btn_capture = QPushButton("Start OSC")
         self.btn_capture.clicked.connect(self._toggle_capture)
         ctrl.addWidget(self.btn_capture)
-        ctrl.addWidget(QLabel("Oscilloscope burst from +OSC stream"))
+        ctrl.addWidget(QLabel("Oscilloscope burst from +OSC stream (20 kHz)"))
         ctrl.addStretch()
         layout.addLayout(ctrl)
 
+        scroll = QScrollArea()
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setWidgetResizable(True)
+        container = QWidget()
+        plots = QVBoxLayout(container)
+
+        # All four currents share one plot: they are the same quantity in
+        # amperes, and the whole point of looking at Id/Iq next to the measured
+        # current is comparing their scale and ripple directly. Id and Iq are 0
+        # in six-step mode, which is itself informative.
         self.plot_currents = pg.PlotWidget()
-        _style_plot(self.plot_currents, "Current", bottom_label="Sample Index")
+        _style_plot(self.plot_currents, "Currents (A)", bottom_label="Sample Index")
         self.plot_currents.enableAutoRange(x=False)
+        self.plot_currents.setLabel("left", "Current (A)")
         self.curve_meas_cur = self.plot_currents.plot(name="measured", pen=pg.mkPen("#00ffff", width=2))
         self.curve_tgt_cur = self.plot_currents.plot(name="target", pen=pg.mkPen("#aa00ff", width=2))
-        layout.addWidget(self.plot_currents, stretch=2)
+        self.curve_id = self.plot_currents.plot(name="Id", pen=pg.mkPen("#ffaa00", width=2))
+        self.curve_iq = self.plot_currents.plot(name="Iq", pen=pg.mkPen("#44ff44", width=2))
+        self.plot_currents.setMinimumHeight(300)
+        plots.addWidget(self.plot_currents)
+
+        # Electrical angle gets its own plot - it is degrees, not amps, and it
+        # sawtooths 0..360 which would flatten everything else if shared.
+        self.plot_angle = pg.PlotWidget()
+        _style_plot(self.plot_angle, "Electrical Angle", bottom_label="Sample Index")
+        self.plot_angle.enableAutoRange(x=False, y=False)
+        self.plot_angle.setYRange(0, 360)
+        self.plot_angle.setLabel("left", "angle_e (deg)")
+        self.curve_angle = self.plot_angle.plot(name="angle_e", pen=pg.mkPen("#ff8800", width=2))
+        self.plot_angle.setMinimumHeight(220)
+        plots.addWidget(self.plot_angle)
 
         self.plot_duty = pg.PlotWidget()
         _style_plot(self.plot_duty, "Duty Cycle", bottom_label="Sample Index")
         self.plot_duty.enableAutoRange(x=False, y=False)
         self.curve_duty = self.plot_duty.plot(name="duty_cycle", pen=pg.mkPen("#ffff00", width=2))
-        layout.addWidget(self.plot_duty, stretch=1)
+        self.plot_duty.setMinimumHeight(180)
+        plots.addWidget(self.plot_duty)
 
         self.plot_position = pg.PlotWidget()
-        _style_plot(self.plot_position, "Position", bottom_label="Sample Index")
+        _style_plot(self.plot_position, "Hall Position", bottom_label="Sample Index")
         self.plot_position.enableAutoRange(x=False, y=False)
         self.plot_position.setYRange(0, 5)
-        self.curve_position = self.plot_position.plot(name="position", pen=pg.mkPen("#44ff44", width=2))
-        layout.addWidget(self.plot_position, stretch=1)
+        self.curve_position = self.plot_position.plot(name="position", pen=pg.mkPen("#4a9eff", width=2))
+        self.plot_position.setMinimumHeight(180)
+        plots.addWidget(self.plot_position)
+
+        scroll.setWidget(container)
+        layout.addWidget(scroll, stretch=1)
 
         self.label_status = QLabel("Waiting for +OSC burst...")
         self.label_status.setStyleSheet("color: #888;")
@@ -687,14 +771,16 @@ class CurrentWaveformTab(QWidget):
 
     def reset(self):
         self._osc_samples.clear()
-        self.curve_meas_cur.setData([], [])
-        self.curve_tgt_cur.setData([], [])
-        self.curve_duty.setData([], [])
-        self.curve_position.setData([], [])
+        for curve in (self.curve_meas_cur, self.curve_tgt_cur, self.curve_id,
+                      self.curve_iq, self.curve_angle, self.curve_duty,
+                      self.curve_position):
+            curve.setData([], [])
         self.label_status.setText("Waiting for +OSC burst...")
 
-    def add_data(self, sample_idx: int, meas_cur: int, tgt_cur: int, duty: int, position: int):
-        self._osc_samples.append((sample_idx, meas_cur, tgt_cur, duty, position))
+    def add_data(self, sample_idx: int, meas_cur: int, tgt_cur: int, duty: int,
+                 position: int, i_d: int = 0, i_q: int = 0, angle_e: int = 0):
+        self._osc_samples.append((sample_idx, meas_cur, tgt_cur, duty, position,
+                                  i_d, i_q, angle_e))
         if len(self._osc_samples) > OSC_BUFFER_SIZE + 64:
             self._osc_samples = self._osc_samples[-OSC_BUFFER_SIZE:]
 
@@ -710,17 +796,33 @@ class CurrentWaveformTab(QWidget):
         tgt_cur = np.array([s[2] / 1000.0 for s in self._osc_samples], dtype=np.float64)
         duty = np.array([s[3] / 100.0 for s in self._osc_samples], dtype=np.float64)
         position = np.array([s[4] for s in self._osc_samples], dtype=np.float64)
+        i_d = np.array([s[5] / 1000.0 for s in self._osc_samples], dtype=np.float64)
+        i_q = np.array([s[6] / 1000.0 for s in self._osc_samples], dtype=np.float64)
+        angle_e = np.array([s[7] for s in self._osc_samples], dtype=np.float64)
 
         self.curve_meas_cur.setData(x, meas_cur)
         self.curve_tgt_cur.setData(x, tgt_cur)
+        self.curve_id.setData(x, i_d)
+        self.curve_iq.setData(x, i_q)
         self.curve_duty.setData(x, duty)
         self.curve_position.setData(x, position)
+        self.curve_angle.setData(x, angle_e)
 
         x_range = (x[0], x[-1] + 10)
-        self.plot_currents.setXRange(*x_range)
-        self.plot_duty.setXRange(*x_range)
-        self.plot_position.setXRange(*x_range)
-        self.label_status.setText(f"OSC burst: {n} samples")
+        for plot in (self.plot_currents, self.plot_angle, self.plot_duty,
+                     self.plot_position):
+            plot.setXRange(*x_range)
+
+        # Ripple is the number worth reading off this view, so put it in the
+        # status line rather than making people eyeball it.
+        sd = float(np.std(meas_cur))
+        extra = ""
+        if np.any(i_q != 0.0):
+            extra = (f" | Id {i_d.mean():+.3f} A  Iq {i_q.mean():+.3f} A"
+                     f" (sd {float(np.std(i_q)):.4f})")
+        self.label_status.setText(
+            f"OSC burst: {n} samples | measured {meas_cur.mean():+.3f} A "
+            f"sd {sd:.4f}{extra}")
 
     def add_line(self, line: str):
         if line == "":
@@ -730,16 +832,15 @@ class CurrentWaveformTab(QWidget):
         if line.startswith("+OSC:"):
             rest = line[5:]
             parts = rest.split(",")
+            # 5 fields is pre-FOC firmware; 8 adds Id, Iq and the electrical
+            # angle. Accept either so an older board still plots.
             if len(parts) >= 5:
                 try:
-                    idx = int(parts[0])
-                    meas_cur = int(parts[1])
-                    tgt_cur = int(parts[2])
-                    duty = int(parts[3])
-                    position = int(parts[4])
-                    self.add_data(idx, meas_cur, tgt_cur, duty, position)
+                    vals = [int(p) for p in parts[:8]]
                 except ValueError:
-                    pass
+                    return
+                vals += [0] * (8 - len(vals))
+                self.add_data(*vals)
 
 
 class ATConsoleTab(QWidget):
@@ -1016,6 +1117,8 @@ class MonitorWindow(QMainWindow):
         self._send_data(format_at_command("AT+SPD?").encode("ascii"))
         self._send_data(format_at_command("AT+SPID?").encode("ascii"))
         self._send_data(format_at_command("AT+CPID?").encode("ascii"))
+        self._send_data(format_at_command("AT+ALGO?").encode("ascii"))
+        self._send_data(format_at_command("AT+FPID?").encode("ascii"))
 
     def _stop(self):
         if self.worker is not None:
@@ -1073,6 +1176,10 @@ class MonitorWindow(QMainWindow):
             self._parse_pid_response(line, "+SPID:", self._apply_spid)
         elif line.startswith("+CPID:"):
             self._parse_pid_response(line, "+CPID:", self._apply_cpid)
+        elif line.startswith("+FPID:"):
+            self._parse_pid_response(line, "+FPID:", self._apply_fpid)
+        elif line.startswith("+ALGO:"):
+            self._handle_algo(line)
 
     def _parse_float_response(self, line: str, prefix: str, apply) -> None:
         try:
@@ -1097,10 +1204,14 @@ class MonitorWindow(QMainWindow):
             control_mode = int(parts[0])
             target_speed = float(parts[2])
             target_current = float(parts[3]) if len(parts) > 3 else 0.0
+            # Field 6 (algorithm) exists only on FOC-era firmware.
+            algo = int(parts[6]) if len(parts) > 6 else None
             if self.control_panel is not None:
                 self.control_panel._set_control_mode_from_firmware(control_mode)
                 self.control_panel._set_target_speed_from_firmware(target_speed)
                 self.control_panel._set_target_current_from_firmware(target_current)
+                if algo in (0, 1):
+                    self.control_panel._set_algorithm_from_firmware(algo)
         except (ValueError, IndexError):
             pass
 
@@ -1134,6 +1245,18 @@ class MonitorWindow(QMainWindow):
     def _apply_cpid(self, kp: float, ki: float, kd: float) -> None:
         if self.control_panel is not None:
             self.control_panel._set_cpid_from_firmware(kp, ki, kd)
+
+    def _apply_fpid(self, kp: float, ki: float, kd: float) -> None:
+        if self.control_panel is not None:
+            self.control_panel._set_fpid_from_firmware(kp, ki)
+
+    def _handle_algo(self, line: str) -> None:
+        try:
+            val = int(line[len("+ALGO:"):])
+        except ValueError:
+            return
+        if self.control_panel is not None and val in (0, 1):
+            self.control_panel._set_algorithm_from_firmware(val)
 
     def _parse_maxvals(self, line: str) -> None:
         """Parse +MAXVALS:max_spd,min_cur,max_cur,max_volt,max_duty response."""

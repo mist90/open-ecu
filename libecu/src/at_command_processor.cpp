@@ -167,11 +167,15 @@ namespace {
 /** Command IDs for AT command dispatch */
 enum class CommandId : uint8_t {
     Unknown,
-    Spd, Cur, Dut, Mode, EMode, DMode, Spid, Cpid, PllId, Pll, HStatus, HClear, Ver, Status, Tm, Osc, Maxvals
+    Spd, Cur, Dut, Mode, EMode, DMode, Spid, Cpid, PllId, Pll, HStatus, HClear, Ver, Status, Tm, Osc, Maxvals,
+    Algo, Fpid, Fang
 };
 
 CommandId matchCommand(const char* cmd) noexcept {
     if (std::strncmp(cmd, "MAXVALS", 7) == 0) return CommandId::Maxvals;
+    if (std::strncmp(cmd, "ALGO", 4) == 0) return CommandId::Algo;
+    if (std::strncmp(cmd, "FPID", 4) == 0) return CommandId::Fpid;
+    if (std::strncmp(cmd, "FANG", 4) == 0) return CommandId::Fang;
     if (std::strncmp(cmd, "DMODE", 5) == 0) return CommandId::DMode;
     if (std::strncmp(cmd, "EMODE", 5) == 0) return CommandId::EMode;
     if (std::strncmp(cmd, "HSTATUS", 7) == 0) return CommandId::HStatus;
@@ -340,6 +344,61 @@ void AtCommandProcessor::processCommand() noexcept {
         break;
     }
 
+    case CommandId::Algo: {
+        if (query) {
+            sendIntResponse("ALGO", static_cast<int>(controller_->getAlgorithm()));
+        } else {
+            int val = parseIntParam(valuePtr);
+            if (val < 0 || val > 1) {
+                sendError();
+                return;
+            }
+            controller_->setAlgorithm(static_cast<DriveAlgorithm>(val));
+            sendOk();
+        }
+        break;
+    }
+
+    case CommandId::Fpid: {
+        // FOC d/q current regulator, in volts per amp - not interchangeable
+        // with CPID, which outputs duty. See tuneFocCurrentPi().
+        if (query) {
+            float kp, ki;
+            controller_->getFocCurrentPi(kp, ki);
+            char buf[64];
+            int len = std::snprintf(buf, sizeof(buf), "+FPID:%.4f,%.4f\r\n", kp, ki);
+            if (len > 0) write(buf, static_cast<std::size_t>(len));
+            sendOk();
+        } else {
+            if (!valuePtr) { sendError(); return; }
+            float kp = std::strtof(valuePtr, nullptr);
+            float ki = 0.0f;
+            const char* comma = std::strchr(valuePtr, ',');
+            if (comma) ki = std::strtof(comma + 1, nullptr);
+            controller_->setFocCurrentPi(kp, ki);
+            sendOk();
+        }
+        break;
+    }
+
+    case CommandId::Fang: {
+        // Electrical angle offset between the PLL step angle and the rotor d
+        // axis, in electrical degrees. Expect to trim this on the bench; see
+        // foc_algorithm.hpp for where the -60 default comes from.
+        if (query) {
+            sendFloatResponse("FANG", controller_->getFocAngleOffsetDeg());
+        } else {
+            float val = parseFloatParam(valuePtr);
+            if (val < -360.0f || val > 360.0f) {
+                sendError();
+                return;
+            }
+            controller_->setFocAngleOffsetDeg(val);
+            sendOk();
+        }
+        break;
+    }
+
     case CommandId::DMode: {
         if (query) {
             sendIntResponse("DMODE", static_cast<int>(controller_->getDriveMode()));
@@ -449,15 +508,24 @@ void AtCommandProcessor::processCommand() noexcept {
 
     case CommandId::Status: {
         MotorStatus status = controller_->getStatus();
-        char buf[128];
+        // Algorithm and the d/q pair are appended rather than woven in, so a
+        // consumer that only knows the original six fields still parses. This
+        // is a one-shot query, not a stream - +TM is deliberately left alone,
+        // because at 100 Hz it aliases everything FOC does anyway and +OSC is
+        // the view that can actually see it.
+        char buf[160];
         int len = std::snprintf(buf, sizeof(buf),
-            "+STATUS:%d,%d,%.2f,%.2f,%.2f,%.2f\r\n",
+            "+STATUS:%d,%d,%.2f,%.2f,%.2f,%.2f,%d,%.2f,%.2f,%.1f\r\n",
             static_cast<int>(status.control_mode),
             static_cast<int>(status.electric_mode),
             status.current_speed_rps,
             status.target_current,
             status.duty_cycle,
-            status.bus_voltage);
+            status.bus_voltage,
+            static_cast<int>(status.algorithm),
+            status.i_d,
+            status.i_q,
+            status.angle_e_rad * (180.0f / FOC_PI));
         if (len > 0) write(buf, static_cast<std::size_t>(len));
         break;
     }
@@ -621,17 +689,41 @@ void AtCommandProcessor::stopOscilloscope() noexcept {
     osc_phase_ = OscPhase::Accumulating;
 }
 
-void AtCommandProcessor::captureOscSample(uint8_t duty_cycle, float target_current, float measured_current, uint8_t position) noexcept {
+namespace {
+
+/// Amperes to the int16 milliamp field, saturating rather than wrapping
+inline int16_t oscMilliamps(float amps) noexcept {
+    float ma = amps * 1000.0f;
+    if (ma > 32767.0f)  ma =  32767.0f;
+    if (ma < -32768.0f) ma = -32768.0f;
+    return static_cast<int16_t>(ma);
+}
+
+} // namespace
+
+void AtCommandProcessor::captureOscSample(const MotorStatus& status) noexcept {
     if (osc_phase_ != OscPhase::Accumulating)
         return;
 
     if (osc_write_index_ >= OSC_BUFFER_SIZE)
         return;
 
-    osc_buffer_[osc_write_index_].duty_cycle = duty_cycle;
-    osc_buffer_[osc_write_index_].target_current = target_current;
-    osc_buffer_[osc_write_index_].measured_current = measured_current;
-    osc_buffer_[osc_write_index_].position = position;
+    OscSample& sample = osc_buffer_[osc_write_index_];
+    sample.duty_cycle = static_cast<uint8_t>(status.duty_cycle * 100.0f);
+    sample.target_current_ma = oscMilliamps(status.target_current);
+    sample.measured_current_ma = oscMilliamps(status.measured_current);
+    sample.i_d_ma = oscMilliamps(status.i_d);
+    sample.i_q_ma = oscMilliamps(status.i_q);
+
+    // Electrical angle folded to one revolution and scaled to 16 bits, so the
+    // consumer divides by 65536 to get revolutions without ever seeing a wrap
+    // discontinuity that is not real.
+    float rev = status.angle_e_rad * (1.0f / FOC_TWO_PI);
+    rev -= static_cast<float>(static_cast<int32_t>(rev));
+    if (rev < 0.0f) rev += 1.0f;
+    sample.angle_e = static_cast<uint16_t>(rev * 65536.0f);
+
+    sample.position = status.measured_position;
 
     osc_write_index_++;
 
@@ -649,16 +741,22 @@ void AtCommandProcessor::processOscOutput() noexcept {
 
     const OscSample& sample = osc_buffer_[osc_read_index_];
 
-    int32_t meas_cur_int = static_cast<int32_t>(sample.measured_current * 1000.0f);
-    int32_t tgt_cur_int = static_cast<int32_t>(sample.target_current * 1000.0f);
+    // The first five fields are unchanged from before FOC existed, so an older
+    // consumer that splits on commas and takes what it knows still works; the
+    // three FOC fields are appended. Angle is in electrical degrees.
+    const int angle_deg_e = static_cast<int>(
+        (static_cast<float>(sample.angle_e) * (360.0f / 65536.0f)));
 
-    char out_buf[64];
-    int len = std::snprintf(out_buf, sizeof(out_buf), "+OSC:%d,%ld,%ld,%u,%u\r\n",
+    char out_buf[96];
+    int len = std::snprintf(out_buf, sizeof(out_buf), "+OSC:%d,%d,%d,%u,%u,%d,%d,%d\r\n",
         static_cast<int>(osc_sample_counter_),
-        static_cast<long>(meas_cur_int),
-        static_cast<long>(tgt_cur_int),
+        static_cast<int>(sample.measured_current_ma),
+        static_cast<int>(sample.target_current_ma),
         static_cast<unsigned>(sample.duty_cycle),
-        static_cast<unsigned>(sample.position));
+        static_cast<unsigned>(sample.position),
+        static_cast<int>(sample.i_d_ma),
+        static_cast<int>(sample.i_q_ma),
+        angle_deg_e);
 
     if (len > 0) {
         write(out_buf, static_cast<std::size_t>(len));

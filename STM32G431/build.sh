@@ -35,7 +35,13 @@ cmake --version | head -1
 echo
 
 # Parse command line arguments
-BUILD_TYPE="Debug"
+#
+# Release is the default. The current-loop ISR is the reason: at -O0 it measures
+# 30.2 us mean / 38.3 us max inside a 50 us period *before* FOC's transforms and
+# regulators are added, so a Debug build may simply not close the loop in time -
+# and the failure mode is a missed period, not an error message. -Os measures
+# 14.4 us. See docs/FOC_HANDOFF.md sections 1 and 8.4.
+BUILD_TYPE="Release"
 CLEAN_BUILD=false
 VERBOSE=false
 DEBUG_PWM_ISR=true
@@ -44,6 +50,10 @@ while [[ $# -gt 0 ]]; do
     case $1 in
         -r|--release)
             BUILD_TYPE="Release"
+            shift
+            ;;
+        -d|--debug)
+            BUILD_TYPE="Debug"
             shift
             ;;
         -c|--clean)
@@ -61,10 +71,11 @@ while [[ $# -gt 0 ]]; do
         -h|--help)
             echo "Usage: $0 [options]"
             echo "Options:"
-            echo "  -r, --release    Build in Release mode (default: Debug)"
+            echo "  -r, --release    Build in Release mode (default)"
+            echo "  -d, --debug      Build in Debug mode (-O0; see the ISR budget note)"
             echo "  -c, --clean      Clean build directory before building"
             echo "  -v, --verbose    Verbose build output"
-            echo "  --debug-pwm      Enable PWM ISR debug capture (~8KB RAM)"
+            echo "  --nodebug-pwm    Disable PWM ISR debug capture (default: enabled)"
             echo "  -h, --help       Show this help message"
             exit 0
             ;;

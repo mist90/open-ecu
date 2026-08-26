@@ -4,14 +4,14 @@
 - **Language**: Mixed C/C++ (C++17 for libecu, C for STM32 HAL)
 - **Target Platform**: STM32G431CBU (Cortex-M4, FPU, 128KB Flash, 32KB RAM)
 - **Build System**: CMake 3.16+ with ARM GCC toolchain
-- **Control Loop**: 1kHz speed control + 40kHz current loop (Hall sensors: async)
+- **Control Loop**: 100Hz speed control + 20kHz current loop (Hall sensors: async)
 - **Architecture**: Layered (libecu core → HAL → Application)
 - **Debug UART**: 115200 baud, PA2 (TX), PA3 (RX) — primary debug output
 - **IDE support**: CMake generates `STM32G431/build/compile_commands.json`
 
 ## MCU Constraints (CRITICAL)
 - **Flash (128KB)**: `-Os` in Release, HAL modules are filtered to essentials only (see `cmake/stm32g4-config.cmake`)
-- **RAM (32KB)**: `--debug-pwm` consumes ~8KB; use static allocation, no heap
+- **RAM (32KB)**: use static allocation, no heap. Current usage 15.3KB bss + 0.5KB data. (`ENABLE_DEBUG_PWM_ISR` is on by default but costs nothing today - no source references `DEBUG_PWM_ISR`.)
 - **FPU**: `fpv4-sp-d16` with hard float ABI; use `float` only, never `double`
 - **Linker script**: `STM32G431/STM32G431CBUX_FLASH.ld`
 - **Stack monitoring**: `-fstack-usage` enabled — check `.su` files in build output
@@ -20,14 +20,16 @@
 
 ### Multi-Platform Build (Recommended)
 ```bash
-# Build for default platform (STM32G431) - Debug
+# Build for default platform (STM32G431) - Release (-Os), the default
 ./build.sh
 
 # Build for specific platform
 ./build.sh --platform STM32G431
 
-# Release build (optimized for size with -Os)
-./build.sh --release
+# Debug build (-O0). NOTE: the 20 kHz current-loop ISR measures 30.2 us mean /
+# 38.3 us max at -O0 in a 50 us period *before* FOC's transforms and regulators,
+# so a Debug build may not close the loop. See docs/FOC_HANDOFF.md 1 and 8.4.
+./build.sh --debug
 
 # Clean build
 ./build.sh --clean
@@ -35,19 +37,19 @@
 # Verbose output
 ./build.sh --verbose
 
-# Enable PWM ISR debug capture (~8KB RAM)
-./build.sh --debug-pwm
+# Disable PWM ISR debug capture (it is ON by default)
+./build.sh --nodebug-pwm
 ```
 
 ### Platform-Specific Build (STM32G431)
 ```bash
 cd STM32G431
 
-# Debug build (default)
+# Release build (default)
 ./build.sh
 
-# Release build
-./build.sh --release
+# Debug build
+./build.sh --debug
 
 # Clean build
 ./build.sh --clean
@@ -55,8 +57,8 @@ cd STM32G431
 # Verbose output
 ./build.sh --verbose
 
-# Enable PWM ISR debug capture
-./build.sh --debug-pwm
+# Disable PWM ISR debug capture (it is ON by default)
+./build.sh --nodebug-pwm
 ```
 
 Build outputs:
@@ -82,14 +84,14 @@ make info
 
 ### Flashing Firmware
 ```bash
-# Flash default platform (STM32G431) debug build
+# Flash default platform (STM32G431) release build
 ./flash.sh
 
 # Flash with specific method (default: openocd; also: stlink, dfu)
 ./flash.sh --method openocd
 
-# Flash release build
-./flash.sh --release
+# Flash debug build
+./flash.sh --debug
 
 # Flash with verification
 ./flash.sh --verify
@@ -100,10 +102,17 @@ cd STM32G431
 ```
 
 ### Testing
-- **No automated unit tests** — `libecu/tests/` does not exist
-- **Python simulations** exist in `tests/` (`sim_current.py`, `sim_3phase_current.py`) — use numpy/matplotlib to model current dynamics, not firmware tests
-- Manual hardware testing required on b-g431b-esc1 board with BLDC motor
-- `make test-compile` in `libecu/` validates library builds only (not actual tests)
+- **Host unit tests** live in `tests/<name>/`, each with a `run.sh` that compiles
+  the libecu sources natively with g++ and runs them. No framework, no deps:
+  - `tests/test_foc/run.sh` — FOC maths and closed-loop behaviour against a
+    simulated PMSM (202 checks)
+  - `tests/test_hall_monitor/run.sh`
+  - `tests/test_motor_pll/run.sh` (also plots, needs numpy/matplotlib)
+- **Python simulations** in `tests/` (`sim_current.py`, `sim_3phase_current.py`) model current dynamics; they are not firmware tests
+- Hardware testing on the b-g431b-esc1 + BLDC rig via `utility/` scripts
+  (`pll_sweep.py`, `fang_sweep.py`, `capture_osc.py`). **Always leave the drive
+  in `AT+DMODE=2` with `AT+SPD=0`.**
+- `make test-compile` in `libecu/` validates library builds only
 
 ## Project Structure
 ```
@@ -111,7 +120,7 @@ open-ecu/
 ├── libecu/                    # Platform-independent motor control library
 │   ├── include/               # Public headers
 │   │   ├── interfaces/        # Hardware abstraction (PwmInterface, HallInterface)
-│   │   ├── algorithms/        # Control algorithms (PID, commutation)
+│   │   ├── algorithms/        # Control algorithms (six-step, FOC, PID, PLL)
 │   │   ├── safety/            # Safety monitoring
 │   │   └── platform/          # Platform utilities (critical_section.hpp)
 │   ├── src/                   # Core implementations
@@ -301,6 +310,6 @@ if (HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1) != HAL_OK) {
 ## Key Conventions
 - **HAL drivers**: All STM32 peripherals configured via HAL (not bare metal)
 - **Complementary PWM**: 3-phase inverter with dead-time (prevent shoot-through)
-- **6-step commutation**: Hall sensor-based trapezoidal control
+- **Electrical algorithms**: FOC with SVPWM (default) and 6-step trapezoidal, switchable at runtime with `AT+ALGO`
 - **Safety first**: Always implement overcurrent, overtemperature, undervoltage protection
 - **Modular design**: libecu core can be ported to other MCUs by implementing HAL interfaces

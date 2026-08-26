@@ -13,7 +13,9 @@
 #include "interfaces/pwm_interface.hpp"
 #include "interfaces/hall_interface.hpp"
 #include "interfaces/adc_interface.hpp"
-#include "algorithms/commutation_controller.hpp"
+#include "algorithms/motor_algorithm.hpp"
+#include "algorithms/six_step_algorithm.hpp"
+#include "algorithms/foc_algorithm.hpp"
 #include "algorithms/pid_controller.hpp"
 #include "algorithms/motor_pll.hpp"
 #include "algorithms/current_loop_tuning.hpp"
@@ -30,18 +32,26 @@ enum class ControlMode : uint8_t {
     CLOSED_LOOP_TORQUE = 2      ///< Closed loop torque control (fixed duty/current + Hall sensors)
 };
 
-/**
- * @brief Electric drive mode (electrical control strategy)
- */
-enum class ElectricMode : uint8_t {
-    VOLTAGE_MODE = 0,  ///< Direct voltage/duty cycle control
-    CURRENT_MODE = 1   ///< Current control with PI inner loop (20kHz)
-};
+// ElectricMode and DriveAlgorithm live in algorithms/motor_algorithm.hpp -
+// the algorithms themselves branch on them, and they would otherwise have to
+// include this header to see them.
 
 /**
  * @brief Motor control parameters
  */
 struct MotorControlParams {
+    /**
+     * @brief Number of motor poles
+     *
+     * There are `num_poles / 2` electrical revolutions per mechanical one and
+     * 6 commutation steps per electrical revolution, so the conversion the
+     * whole controller uses is `steps_per_mech_rev = num_poles * 3`. MOTOR_1
+     * has 40 poles, hence 120 steps per mechanical revolution, hence
+     * RPS = steps_per_second / 120.
+     *
+     * Moved here from CommutationController, which no longer exists.
+     */
+    uint8_t num_poles;
     float max_duty_cycle;     ///< Maximum duty cycle (0.0 to 1.0)
     float max_current;        ///< Maximum motor current (A)
     float min_current;        ///< Minimum negative current (A)
@@ -84,6 +94,26 @@ struct MotorControlParams {
     PidParameters pid_current_mode; ///< Velocity PID parameters for current mode (outputs current)
     PidParameters pid_current_regulator; ///< Current PID parameters for current mode (outputs duty cycle)
 
+    /**
+     * @brief Which electrical algorithm the drive starts in
+     *
+     * Orthogonal to ElectricMode - see the table in motor_algorithm.hpp.
+     * SIX_STEP is the default because it is the mode with years of bench time
+     * behind it; FOC is selected at runtime with AT+ALGO.
+     */
+    DriveAlgorithm algorithm;
+
+    /// @brief FOC modulation limits, angle offset and feed-forward configuration
+    FocParams foc;
+
+    /**
+     * @brief d/q current regulator gains for FOC (output in volts)
+     *
+     * Only kp and ki are used. These are NOT the same numbers as
+     * pid_current_regulator: that one outputs duty and sees two phases in
+     * series, this one outputs volts and sees one. Use tuneFocCurrentPi().
+     */
+    PidParameters foc_current_regulator;
 };
 
 /**
@@ -104,6 +134,19 @@ struct MotorStatus {
     bool is_running;          ///< Motor running status
     ControlMode control_mode;   ///< Current control mode (mechanical)
     ElectricMode electric_mode; ///< Current electric mode (electrical)
+
+    /// @name FOC state, zero while six-step is selected
+    ///@{
+    DriveAlgorithm algorithm; ///< Electrical algorithm currently running
+    float i_d;                ///< Measured d-axis current (A)
+    float i_q;                ///< Measured q-axis current (A)
+    float v_d;                ///< Applied d-axis voltage (V)
+    float v_q;                ///< Applied q-axis voltage (V)
+    float angle_e_rad;        ///< Electrical angle used by the algorithm (rad)
+    float duty_u;             ///< Phase U duty actually applied
+    float duty_v;             ///< Phase V duty actually applied
+    float duty_w;             ///< Phase W duty actually applied
+    ///@}
 };
 
 /**
@@ -115,14 +158,12 @@ public:
      * @brief Constructor
      * @param pwm_interface PWM interface
      * @param hall_interface Hall sensor interface
-     * @param commutation_controller Commutation controller
      * @param params Motor control parameters (includes PID parameters for both modes)
      * @param adc_interface ADC interface for current sensing (optional, nullptr for voltage mode only)
      */
     BldcController(
         PwmInterface& pwm_interface,
         HallInterface& hall_interface,
-        CommutationController& commutation_controller,
         const MotorControlParams& params,
         AdcInterface* adc_interface = nullptr
     ) noexcept;
@@ -170,6 +211,47 @@ public:
      * @param mode Electric mode
      */
     void setElectricMode(ElectricMode mode) noexcept;
+
+    /**
+     * @brief Select the electrical algorithm (six-step or FOC)
+     *
+     * Switching hands the bridge over: the outgoing algorithm's state is
+     * cleared and the incoming one's onEnter() runs, which is what puts the
+     * inverter into the switching configuration that algorithm assumes. Safe
+     * to call while running, but it is a discontinuity in the applied voltage
+     * - do it at standstill or in NEUTRAL unless you are deliberately testing
+     * the transition.
+     *
+     * @param algorithm SIX_STEP or FOC
+     */
+    void setAlgorithm(DriveAlgorithm algorithm) noexcept;
+
+    /// @brief Currently selected electrical algorithm
+    DriveAlgorithm getAlgorithm() const noexcept;
+
+    /**
+     * @brief Set the FOC d/q current regulator gains
+     * @param kp Proportional gain (V/A)
+     * @param ki Integral gain (V/A/s)
+     */
+    void setFocCurrentPi(float kp, float ki) noexcept;
+
+    /// @brief Get the FOC d/q current regulator gains
+    void getFocCurrentPi(float& kp, float& ki) const noexcept;
+
+    /**
+     * @brief Set the FOC electrical angle offset
+     *
+     * The offset between the PLL's Hall-derived step angle and the rotor d
+     * axis. Default is -60 electrical degrees; see the derivation in
+     * foc_algorithm.hpp. Expect to trim this on the bench.
+     *
+     * @param degrees_e Offset in electrical degrees
+     */
+    void setFocAngleOffsetDeg(float degrees_e) noexcept;
+
+    /// @brief Get the FOC electrical angle offset, in electrical degrees
+    float getFocAngleOffsetDeg() const noexcept;
 
     /**
      * @brief Set motor drive mode
@@ -287,18 +369,28 @@ public:
 
 
 private:
-    void moveNextPosition(uint8_t position) noexcept;
+    /// @brief The algorithm currently selected, never null
+    MotorAlgorithm& algorithm() noexcept;
+    const MotorAlgorithm& algorithm() const noexcept;
+
     // Component references
     PwmInterface& pwm_interface_;
     HallInterface& hall_interface_;
-    CommutationController& commutation_controller_;
     AdcInterface* adc_interface_;
 
     // Owned components
     HallMonitor hall_monitor_;
     MotorPLL motor_pll_;
     PidController pid_speed_controller_;     // Speed controller (outer loop)
-    PidController current_controller_;       // Current controller (inner loop)
+
+    // Electrical algorithms. Both are constructed and kept alive; only the one
+    // selected by algorithm_ is ticked. Keeping the unselected one around
+    // costs a few hundred bytes and makes switching back an O(1) operation
+    // with no allocation, which matters because A/B-ing FOC against six-step
+    // on the same run is the whole point of having both.
+    SixStepAlgorithm six_step_;
+    FocAlgorithm foc_;
+    DriveAlgorithm algorithm_;
 
     // Configuration
     MotorControlParams params_;
@@ -308,16 +400,8 @@ private:
     volatile DriveMode dmode_;
     bool initialized_;
 
-    // Position tracking for CURRENT_MODE (to detect commutation events)
-    volatile uint8_t prev_position_;         ///< Previous rotor position for change detection
-
     // Deferred Hall update (debounce via PWM ISR re-read)
     volatile bool hall_update_pending_;      ///< Set by Hall ISR, processed by PWM ISR
-
-    /// PWM cycles since the last commutation; gates the current-measurement
-    /// blanking window (see MotorControlParams::current_blanking_cycles).
-    /// Saturates rather than wrapping, so a long sector cannot re-enter blanking.
-    uint8_t cycles_since_commutation_;
 
     // Open-loop timing control
     uint8_t open_loop_step_;                 ///< Current step in open-loop mode (0-5)
@@ -325,6 +409,16 @@ private:
 
     // Control loop timing
     uint32_t last_pid_update_time_us_;       ///< Timestamp of last successful PID update
+
+    /**
+     * @brief Voltage-mode duty request, 0.0 to 1.0
+     *
+     * Kept separate from MotorStatus::duty_cycle, which is what the algorithm
+     * *reports*. The two agree in six-step voltage mode, but FOC reports a
+     * modulation index rather than the command it was given, so a single field
+     * serving as both would feed the report back in as the next command.
+     */
+    float duty_command_;
 
     // Target speed filtering state (LPF → slew rate limiter cascade)
     float filtered_target_speed_;            ///< LPF-filtered target speed
@@ -345,8 +439,6 @@ private:
      * @return Rate-limited target speed
      */
     float applyAccelerationLimit(float target_speed, float dt) noexcept;
-
-    float getCurrentFromActivePhase() noexcept;
 
     /**
      * @brief Calculate step interval from target speed for open-loop control

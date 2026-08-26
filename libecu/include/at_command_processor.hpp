@@ -94,12 +94,14 @@ public:
 
     /**
      * @brief Capture an oscilloscope sample
-     * @param duty_cycle Current duty cycle (0..100, pre-multiplied by 100)
-     * @param target_current Target current
-     * @param measured_current Measured current
-     * @param position Current commutation position (0-5)
+     *
+     * Called from the PWM ISR, so it must stay cheap: the conversion to the
+     * packed representation happens here rather than at output time, but it is
+     * only a handful of multiplies.
+     *
+     * @param status Motor status snapshot for this PWM cycle
      */
-    void captureOscSample(uint8_t duty_cycle, float target_current, float measured_current, uint8_t position) noexcept;
+    void captureOscSample(const MotorStatus& status) noexcept;
 
     /**
      * @brief Process oscilloscope output (send one sample per call)
@@ -222,11 +224,27 @@ private:
         Outputting     ///< Output drains buffer, capture blocked
     };
 
+    /**
+     * @brief One 20 kHz oscilloscope sample
+     *
+     * Packed into fixed point rather than floats, because the buffer is
+     * OSC_BUFFER_SIZE deep and the MCU has 32 KB of RAM in total. Carrying
+     * Id/Iq/angle as floats alongside the original two currents would have
+     * taken the buffer from 12 KB to 24 KB; as milliamps and a 16-bit angle it
+     * stays at 12 KB while carrying three more signals.
+     *
+     * int16 milliamps spans +-32.7 A, which comfortably covers the +-34 A the
+     * shunt/PGA chain can measure at all, so the packing loses nothing the
+     * hardware could have told us.
+     */
     struct OscSample {
-        float target_current;
-        float measured_current;
-        uint8_t duty_cycle;       ///< Duty cycle * 100 (0..100)
-        uint8_t position;
+        int16_t target_current_ma;   ///< Target current (mA)
+        int16_t measured_current_ma; ///< Measured current (mA)
+        int16_t i_d_ma;              ///< d-axis current (mA), FOC only
+        int16_t i_q_ma;              ///< q-axis current (mA), FOC only
+        uint16_t angle_e;            ///< Electrical angle, full scale = one electrical rev
+        uint8_t duty_cycle;          ///< Duty cycle * 100 (0..100)
+        uint8_t position;            ///< Commutation position (0-5)
     };
 
     OscSample osc_buffer_[OSC_BUFFER_SIZE];

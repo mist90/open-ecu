@@ -21,26 +21,25 @@ namespace libecu {
 BldcController::BldcController(
     PwmInterface& pwm_interface,
     HallInterface& hall_interface,
-    CommutationController& commutation_controller,
     const MotorControlParams& params,
     AdcInterface* adc_interface) noexcept
     : pwm_interface_(pwm_interface)
     , hall_interface_(hall_interface)
-    , commutation_controller_(commutation_controller)
     , adc_interface_(adc_interface)
     , hall_monitor_(pwm_interface_.getFrequency())
-    , motor_pll_(pwm_interface_.getFrequency(), params.max_speed_rps * commutation_controller.getNumPoles() * BLDC_NUM_PHASES, params.useInverseCommTable)
+    , motor_pll_(pwm_interface_.getFrequency(), params.max_speed_rps * params.num_poles * BLDC_NUM_PHASES, params.useInverseCommTable)
     , pid_speed_controller_()
-    , current_controller_()
+    , six_step_(pwm_interface)
+    , foc_(pwm_interface, pwm_interface.getFrequency())
+    , algorithm_(params.algorithm)
     , params_(params)
     , dmode_(DriveMode::NEUTRAL)
     , initialized_(false)
-    , prev_position_(0xFF)
     , hall_update_pending_(false)
-    , cycles_since_commutation_(255)
     , open_loop_step_(0)
     , open_loop_last_step_time_us_(0)
     , last_pid_update_time_us_(0)
+    , duty_command_(0.0f)
     , filtered_target_speed_(0.0f)
     , filtered_measured_speed_(0.0f)
     , filtered_measured_current_(0.0f)
@@ -55,12 +54,27 @@ BldcController::BldcController(
     status_.measured_current = 0.0f;
     status_.measured_current_filtered = 0.0f;
     status_.bus_voltage = 0.0f;
+    status_.pll_angle = 0.0f;
     status_.current_pid_saturation = 0;
     status_.target_position = 0xFF;
     status_.measured_position = 0xFF;
     status_.is_running = false;
     status_.control_mode = ControlMode::CLOSED_LOOP_VELOCITY;
     status_.electric_mode = ElectricMode::CURRENT_MODE;
+    status_.i_d = 0.0f;
+    status_.i_q = 0.0f;
+    status_.v_d = 0.0f;
+    status_.v_q = 0.0f;
+    status_.angle_e_rad = 0.0f;
+    status_.duty_u = 0.0f;
+    status_.duty_v = 0.0f;
+    status_.duty_w = 0.0f;
+
+    if (algorithm_ != DriveAlgorithm::FOC) {
+        algorithm_ = DriveAlgorithm::SIX_STEP;
+    }
+    status_.algorithm = algorithm_;
+
     // PID controller settings
     params_.pid_voltage_mode.sample_time_s = 1.0f / float(pwm_interface_.getFrequency());
     params_.pid_voltage_mode.min_output = 0.0f;
@@ -79,10 +93,46 @@ BldcController::BldcController(
         params_.pid_current_regulator.max_output = 1.0f;
     }
 
-    current_controller_.setParameters(params_.pid_current_regulator);
     pid_speed_controller_.setParameters(params_.pid_current_mode);
 
+    // Hand each algorithm its own configuration. Both are configured whether
+    // or not they are selected, so switching with AT+ALGO never lands on an
+    // algorithm running default gains.
+    SixStepParams six_step_params;
+    six_step_params.max_duty_cycle = params_.max_duty_cycle;
+    six_step_params.blanking_cycles = params_.current_blanking_cycles;
+    six_step_.setParams(six_step_params);
+    six_step_.setCurrentPi(params_.pid_current_regulator);
+
+    // MotorControlParams is a plain struct the caller fills field by field, so
+    // a field added later can easily arrive uninitialised from an older call
+    // site. These fall back rather than driving the bridge with garbage.
+    FocParams foc_params = params_.foc;
+    if (foc_params.max_duty_cycle <= 0.0f || foc_params.max_duty_cycle > 1.0f) {
+        foc_params.max_duty_cycle = params_.max_duty_cycle;
+    }
+    if (foc_params.max_modulation <= 0.0f || foc_params.max_modulation > 1.0f) {
+        foc_params.max_modulation = 0.95f;
+    }
+    params_.foc = foc_params;
+    foc_.setParams(foc_params);
+    foc_.setCurrentPiGains(params_.foc_current_regulator.kp, params_.foc_current_regulator.ki);
+
     motor_pll_.setUsePLL(true);
+}
+
+MotorAlgorithm& BldcController::algorithm() noexcept
+{
+    return (algorithm_ == DriveAlgorithm::FOC)
+         ? static_cast<MotorAlgorithm&>(foc_)
+         : static_cast<MotorAlgorithm&>(six_step_);
+}
+
+const MotorAlgorithm& BldcController::algorithm() const noexcept
+{
+    return (algorithm_ == DriveAlgorithm::FOC)
+         ? static_cast<const MotorAlgorithm&>(foc_)
+         : static_cast<const MotorAlgorithm&>(six_step_);
 }
 
 bool BldcController::initialize() noexcept
@@ -91,6 +141,8 @@ bool BldcController::initialize() noexcept
 
     // Reset PID controller
     pid_speed_controller_.reset();
+    six_step_.reset();
+    foc_.reset();
 
     initialized_ = true;
     return true;
@@ -103,7 +155,7 @@ void BldcController::update() noexcept
     // setpoint is always a magnitude (setTargetSpeed rejects negatives), so the
     // feedback must be a magnitude too.  Feeding the signed value made the error
     // term (target + |speed|) unable to reach zero, pinning the loop at max_current.
-    float speed_rps = std::abs(motor_pll_.getSpeedStepsSec()) / (commutation_controller_.getNumPoles() * BLDC_NUM_PHASES);
+    float speed_rps = std::abs(motor_pll_.getSpeedStepsSec()) / (params_.num_poles * BLDC_NUM_PHASES);
 
     float alpha = params_.measured_speed_lpf_alpha;
     if (alpha > 0.0f && alpha < 1.0f) {
@@ -166,10 +218,10 @@ void BldcController::update() noexcept
 
                 // Electric mode determines how to use PID output
                 if (status.electric_mode == ElectricMode::VOLTAGE_MODE) {
-                    // VOLTAGE_MODE: PID outputs duty cycle directly
+                    // VOLTAGE_MODE: PID outputs the duty command directly
                     {
                         CriticalSection cs;
-                        status_.duty_cycle = pid_output;
+                        duty_command_ = pid_output;
                     }
                 } else {
                     // CURRENT_MODE: PID outputs target current
@@ -211,7 +263,12 @@ void BldcController::setDutyCycle(float duty_cycle) noexcept
         return;
     if (duty_cycle < 0.0f)
         return;
-    status_.duty_cycle = std::max(0.0f, std::min(duty_cycle, params_.max_duty_cycle));
+    // duty_command_ is the request; status_.duty_cycle is what the algorithm
+    // reports back. They are the same number in six-step voltage mode but not
+    // in FOC, where the reported value is the modulation index of the applied
+    // voltage vector - feeding that back as the command would make it decay.
+    duty_command_ = std::max(0.0f, std::min(duty_cycle, params_.max_duty_cycle));
+    status_.duty_cycle = duty_command_;
 }
 
 void BldcController::setCurrent(float current_a) noexcept
@@ -250,6 +307,66 @@ void BldcController::setElectricMode(ElectricMode mode) noexcept
         pid_speed_controller_.setParameters(params_.pid_current_mode);
     }
     pid_speed_controller_.reset();
+
+    // The inner loop changes shape underneath the outer one; a stale
+    // integrator from the other mode is meaningless.
+    algorithm().reset();
+}
+
+void BldcController::setAlgorithm(DriveAlgorithm new_algorithm) noexcept
+{
+    CriticalSection cs;
+    if (algorithm_ == new_algorithm) {
+        return;
+    }
+
+    // Hand the bridge over. The outgoing algorithm's integrators are cleared
+    // so it cannot resume from a state that belonged to a different
+    // modulation scheme, and the incoming one establishes its switching
+    // configuration - six-step re-commutates from scratch, FOC puts all three
+    // phases in UP and raises its one and only COM event.
+    algorithm().reset();
+    algorithm_ = new_algorithm;
+    status_.algorithm = algorithm_;
+    algorithm().onEnter();
+
+    // The speed loop's anti-windup input came from the old inner loop.
+    status_.current_pid_saturation = 0;
+    pid_speed_controller_.reset();
+}
+
+DriveAlgorithm BldcController::getAlgorithm() const noexcept
+{
+    CriticalSection cs;
+    return algorithm_;
+}
+
+void BldcController::setFocCurrentPi(float kp, float ki) noexcept
+{
+    CriticalSection cs;
+    params_.foc_current_regulator.kp = kp;
+    params_.foc_current_regulator.ki = ki;
+    foc_.setCurrentPiGains(kp, ki);
+}
+
+void BldcController::getFocCurrentPi(float& kp, float& ki) const noexcept
+{
+    CriticalSection cs;
+    foc_.getCurrentPiGains(kp, ki);
+}
+
+void BldcController::setFocAngleOffsetDeg(float degrees_e) noexcept
+{
+    CriticalSection cs;
+    const float rad = degrees_e * (FOC_PI / 180.0f);
+    params_.foc.angle_offset_rad = rad;
+    foc_.setAngleOffsetRad(rad);
+}
+
+float BldcController::getFocAngleOffsetDeg() const noexcept
+{
+    CriticalSection cs;
+    return foc_.getAngleOffsetRad() * (180.0f / FOC_PI);
 }
 
 void BldcController::setDriveMode(DriveMode mode) noexcept
@@ -257,15 +374,23 @@ void BldcController::setDriveMode(DriveMode mode) noexcept
     CriticalSection cs;
     dmode_ = mode;
     if (dmode_ == DriveMode::NEUTRAL) {
+        // High-Z the bridge *before* releasing the pins, so the switches are
+        // commanded off rather than merely abandoned.
+        pwm_interface_.setNeutral();
         pwm_interface_.enable(false);
         status_.target_speed_rps = 0.0f;
         status_.duty_cycle = 0.0f;
+        duty_command_ = 0.0f;
         status_.target_current = 0.0f;
         pid_speed_controller_.reset();
-        current_controller_.reset();
+        algorithm().reset();
         filtered_measured_current_ = 0.0f;
     } else {
         pwm_interface_.enable(true);
+        // Must follow enable(): the PWM driver ignores channel-state writes
+        // while the outputs are off, so FOC's all-phases-UP configuration
+        // would be dropped if onEnter() ran first.
+        algorithm().onEnter();
     }
 }
 
@@ -281,12 +406,13 @@ void BldcController::setSpeedPid(float kp, float ki, float kd) noexcept
 
 void BldcController::setCurrentPid(float kp, float ki, float kd) noexcept
 {
-    PidParameters p = current_controller_.getParameters();
+    CriticalSection cs;
+    PidParameters p = params_.pid_current_regulator;
     p.kp = kp;
     p.ki = ki;
     p.kd = kd;
-    current_controller_.setParameters(p);
-    current_controller_.reset();
+    params_.pid_current_regulator = p;
+    six_step_.setCurrentPi(p);
 }
 
 HallMonitor::Info BldcController::getHallInfo() const noexcept {
@@ -329,7 +455,7 @@ void BldcController::getSpeedPidGains(float& kp, float& ki, float& kd) const noe
 
 void BldcController::getCurrentPidGains(float& kp, float& ki, float& kd) const noexcept {
     CriticalSection cs;
-    const PidParameters& p = current_controller_.getParameters();
+    const PidParameters& p = six_step_.getCurrentPi();
     kp = p.kp;
     ki = p.ki;
     kd = p.kd;
@@ -343,13 +469,33 @@ void BldcController::getPllBaseGains(float& kp, float& ki) const noexcept {
 void BldcController::start() noexcept
 {
     status_.is_running = true;
-    pwm_interface_.enable(true);
 
     CriticalSection cs;
     open_loop_last_step_time_us_ = time_us();
-    uint8_t current_hall = commutation_controller_.getCurrentPosition();
+    uint8_t current_hall = hall_interface_.getPosition();
     status_.measured_position = current_hall;
     motor_pll_.updateHall(current_hall);
+
+    // The inverter follows the *drive mode*, not the run flag.
+    //
+    // This used to call enable(true) unconditionally. dmode_ is NEUTRAL at
+    // construction and gets there through the initialiser list, never through
+    // setDriveMode(), so nothing had ever called enable(false) - which left all
+    // six switches live from boot while the drive mode reported NEUTRAL. The
+    // only way to silence it was to cycle the mode to something non-NEUTRAL and
+    // back, because setDriveMode() is the sole caller of enable(false).
+    //
+    // Latent in six-step, where CCR=0 leaves the low side statically on: a DC
+    // short across the windings, wrong but inaudible. FOC made it obvious -
+    // onEnter() puts all three phases at 50 % duty, so the bridge modulates at
+    // 20 kHz and can be heard.
+    if (dmode_ == DriveMode::NEUTRAL) {
+        pwm_interface_.enable(false);
+    } else {
+        pwm_interface_.enable(true);
+        // After enable(), for the reason given in setDriveMode()
+        algorithm().onEnter();
+    }
 
     // Reset PID timing and target speed filters
     last_pid_update_time_us_ = 0;
@@ -363,8 +509,14 @@ void BldcController::stop() noexcept
     CriticalSection cs;
     status_.is_running = false;
     status_.duty_cycle = 0.0f;
+    duty_command_ = 0.0f;
+    // Zero the torque command too. The PWM ISR keeps running after stop() and
+    // recomputes the duty from the current loop every cycle, so clearing only
+    // the duty left the drive producing exactly as much torque as before.
+    status_.target_current = 0.0f;
     open_loop_step_ = 0;
-    commutation_controller_.updateDutyCycle(0.0f);
+    algorithm().reset();
+    pwm_interface_.updateDutyCycle(0.0f);
 
     status_.current_speed_rps = 0.0f;
 
@@ -415,8 +567,7 @@ uint32_t BldcController::calculateOpenLoopStepInterval(float speed_rps) noexcept
     if (speed_rps <= 0.0f) {
         return 0;
     }
-    uint8_t num_poles = commutation_controller_.getNumPoles();
-    return static_cast<uint32_t>(10000000.0f / (speed_rps * num_poles * BLDC_NUM_PHASES));
+    return static_cast<uint32_t>(10000000.0f / (speed_rps * params_.num_poles * BLDC_NUM_PHASES));
 }
 
 void BldcController::hallSensorInterruptHandler() noexcept
@@ -436,8 +587,17 @@ void BldcController::pwmInterruptHandler() noexcept {
         return;
     }
 
-    // ADC already converted all injected channels — reading registers adds no latency
-    float bus_voltage = adc_interface_->readBusVoltage();
+    // One snapshot of everything, taken once, handed to whichever algorithm is
+    // selected. Neither algorithm reaches into hardware for measurements, so
+    // they cannot disagree about what this PWM period looked like.
+    MotorAlgorithmInput in;
+
+    // ADC already converted all injected channels — reading registers adds no
+    // latency. All three shunts are read even in six-step, which uses one of
+    // them: the cost is two extra register reads and two conversions, and it
+    // is what lets the two algorithms share a single input path.
+    adc_interface_->readAllCurrents(in.i_u, in.i_v, in.i_w);
+    in.bus_voltage = adc_interface_->readBusVoltage();
 
     // Hall health time base. Reads no hardware; it only decays the monitor's
     // accumulators and ages a standing illegal code, both of which have to run
@@ -450,7 +610,7 @@ void BldcController::pwmInterruptHandler() noexcept {
         hall_update_pending_ = false;
         // One read, shared by the health monitor and the PLL, so they can never
         // disagree and the lines are never sampled mid-transition.
-        uint8_t hall_state = commutation_controller_.getCurrentPosition();
+        uint8_t hall_state = hall_interface_.getPosition();
         hall_monitor_.onPosition(hall_state,
                                  (dmode_ != DriveMode::NEUTRAL) && status_.is_running);
         if (hall_state <= 5) {
@@ -466,16 +626,17 @@ void BldcController::pwmInterruptHandler() noexcept {
     }
 
     // Read shared data atomically (avoid torn reads from SysTick interrupt)
-    ElectricMode electric_mode;
-    uint8_t new_position;
-    float target_current;
     {
         CriticalSection cs;
-        electric_mode = status_.electric_mode;
-        target_current = status_.target_current;
+        in.electric_mode = status_.electric_mode;
+        in.target_current = status_.target_current;
+        in.duty_command = duty_command_;
         motor_pll_.updateTick();
-        new_position = motor_pll_.getNextHall(dmode_);
+        in.step = motor_pll_.getNextHall(dmode_);
+        in.angle_steps = motor_pll_.getAngle();
+        in.speed_steps_s = motor_pll_.getSpeedStepsSec();
     }
+    in.drive_mode = dmode_;
 
     // Hall health. The monitor latches, so unlike the old PLL rule this does
     // not re-assert every cycle; it has to be cleared explicitly once the
@@ -484,60 +645,35 @@ void BldcController::pwmInterruptHandler() noexcept {
         setDriveMode(DriveMode::NEUTRAL);
     }
 
-    if (electric_mode == ElectricMode::VOLTAGE_MODE) {
-        if (status_.target_position != new_position) {
-            CriticalSection cs;
-            status_.target_position = new_position;
-            cycles_since_commutation_ = 0;
-            commutation_controller_.update(new_position, status_.duty_cycle);
-        }
-        return;
-    }
-
-    // Read current from active conducting phase
-    float measured_current = getCurrentFromActivePhase();
-
-    // Post-commutation blanking. Measured on this motor at 3.9 RPS: the residual
-    // spread of the current reading is 0.60 A on the PWM cycle right after a
-    // commutation, 0.28 A three cycles later, 0.17 A at six, and 0.02 A - the
-    // noise floor - from cycle nine onwards. The floor is identical in every
-    // build; the whole -Os/-O0 "vibration" difference lives in that opening
-    // window, because the two builds raise the COM event at different points in
-    // the PWM period and so catch different amounts of the demagnetisation
-    // transient. Holding the duty across it stops the PI converting it into
-    // torque ripple.
-    const bool blanked = params_.current_blanking_cycles > 0 &&
-                         cycles_since_commutation_ < params_.current_blanking_cycles;
-    if (cycles_since_commutation_ < 255) {
-        cycles_since_commutation_++;
-    }
-
-    if (bus_voltage > params_.max_voltage)
+    if (in.bus_voltage > params_.max_voltage)
         setDriveMode(DriveMode::NEUTRAL);
 
-    float duty_cycle;
-    int8_t duty_saturation;
-
-    if (blanked) {
-        // Hold the last duty and leave the PI untouched, so neither the
-        // proportional term nor the integrator sees the freewheeling sample.
-        duty_cycle = status_.duty_cycle;
-        duty_saturation = status_.current_pid_saturation;
+    // ---- Algorithm selection ----------------------------------------------
+    // A plain switch rather than a virtual call through MotorAlgorithm: the
+    // target of each branch is known at compile time, so the compiler can
+    // inline it, and at 20 kHz in a `-O0` build every avoided indirection is
+    // worth having. The base class still exists for the non-ISR paths
+    // (reset/onEnter), where clarity is worth more than cycles.
+    MotorAlgorithmOutput out{};
+    if (dmode_ == DriveMode::NEUTRAL) {
+        // Bridge disabled - there is nothing to regulate. Running the
+        // algorithm anyway lets the d/q integrators random-walk on ADC noise
+        // until they hit their clamp, which then publishes as duty 0.95 while
+        // the drive reports NEUTRAL. Functionally harmless, because onEnter()
+        // clears them when the drive re-arms, but a thoroughly misleading
+        // number to put in telemetry - and indistinguishable, from the
+        // outside, from the bridge actually being at 95 %.
+        out.angle_e_rad = in.angle_steps * FOC_RAD_PER_STEP;
     } else {
-        // Run current controller. Its gains come from the motor's electrical model
-        // (see current_loop_tuning.hpp), so the loop bandwidth is set by physics
-        // rather than by hand-tuning.
-        float duty_raw = current_controller_.update(target_current, measured_current);
-        duty_cycle = std::max(0.0f, std::min(duty_raw, params_.max_duty_cycle));
+        switch (algorithm_) {
+            case DriveAlgorithm::FOC:
+                out = foc_.update(in);
+                break;
 
-        // Saturation is reported from the *clamped* duty, not from the regulator's
-        // own limits: max_duty_cycle is applied here, outside the PI, so the PI
-        // reports itself unsaturated while the bridge is in fact wide open. The
-        // sign tells the speed loop which way it is stuck; see PidController.
-        duty_saturation = static_cast<int8_t>(current_controller_.saturationSign());
-        if (duty_saturation == 0) {
-            duty_saturation = (duty_raw > params_.max_duty_cycle) ? 1
-                            : (duty_raw < 0.0f)                   ? -1 : 0;
+            case DriveAlgorithm::SIX_STEP:
+            default:
+                out = six_step_.update(in);
+                break;
         }
     }
 
@@ -548,52 +684,26 @@ void BldcController::pwmInterruptHandler() noexcept {
         // into the telemetry. Control and +OSC keep the raw value.
         const float i_alpha = params_.measured_current_lpf_alpha;
         if (i_alpha > 0.0f && i_alpha < 1.0f) {
-            filtered_measured_current_ += i_alpha * (measured_current - filtered_measured_current_);
+            filtered_measured_current_ += i_alpha * (out.measured_current - filtered_measured_current_);
         } else {
-            filtered_measured_current_ = measured_current;
+            filtered_measured_current_ = out.measured_current;
         }
-        status_.measured_current = measured_current;
+        status_.measured_current = out.measured_current;
         status_.measured_current_filtered = filtered_measured_current_;
-        status_.duty_cycle = duty_cycle;
-        status_.bus_voltage = bus_voltage;
-        status_.pll_angle = motor_pll_.getAngle();
-        status_.current_pid_saturation = duty_saturation;
-        if (status_.target_position != new_position) {
-            commutation_controller_.update(new_position, duty_cycle);
-            status_.target_position = new_position;
-            cycles_since_commutation_ = 0;
-        } else {
-            commutation_controller_.updateDutyCycle(duty_cycle);
-        }
+        status_.duty_cycle = out.duty;
+        status_.duty_u = out.duty_u;
+        status_.duty_v = out.duty_v;
+        status_.duty_w = out.duty_w;
+        status_.bus_voltage = in.bus_voltage;
+        status_.pll_angle = in.angle_steps;
+        status_.current_pid_saturation = out.saturation;
+        status_.target_position = in.step;
+        status_.i_d = out.i_d;
+        status_.i_q = out.i_q;
+        status_.v_d = out.v_d;
+        status_.v_q = out.v_q;
+        status_.angle_e_rad = out.angle_e_rad;
     }
 }
-
-float BldcController::getCurrentFromActivePhase() noexcept {
-    if (!adc_interface_) {
-        return 0.0f;
-    }
-
-    // Determine which phase is actively conducting based on cached phase states
-    // In 6-step commutation, we want to read current from the DOWN phase (low-side conducting)
-
-    // Get cached phase states from CommutationController
-    PwmState state_u = commutation_controller_.getPhaseState(PwmChannel::PHASE_U);
-    PwmState state_v = commutation_controller_.getPhaseState(PwmChannel::PHASE_V);
-    PwmState state_w = commutation_controller_.getPhaseState(PwmChannel::PHASE_W);
-
-    // Find the DOWN phase (low-side conducting)
-    if (state_u == PwmState::DOWN) {
-        return adc_interface_->readPhaseCurrent(PwmChannel::PHASE_U);
-    } else if (state_v == PwmState::DOWN) {
-        return adc_interface_->readPhaseCurrent(PwmChannel::PHASE_V);
-    } else if (state_w == PwmState::DOWN) {
-        return adc_interface_->readPhaseCurrent(PwmChannel::PHASE_W);
-    } else {
-        // No DOWN phase found (e.g., all phases OFF), return 0
-        return 0.0f;
-    }
-}
-
-
 
 } // namespace libecu

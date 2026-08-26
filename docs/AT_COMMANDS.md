@@ -236,6 +236,86 @@ Set or read the electrical control strategy.
 | 0 | VOLTAGE | Direct voltage or duty cycle control |
 | 1 | CURRENT | Current control with PI inner loop at 40kHz (PWM frequency) |
 
+### Drive Algorithm (AT+ALGO)
+
+Select the electrical algorithm that drives the inverter. Orthogonal to
+`AT+EMODE`: the two combine into four working modes.
+
+| | |
+|---|---|
+| **Set** | `AT+ALGO=<val>*<CRC>\r\n` |
+| **Query** | `AT+ALGO?*<CRC>\r\n` |
+| **Set response** | `OK\r\n` |
+| **Query response** | `+ALGO:0\r\n` |
+
+| Value | Algorithm | Description |
+|-------|-----------|-------------|
+| 0 | SIX_STEP | Trapezoidal six-step commutation |
+| 1 | FOC | Field-oriented control with space-vector modulation (default) |
+
+Combined with `AT+EMODE`:
+
+| ALGO | EMODE | What runs |
+|------|-------|-----------|
+| 0 | 0 | Trapezoidal, duty commanded directly by `AT+DUT` |
+| 0 | 1 | Trapezoidal, inner current PI on the DOWN-phase shunt (`AT+CPID`) |
+| 1 | 0 | SVPWM, q-axis voltage commanded by `AT+DUT`, no current loop |
+| 1 | 1 | SVPWM with d/q current PI (`AT+FPID`) — full field-oriented control |
+
+`ALGO=1, EMODE=0` exists for bring-up: it exercises the modulator and the
+angle without a current loop in the way, which is the only practical way to
+find a wrong `AT+FANG` offset.
+
+> **Switch at standstill or in NEUTRAL.** Changing algorithm is a step change
+> in the applied voltage — the outgoing algorithm's integrators are cleared and
+> the incoming one reconfigures the bridge.
+
+### FOC Current PID Parameters (AT+FPID)
+
+Set or read the FOC d/q current regulator gains. Both axes share one set of
+gains, which is correct for a motor with Ld == Lq.
+
+| | |
+|---|---|
+| **Set** | `AT+FPID=<kp>,<ki>*<CRC>\r\n` |
+| **Query** | `AT+FPID?*<CRC>\r\n` |
+| **Set response** | `OK\r\n` |
+| **Query response** | `+FPID:2.1991,2067.2000\r\nOK\r\n` |
+
+> **These are not `AT+CPID` numbers.** The FOC regulators output **volts**
+> (kp in V/A, ki in V/A/s) and see one phase; the six-step regulator outputs
+> **duty** and sees two phases in series. For MOTOR_1 at 500 Hz the six-step
+> gains are ≈0.141 / 132 and the FOC gains are ≈2.20 / 2067. Setting one from
+> the other will not end well.
+
+Derivation: placing the PI zero on the plant pole (`Ti = L/R`) gives
+`kp = L·ω_c` and `ki = R·ω_c`. See `tuneFocCurrentPi()` in
+`libecu/include/algorithms/current_loop_tuning.hpp`.
+
+### FOC Angle Offset (AT+FANG)
+
+Set or read the electrical angle offset between the PLL's Hall-derived step
+angle and the rotor d axis, in **electrical degrees**.
+
+| | |
+|---|---|
+| **Set** | `AT+FANG=<degrees>*<CRC>\r\n` |
+| **Query** | `AT+FANG?*<CRC>\r\n` |
+| **Set response** | `OK\r\n` |
+| **Query response** | `+FANG:-60.00\r\nOK\r\n` |
+
+Range -360.0 to 360.0.
+
+The default of -60° is **derived, not measured**: row *k* of the six-step
+commutation table places the stator field at (k·60 − 30)°, and the PLL applies
+step round(angle + 1) in FORWARD, so the field sits at (angle·60 + 30)°. At the
+six-step torque optimum the field leads the rotor by 90°, giving
+θ_d = (angle − 1)·60°.
+
+Expect to trim it on the bench. If it is wrong it is wrong by a whole multiple
+of 60°, and the symptom is little or no torque. An inverse commutation table
+needs its own value.
+
 ### Drive Mode (AT+DMODE)
 
 Set or read the motor rotation direction.
@@ -315,7 +395,7 @@ Read a snapshot of the motor's current state.
 | | |
 |---|---|
 | **Query** | `AT+STATUS?*<CRC>\r\n` |
-| **Response** | `+STATUS:<ctrl_mode>,<elec_mode>,<speed>,<target_cur>,<duty>,<bus_volt>\r\n` |
+| **Response** | `+STATUS:<ctrl_mode>,<elec_mode>,<speed>,<target_cur>,<duty>,<bus_volt>,<algo>,<id>,<iq>,<angle_e>\r\n` |
 
 Response fields in order:
 
@@ -327,12 +407,19 @@ Response fields in order:
 | target_cur | float | Target current in Amperes |
 | duty | float | Current duty cycle (0.0 to 1.0) |
 | bus_volt | float | Bus voltage in Volts |
+| algo | int | Drive algorithm (0=SIX_STEP, 1=FOC) |
+| id | float | Measured d-axis current in Amperes (0 in six-step) |
+| iq | float | Measured q-axis current in Amperes (0 in six-step) |
+| angle_e | float | Electrical angle used by the algorithm, degrees |
+
+The last four fields were added with FOC; the first six are unchanged, so a
+consumer that only knows them still parses.
 
 **Example:**
 
 ```
 > AT+STATUS?*DEAD\r\n
-< +STATUS:1,1,23.45,1.50,0.35,24.56\r\n
+< +STATUS:1,1,23.45,1.50,0.35,24.56,1,-0.02,1.48,213.7\r\n
 ```
 
 ### Maximum Values (AT+MAXVALS)
@@ -438,30 +525,47 @@ When the write phase fills the buffer (write index reaches 1024), the phase swap
 
 ### Captured Data
 
-Each sample captures four values:
+Each sample captures seven values, packed into 12 bytes:
 
 | Field | Type | Description |
 |-------|------|-------------|
+| target_current_ma | int16 | Target current setpoint, milliamps |
+| measured_current_ma | int16 | Raw measured current, milliamps |
+| i_d_ma | int16 | d-axis current, milliamps (0 in six-step) |
+| i_q_ma | int16 | q-axis current, milliamps (0 in six-step) |
+| angle_e | uint16 | Electrical angle, full scale = one electrical revolution |
 | duty_cycle | uint8 | Current duty cycle × 100 (0-100) |
-| target_current | float | Target current setpoint |
-| measured_current | float | Raw measured current from shunt |
 | position | uint8 | Rotor position from Hall sensors |
+
+The currents are milliamps rather than floats because the buffer is 1024
+samples deep and the MCU has 32 KB of RAM in total. int16 milliamps spans
+±32.7 A, which covers the ±34 A the shunt/PGA chain can measure at all, so
+the packing loses nothing the hardware could have reported. Carrying the
+three FOC signals as floats would have taken the buffer from 12 KB to 24 KB;
+this way it stays at 12 KB.
 
 ### Output Format
 
 Samples stream out as `\r\n`-terminated lines, one per call to `processOscOutput()`:
 
 ```
-+OSC:<sample_index>,<meas_cur_x1000>,<tgt_cur_x1000>,<duty_x100>,<position>\r\n
++OSC:<sample_index>,<meas_cur_mA>,<tgt_cur_mA>,<duty_x100>,<position>,<id_mA>,<iq_mA>,<angle_deg_e>\r\n
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
 | sample_index | int | Sequential sample counter starting at 0 |
-| meas_cur_x1000 | int32 | `measured_current * 1000`, signed integer |
-| tgt_cur_x1000 | int32 | `target_current * 1000`, signed integer |
+| meas_cur_mA | int16 | `measured_current * 1000`, signed integer |
+| tgt_cur_mA | int16 | `target_current * 1000`, signed integer |
 | duty_x100 | uint8 | `duty_cycle * 100` (0-100), unsigned integer |
 | position | uint8 | Rotor position (Hall sensor, 0-5) |
+| id_mA | int16 | d-axis current × 1000 (0 in six-step) |
+| iq_mA | int16 | q-axis current × 1000 (0 in six-step) |
+| angle_deg_e | int | Electrical angle in degrees, 0-359 |
+
+The last three fields were added with FOC. The first five are unchanged, so a
+consumer that splits on commas and takes what it knows still works —
+`utility/capture_osc.py` accepts either width.
 
 The end of a burst is signaled by an empty data line:
 
@@ -673,6 +777,12 @@ ERROR\r\n
 | `AT+SPID?` | Query | -- | `+SPID:0.050,1.000,0.000` |
 | `AT+CPID=<kp>,<ki>[,<kd>]` | Set | any float | `OK` |
 | `AT+CPID?` | Query | -- | `+CPID:0.050,1.000,0.000` |
+| `AT+ALGO=<val>` | Set | 0, 1 | `OK` |
+| `AT+ALGO?` | Query | -- | `+ALGO:0` |
+| `AT+FPID=<kp>,<ki>` | Set | any float | `OK` |
+| `AT+FPID?` | Query | -- | `+FPID:2.1991,2067.2000` |
+| `AT+FANG=<deg>` | Set | -360.0 .. 360.0 | `OK` |
+| `AT+FANG?` | Query | -- | `+FANG:-60.00` |
 | `AT+PLLID=<kp>,<ki>` | Set | any float | `OK` |
 | `AT+PLLID?` | Query | -- | `+PLLID:100.000,5000.000` |
 | `AT+VER?` | Query | -- | `+VER:1.0.0` |

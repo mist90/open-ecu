@@ -13,7 +13,8 @@ echo -e "${YELLOW}STM32 BLDC ECU Flash Script${NC}"
 echo "================================"
 
 # Parse command line arguments
-BUILD_TYPE="Debug"
+# Release by default, matching build.sh - see the note there on the ISR budget.
+BUILD_TYPE="Release"
 METHOD="openocd"
 VERIFY=false
 
@@ -21,6 +22,10 @@ while [[ $# -gt 0 ]]; do
     case $1 in
         -r|--release)
             BUILD_TYPE="Release"
+            shift
+            ;;
+        -d|--debug)
+            BUILD_TYPE="Debug"
             shift
             ;;
         -m|--method)
@@ -34,7 +39,8 @@ while [[ $# -gt 0 ]]; do
         -h|--help)
             echo "Usage: $0 [options]"
             echo "Options:"
-            echo "  -r, --release    Use Release build (default: Debug)"
+            echo "  -r, --release    Use Release build (default)"
+            echo "  -d, --debug      Use Debug build"
             echo "  -m, --method     Flash method: stlink, openocd, dfu (default: openocd)"
             echo "  -v, --verify     Verify flash after programming"
             echo "  -h, --help       Show this help message"

@@ -11,7 +11,10 @@
 #include "interfaces/hall_interface.hpp"
 
 // Motor control algorithms
-#include "algorithms/commutation_controller.hpp"
+#include "algorithms/motor_algorithm.hpp"
+#include "algorithms/six_step_algorithm.hpp"
+#include "algorithms/foc_algorithm.hpp"
+#include "algorithms/foc_math.hpp"
 #include "algorithms/pid_controller.hpp"
 
 // AT command processor

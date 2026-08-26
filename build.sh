@@ -25,6 +25,8 @@ while [[ $# -gt 0 ]]; do
             echo "Options:"
             echo "  -p, --platform   Target platform (default: STM32G431)"
             echo ""
+            echo "Builds Release by default; pass -d/--debug for a Debug build (build/)."
+            echo ""
             echo "All other options are passed to the platform-specific build script"
             echo "Run '$0 --platform <platform> --help' for platform-specific options"
             exit 0
