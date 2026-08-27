@@ -431,7 +431,7 @@ reflect the actual build configuration (see `motor_params` in `main.cpp`).
 | | |
 |---|---|
 | **Query** | `AT+MAXVALS?*<CRC>\r\n` |
-| **Response** | `+MAXVALS:<max_speed>,<min_current>,<max_current>,<max_voltage>,<max_duty>\r\n` |
+| **Response** | `+MAXVALS:<max_speed>,<min_current>,<max_current>,<max_voltage>,<max_duty>,<max_temp>\r\n` |
 
 Response fields in order (all printed with 2 decimals):
 
@@ -442,12 +442,13 @@ Response fields in order (all printed with 2 decimals):
 | max_current | float | `max_current` -- maximum current in Amperes |
 | max_voltage | float | `max_voltage` -- maximum bus voltage in Volts |
 | max_duty | float | `max_duty_cycle` -- maximum duty cycle (0.0-1.0) |
+| max_temp | float | `max_temperature_c` -- thermal cut-out in degrees Celsius. Above it the drive goes to NEUTRAL, the same way over-voltage does |
 
 **Example:**
 
 ```
 > AT+MAXVALS?*XXXX\r\n
-< +MAXVALS:200.00,-6.00,6.00,36.00,0.95\r\n
+< +MAXVALS:200.00,-6.00,6.00,36.00,0.95,100.00\r\n
 ```
 
 ## Telemetry (AT+TM)
@@ -469,7 +470,7 @@ Enable or disable continuous telemetry streaming. When enabled, the controller s
 Each line is a newline-terminated tuple (uses `\n` only, not `\r\n`):
 
 ```
-+TM:<meas_pos>;<tgt_pos>;<tgt_speed>;<cur_speed>;<duty>;<tgt_cur>;<meas_cur>;<bus_volt>;<pll_angle>
++TM:<meas_pos>;<tgt_pos>;<tgt_speed>;<cur_speed>;<duty>;<tgt_cur>;<meas_cur>;<bus_volt>;<pll_angle>;<temp>
 ```
 
 | Field | Type | Description |
@@ -483,13 +484,17 @@ Each line is a newline-terminated tuple (uses `\n` only, not `\r\n`):
 | meas_cur | float | Measured current in Amperes, low-pass filtered (`measured_current_lpf_alpha`, 10 ms by default). The raw per-PWM-cycle sample would alias the chopping ripple at the 100 Hz telemetry rate; use `AT+OSC` for the unfiltered waveform |
 | bus_volt | float | Bus voltage in Volts |
 | pll_angle | float | PLL rotor angle in steps (0.0-6.0, one electrical period) |
+| temp | float | NTC temperature in degrees Celsius (PB14). `-273.0` means the sensor read open or the conversion failed -- not a cold motor. Above `max_temperature_c` (see [AT+MAXVALS](#maximum-values-at+maxvals)) the drive trips to NEUTRAL |
+
+`temp` was appended after the other nine fields, so a parser that splits on `;` and
+reads the first nine still works. Prefer `len(fields) >= 9` over `== 9`.
 
 **Example:**
 
 ```
-+TM:3;5;23.45;22.10;0.35;1.50;1.45;24.56;3.2
-+TM:3;5;23.45;22.15;0.35;1.50;1.46;24.55;3.4
-+TM:4;5;23.45;22.20;0.35;1.50;1.47;24.56;3.6
++TM:3;5;23.45;22.10;0.35;1.50;1.45;24.56;3.2;41.7
++TM:3;5;23.45;22.15;0.35;1.50;1.46;24.55;3.4;41.7
++TM:4;5;23.45;22.20;0.35;1.50;1.47;24.56;3.6;41.8
 ```
 
 The telemetry output is invoked from the 100Hz speed control loop (SysTick). Both +TM and +PLL are emitted every tick (100Hz). Each call to `sendTelemetry()` or `sendPllTelemetry()` produces one line.

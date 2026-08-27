@@ -56,6 +56,22 @@ struct MotorControlParams {
     float max_current;        ///< Maximum motor current (A)
     float min_current;        ///< Minimum negative current (A)
     float max_voltage;        ///< Maximum bus voltage (V), in case of overvoltage (it means battery damage and recuperation) ECU goes to NEUTRAL mode.
+
+    /**
+     * @brief Thermal cut-out, degrees Celsius
+     *
+     * Above this the drive goes to NEUTRAL, the same way over-voltage does.
+     * The trip does not latch and there is no hysteresis: while the sensor
+     * still reads hot every 100 Hz tick re-asserts NEUTRAL, so re-arming with
+     * AT+DMODE only takes once it has actually cooled below the limit.
+     *
+     * Checked against AdcInterface::readTemperature(), which returns
+     * TEMPERATURE_INVALID_C when the NTC reads open - that never trips, so a
+     * disconnected sensor removes the protection silently. See
+     * convertAdcToTemperature() for why the divider cannot tell "open" from
+     * "cold". 0 or negative falls back to 100 C.
+     */
+    float max_temperature_c;
     float max_speed_rps;      ///< Maximum speed in RPS
     float acceleration_rate;  ///< Acceleration rate (RPS/s), 0 = disabled
     float target_speed_lpf_alpha; ///< LPF alpha for target speed (0.0-1.0), 0 = disabled, 1.0 = no filtering
@@ -137,6 +153,13 @@ struct MotorStatus {
     float measured_current;   ///< Measured motor current (A), raw per-PWM-cycle sample
     float measured_current_filtered; ///< Measured current after the telemetry LPF (A)
     float bus_voltage;         ///< Measured bus voltage (V)
+    /**
+     * @brief Measured NTC temperature (deg C), sampled at the 100 Hz loop rate
+     *
+     * TEMPERATURE_INVALID_C (-273) means the sensor read open or the ADC
+     * conversion did not complete - not a cold motor.
+     */
+    float temperature_c;
     float pll_angle;          ///< Rotor angle from PLL (degrees, 0-360)
     int8_t current_pid_saturation; ///< +1/-1 if duty is clamped high/low, else 0 (for speed PID anti-windup)
     uint8_t target_position;   ///< Driven motor position

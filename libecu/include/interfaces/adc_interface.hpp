@@ -7,11 +7,22 @@
 #define LIBECU_ADC_INTERFACE_HPP
 
 #include "pwm_interface.hpp"
+#include <cmath>
 #include <cstdint>
 
 uint32_t time_us();
 
 namespace libecu {
+
+/**
+ * @brief Temperature reported when the NTC reading cannot be trusted
+ *
+ * Deliberately absurd rather than plausible: it is below any limit, so it
+ * never trips the thermal cut-out, but nobody can mistake it for a
+ * measurement in telemetry. See convertAdcToTemperature() for when it is
+ * returned and why an open sensor cannot be distinguished from a cold one.
+ */
+constexpr float TEMPERATURE_INVALID_C = -273.0f;
 
 /**
  * @brief Current sensor calibration parameters
@@ -32,6 +43,27 @@ struct CurrentSensorCalibration {
 struct VoltageSensorParameters {
     float r_up;    // Upper resistor of voltage divider (Ohms)
     float r_down;  // Lower resistor of voltage divider (Ohms)
+};
+
+/**
+ * @brief NTC thermistor divider parameters
+ *
+ * The divider on this board is
+ *
+ *     +3.3V --- [ NTC ] --- signal --- [ r_pulldown ] --- GND
+ *
+ * so the signal *rises* with temperature (a hot NTC has a low resistance),
+ * and the thermistor resistance follows from the reading as
+ *
+ *     R_ntc = r_pulldown * (adc_max - raw) / raw
+ *
+ * The defaults describe the fitted part: 10 k at 25 C, B25/85 = 3435 K,
+ * against a 4.7 k pull-down.
+ */
+struct TemperatureSensorParameters {
+    float r_pulldown_ohms = 4700.0f;   ///< Fixed resistor from signal to GND (Ohms)
+    float ntc_r25_ohms    = 10000.0f;  ///< NTC nominal resistance at 25 C (Ohms)
+    float ntc_beta_k      = 3435.0f;   ///< NTC beta constant B25/85 (Kelvin)
 };
 
 /**
@@ -56,9 +88,12 @@ public:
      * @param calibration Sensor calibration parameters
      * @return true if initialization successful
      */
-    bool initialize(const CurrentSensorCalibration& calibration, const VoltageSensorParameters& params) noexcept {
+    bool initialize(const CurrentSensorCalibration& calibration,
+                    const VoltageSensorParameters& params,
+                    const TemperatureSensorParameters& temp_params = TemperatureSensorParameters{}) noexcept {
         calibration_ = calibration;
         voltage_params_ = params;
+        temp_params_ = temp_params;
 
         // ADC calibration and injected channel startup is done in main.cpp
         // before calling this function. Here we just store the calibration.
@@ -78,6 +113,18 @@ public:
      * @return Raw ADC value for Vbus (0 to 2^resolution - 1)
      */
     virtual uint32_t getRawAdcValue() = 0;
+
+    /**
+     * @brief Get raw ADC value for the NTC temperature channel
+     *
+     * Unlike the current and Vbus channels this one is *not* injected: it is a
+     * regular conversion started on demand, because a thermal mass measured at
+     * 100 Hz has nothing to gain from PWM-synchronous sampling and the injected
+     * sequence is on the critical path of the 20 kHz current loop.
+     *
+     * @return Raw ADC value (0 to 2^resolution - 1), 0 if the conversion failed
+     */
+    virtual uint32_t getRawTemperatureAdcValue() = 0;
 
     /**
      * @brief Convert raw ADC value to current in Amperes
@@ -131,11 +178,73 @@ public:
     }
 
     /**
+     * @brief Convert a raw NTC divider reading to degrees Celsius
+     *
+     * Beta (B-parameter) equation:
+     *
+     *     1/T = 1/T25 + ln(R_ntc / R25) / B      (T in Kelvin)
+     *
+     * Good to a degree or so over 0..120 C, which is all a thermal cut-out
+     * needs; a Steinhart-Hart fit would only matter if this number were used
+     * for compensation rather than protection.
+     *
+     * Failure modes are asymmetric, and worth knowing before trusting this:
+     *
+     * - Signal shorted to 3V3, or the NTC shorted out: raw saturates high,
+     *   R_ntc goes to zero and the result reads several hundred degrees, so
+     *   the cut-out trips. Safe direction.
+     * - NTC open circuit, or the signal shorted to GND: the pull-down drags
+     *   the pin to 0 V and the reading is indistinguishable from an
+     *   arbitrarily cold sensor. There is nothing in the divider that can
+     *   separate the two, so raw == 0 returns TEMPERATURE_INVALID_C - visible
+     *   in telemetry, but it does NOT trip. A lost sensor wire silently
+     *   removes thermal protection; that is a property of where the fixed
+     *   resistor sits, not of this code.
+     *
+     * @param adc_raw Raw ADC reading of the divider mid-point
+     * @return Temperature in degrees Celsius, or TEMPERATURE_INVALID_C
+     */
+    float convertAdcToTemperature(uint32_t adc_raw) const noexcept {
+        const float adc_max = static_cast<float>((1u << calibration_.adc_resolution_bits) - 1u);
+
+        if (adc_raw == 0u) {
+            return TEMPERATURE_INVALID_C;  // open NTC or signal shorted to GND
+        }
+        if (temp_params_.r_pulldown_ohms <= 0.0f ||
+            temp_params_.ntc_r25_ohms <= 0.0f ||
+            temp_params_.ntc_beta_k <= 0.0f) {
+            return TEMPERATURE_INVALID_C;  // unconfigured sensor
+        }
+
+        // Keep one count below full scale: at raw == adc_max the divider says
+        // R_ntc == 0, and ln(0) is not a temperature.
+        float raw = static_cast<float>(adc_raw);
+        if (raw > adc_max - 1.0f) {
+            raw = adc_max - 1.0f;
+        }
+
+        const float r_ntc = temp_params_.r_pulldown_ohms * (adc_max - raw) / raw;
+
+        const float inv_t = 1.0f / 298.15f
+                          + std::log(r_ntc / temp_params_.ntc_r25_ohms) / temp_params_.ntc_beta_k;
+
+        return 1.0f / inv_t - 273.15f;
+    }
+
+    /**
      * @brief Read bus voltage from ADC
      * @return Bus voltage in Volts
      */
     float readBusVoltage() noexcept {
         return convertAdcToVoltage(getRawAdcValue());
+    }
+
+    /**
+     * @brief Read the NTC temperature
+     * @return Temperature in degrees Celsius, or TEMPERATURE_INVALID_C
+     */
+    float readTemperature() noexcept {
+        return convertAdcToTemperature(getRawTemperatureAdcValue());
     }
 
     /**
@@ -207,10 +316,15 @@ public:
         return calibration_;
     }
 
+    const TemperatureSensorParameters& getTemperatureParams() const noexcept {
+        return temp_params_;
+    }
+
 private:
     CurrentSensorCalibration calibration_;
     bool initialized_ = false;
     VoltageSensorParameters voltage_params_;
+    TemperatureSensorParameters temp_params_;
 };
 
 } // namespace libecu

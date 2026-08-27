@@ -36,6 +36,7 @@ public:
     // AdcInterface implementation
     uint32_t getRawAdcValue(PwmChannel channel) override;
     uint32_t getRawAdcValue() override;
+    uint32_t getRawTemperatureAdcValue() override;
 
     /**
      * @brief Read potentiometer and convert to output
@@ -45,6 +46,20 @@ public:
     float readPotentiometer(float max_value);
 
 private:
+    /**
+     * @brief Run one regular conversion on ADC1 and return the result
+     *
+     * ADC1's regular group is shared between the potentiometer (PB12) and the
+     * NTC (PB14), one channel at a time: the sequence is a single conversion
+     * long, and this points it at the requested channel before starting it.
+     * That is deliberate - see the implementation for why a two-rank sequence
+     * is the wrong shape here.
+     *
+     * @param channel HAL/LL channel identifier (ADC_CHANNEL_x)
+     * @return Raw conversion result, or 0 if the conversion did not complete
+     */
+    uint32_t readRegularChannel(uint32_t channel) noexcept;
+
     /**
      * @brief Initialize ADC1 peripheral
      * Configures ADC1 with injected channel for Phase U (OPAMP1)

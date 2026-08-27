@@ -56,7 +56,9 @@ class Ecu:
         for line in reversed(raw.splitlines()):
             if line.startswith("+TM:"):
                 parts = line[4:].split(";")
-                if len(parts) == 9:
+                # ">=": field 9 (temperature) was appended later, and the
+                # callers here only index the original nine.
+                if len(parts) >= 9:
                     try:
                         return [float(x) for x in parts]
                     except ValueError:

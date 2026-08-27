@@ -487,6 +487,7 @@ class ContinuousTab(QWidget):
         self.current_step = []
         self.next_step = []
         self.pll_step = []
+        self.temperature = []
 
         self._update_timer = QTimer(self)
         self._update_timer.timeout.connect(self._update_plots)
@@ -552,11 +553,30 @@ class ContinuousTab(QWidget):
         self.curve_next_step = self.plot_steps.plot(name="next_step",    pen=pg.mkPen("#ff8800", width=2))
         self.curve_pll_step  = self.plot_steps.plot(name="PLL step",     pen=pg.mkPen("#ff4444", width=2))
 
+        self.plot_temperature = pg.PlotWidget()
+        self.plot_temperature.setMinimumHeight(180)
+        _style_plot(self.plot_temperature, "Temperature", bottom_label="Time (s)")
+        self.plot_temperature.setLabel("left", "NTC (deg C)")
+        self.plot_temperature.enableAutoRange(x=False)
+        # connect="finite" so the invalid-sensor gaps (see add_sample) break the
+        # trace instead of drawing a line across them.
+        self.curve_temperature = self.plot_temperature.plot(
+            name="temperature", pen=pg.mkPen("#ff66cc", width=2), connect="finite")
+        # Thermal cut-out from +MAXVALS. Drawn rather than left to be
+        # remembered: this trace crossing the line is the drive dropping to
+        # NEUTRAL, and that is worth seeing coming.
+        self.line_temp_limit = pg.InfiniteLine(
+            angle=0, movable=False,
+            pen=pg.mkPen("#ff4444", width=1, style=Qt.PenStyle.DashLine))
+        self.line_temp_limit.setVisible(False)
+        self.plot_temperature.addItem(self.line_temp_limit)
+
         plot_layout.addWidget(self.plot_speeds)
         plot_layout.addWidget(self.plot_currents)
         plot_layout.addWidget(self.plot_duty)
         plot_layout.addWidget(self.plot_voltage)
         plot_layout.addWidget(self.plot_steps)
+        plot_layout.addWidget(self.plot_temperature)
 
         scroll.setWidget(container)
         layout.addWidget(scroll, stretch=1)
@@ -564,6 +584,11 @@ class ContinuousTab(QWidget):
     def _on_window_changed(self, value: float):
         self._buffer_size = value
         self._trim_buffer()
+
+    def set_temp_limit(self, limit_c: float):
+        """Show the firmware's thermal cut-out as a dashed line."""
+        self.line_temp_limit.setPos(limit_c)
+        self.line_temp_limit.setVisible(True)
 
     def reset(self):
         self._sample_count = 0
@@ -577,15 +602,19 @@ class ContinuousTab(QWidget):
         self.current_step.clear()
         self.next_step.clear()
         self.pll_step.clear()
+        self.temperature.clear()
         self._dirty = True
         self.plot_speeds.setXRange(0, self._buffer_size)
         self.plot_currents.setXRange(0, self._buffer_size)
         self.plot_duty.setXRange(0, self._buffer_size)
         self.plot_voltage.setXRange(0, self._buffer_size)
         self.plot_steps.setXRange(0, self._buffer_size)
+        self.plot_temperature.setXRange(0, self._buffer_size)
 
     def add_sample(self, fields: list[str]):
-        if len(fields) != 9:
+        # ">=", not "==": temperature was appended as field 9, and +TM may grow
+        # again. Pre-temperature firmware still plots everything else.
+        if len(fields) < 9:
             return
         try:
             if fields[0].startswith("+TM:"):
@@ -599,6 +628,12 @@ class ContinuousTab(QWidget):
             mc = float(fields[6])
             bv = float(fields[7])
             pll_step = int(float(fields[8]))
+            # NaN, not the raw -273 sentinel the firmware sends for an open or
+            # unread sensor: plotted as-is it would flatten the whole trace
+            # against the top of the axis. NaN leaves a visible gap instead.
+            temp = float(fields[9]) if len(fields) > 9 else float("nan")
+            if temp < -200.0:
+                temp = float("nan")
         except ValueError:
             return
 
@@ -616,6 +651,7 @@ class ContinuousTab(QWidget):
         self.current_step.append(cur_step)
         self.next_step.append(nxt_step)
         self.pll_step.append(pll_step)
+        self.temperature.append(temp)
         self._dirty = True
 
         self._trim_buffer()
@@ -636,6 +672,7 @@ class ContinuousTab(QWidget):
             self.current_step = self.current_step[idx:]
             self.next_step = self.next_step[idx:]
             self.pll_step = self.pll_step[idx:]
+            self.temperature = self.temperature[idx:]
 
     def _update_plots(self):
         if not self._dirty:
@@ -652,6 +689,7 @@ class ContinuousTab(QWidget):
             self.curve_cur_step.setData([], [])
             self.curve_next_step.setData([], [])
             self.curve_pll_step.setData([], [])
+            self.curve_temperature.setData([], [])
             return
 
         tn = np.array(self.t_data, dtype=np.float64)
@@ -664,6 +702,7 @@ class ContinuousTab(QWidget):
         self.curve_cur_step.setData(tn, np.array(self.current_step, dtype=np.float64))
         self.curve_next_step.setData(tn, np.array(self.next_step, dtype=np.float64))
         self.curve_pll_step.setData(tn, np.array(self.pll_step, dtype=np.float64))
+        self.curve_temperature.setData(tn, np.array(self.temperature, dtype=np.float64))
 
         t_max = max(self._buffer_size, self.t_data[-1] + 0.5)
         t_min = t_max - self._buffer_size
@@ -672,6 +711,7 @@ class ContinuousTab(QWidget):
         self.plot_duty.setXRange(t_min, t_max)
         self.plot_voltage.setXRange(t_min, t_max)
         self.plot_steps.setXRange(t_min, t_max)
+        self.plot_temperature.setXRange(t_min, t_max)
 
 
 class CurrentWaveformTab(QWidget):
@@ -1259,19 +1299,24 @@ class MonitorWindow(QMainWindow):
             self.control_panel._set_algorithm_from_firmware(val)
 
     def _parse_maxvals(self, line: str) -> None:
-        """Parse +MAXVALS:max_spd,min_cur,max_cur,max_volt,max_duty response."""
+        """Parse +MAXVALS:max_spd,min_cur,max_cur,max_volt,max_duty[,max_temp]."""
         try:
             prefix = "+MAXVALS:"
             if not line.startswith(prefix):
                 return
             rest = line[len(prefix):]
             parts = rest.split(",")
-            if len(parts) != 5:
+            # ">=", not "==": max_temp was appended as field 5. An exact match
+            # here would have silently rejected the whole response - and with
+            # it the slider ranges - the moment the firmware grew a field.
+            if len(parts) < 5:
                 return
             self._max_speed = float(parts[0])
             self._min_current = float(parts[1])
             self._max_current = float(parts[2])
             # parts[3] = max_voltage, parts[4] = max_duty (stored but not used for sliders)
+            if len(parts) > 5:
+                self.tab_continuous.set_temp_limit(float(parts[5]))
             if self.control_panel is not None:
                 self.control_panel.set_max_speed(self._max_speed)
                 self.control_panel.set_max_current(self._max_current)

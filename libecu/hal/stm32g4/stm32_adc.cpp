@@ -6,6 +6,10 @@
  *       ADC1 JDR2: Vbus voltage divider (PA0 = ADC1_IN1)
  *       ADC2 JDR1: Phase V current (OPAMP2_OUT via VOPAMP2)
  *       ADC2 JDR2: Phase W current (OPAMP3_OUT via VOPAMP3_ADC2)
+ *
+ *       ADC1 also has a regular group, converted on demand from the 100 Hz
+ *       loop and shared one channel at a time between the potentiometer
+ *       (PB12 = ADC1_IN11) and the NTC thermistor (PB14 = ADC1_IN5).
  */
 
 #include "stm32_adc.hpp"
@@ -55,8 +59,8 @@ bool Stm32Adc::initializeHardware() noexcept {
     GPIO_InitStruct.Pull = GPIO_NOPULL;
     HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-    /* Analog inputs: PB0(OPAMP3), PB2, PB12(Pot) */
-    GPIO_InitStruct.Pin = GPIO_PIN_0|GPIO_PIN_2|GPIO_PIN_12;
+    /* Analog inputs: PB0(OPAMP3), PB2, PB12(Pot), PB14(NTC) */
+    GPIO_InitStruct.Pin = GPIO_PIN_0|GPIO_PIN_2|GPIO_PIN_12|GPIO_PIN_14;
     GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
     HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
@@ -143,14 +147,38 @@ void Stm32Adc::initADC1() noexcept {
         Error_Handler();
     }
 
-    /** Configure Regular Channel for Potentiometer (PB12 = ADC1_IN11)
+    /** Configure the regular group.
+     *
+     * Two channels want it - the potentiometer (PB12 = ADC1_IN11) and the NTC
+     * thermistor (PB14 = ADC1_IN5) - but the sequence stays ONE conversion
+     * long and readRegularChannel() re-points rank 1 at whichever is wanted.
+     *
+     * Both are configured here, before the injected group is started, because
+     * that is the only moment SMPRx may be written: from then on JADSTART is
+     * permanently set by the free-running TIM1_TRGO2 trigger, and the
+     * reference manual forbids touching the sampling-time registers while a
+     * conversion is in flight. SQR1 has no such restriction as long as no
+     * *regular* conversion is running, so channel selection at runtime is a
+     * single legal register write.
+     *
+     * 92.5 cycles (2.18 us at 42.5 MHz) covers the NTC divider's worst-case
+     * source impedance - 4.7k in parallel with a cold thermistor, about 4k -
+     * with an order of magnitude to spare, and the potentiometer is happy with
+     * anything this slow.
      */
-    sConfig.Channel = ADC_CHANNEL_11;  // PB12 potentiometer input
     sConfig.Rank = ADC_REGULAR_RANK_1;
-    sConfig.SamplingTime = ADC_SAMPLETIME_47CYCLES_5;  // Slower sampling for stable reading
+    sConfig.SamplingTime = ADC_SAMPLETIME_92CYCLES_5;
     sConfig.SingleDiff = ADC_SINGLE_ENDED;
     sConfig.OffsetNumber = ADC_OFFSET_NONE;
     sConfig.Offset = 0;
+
+    sConfig.Channel = ADC_CHANNEL_11;  // PB12 potentiometer input
+    if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+    {
+        Error_Handler();
+    }
+
+    sConfig.Channel = ADC_CHANNEL_5;   // PB14 NTC thermistor input
     if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
     {
         Error_Handler();
@@ -343,24 +371,67 @@ uint32_t Stm32Adc::getRawAdcValue() {
     return HAL_ADCEx_InjectedGetValue(&hadc1, ADC_INJECTED_RANK_2);
 }
 
-float Stm32Adc::readPotentiometer(float max_value)
-{
-    // Start ADC regular conversion
-    HAL_ADC_Start(&hadc1);
+uint32_t Stm32Adc::getRawTemperatureAdcValue() {
+    // PB14 = ADC1_IN5, regular group. Not injected: this is called from the
+    // 100 Hz loop, and a motor's thermal time constant is measured in tens of
+    // seconds - there is nothing here worth spending injected ranks (and 20 kHz
+    // ISR time) on.
+    return readRegularChannel(ADC_CHANNEL_5);
+}
 
-    // Wait for conversion complete (should be very fast)
-    if (HAL_ADC_PollForConversion(&hadc1, 10) == HAL_OK) {
-        uint32_t adc_value = HAL_ADC_GetValue(&hadc1);
+/**
+ * @note NOT re-entrant, and the regular group now has an owner.
+ *
+ * Channel selection and the DR read are two separate steps, so a caller
+ * preempted between them gets the other caller's channel back. Temperature is
+ * read from BldcController::update(), i.e. the SysTick handler, which preempts
+ * the main loop - so readPotentiometer() must not be called from the main loop
+ * while that is happening. It currently cannot be: the only call sites are
+ * under LEGACY_POT_CONTROL, which is compiled out. If that is ever re-enabled,
+ * move the potentiometer read into the same 100 Hz context (or give the NTC
+ * an injected rank of its own).
+ */
+uint32_t Stm32Adc::readRegularChannel(uint32_t channel) noexcept {
+    // One conversion per call, rather than a two-rank scan holding both the
+    // potentiometer and the NTC. A scan would have to read DR twice, and this
+    // runs inside the SysTick handler, which TIM1 (17.6 us worst case) and the
+    // Hall EXTI both preempt: land one of those between the two reads and the
+    // second result is dropped by the overrun policy (ADC_OVR_DATA_PRESERVED).
+    // A single-conversion sequence cannot overrun - hardware clears ADSTART at
+    // the end and nothing else writes DR - so preemption only ever delays the
+    // read.
+    LL_ADC_REG_SetSequencerRanks(ADC1, LL_ADC_REG_RANK_1, channel);
 
-        // Convert ADC value (0-4095) to (0-max_value)
-        // Linear mapping: output = (adc_value / 4095.0) * max_value
-        float ret_value = (static_cast<float>(adc_value) / 4095.0f) * max_value;
-
-        return ret_value;
+    if (HAL_ADC_Start(&hadc1) != HAL_OK) {
+        return 0;
     }
 
-    // If conversion failed, return 0
-    return 0.0f;
+    // Deliberately not HAL_ADC_PollForConversion(): its timeout is counted in
+    // HAL ticks, and HAL_IncTick() is driven by the very SysTick handler this
+    // runs inside, so uwTick is frozen here - a stalled ADC would spin forever
+    // instead of timing out. The guard is a loop count for that reason.
+    //
+    // It is loose on purpose. The conversion is ~2.5 us, but an injected
+    // trigger aborts and restarts an in-flight regular conversion, and one
+    // arrives every 50 us, so a few restarts are normal.
+    uint32_t guard = 100000;
+    while ((hadc1.Instance->ISR & ADC_FLAG_EOC) == 0U) {
+        if (--guard == 0U) {
+            return 0;
+        }
+    }
+
+    return hadc1.Instance->DR;  // reading DR clears EOC
+}
+
+float Stm32Adc::readPotentiometer(float max_value)
+{
+    // PB12 = ADC1_IN11, same regular group as the NTC
+    uint32_t adc_value = readRegularChannel(ADC_CHANNEL_11);
+
+    // Convert ADC value (0-4095) to (0-max_value)
+    // Linear mapping: output = (adc_value / 4095.0) * max_value
+    return (static_cast<float>(adc_value) / 4095.0f) * max_value;
 }
 
 } // namespace libecu

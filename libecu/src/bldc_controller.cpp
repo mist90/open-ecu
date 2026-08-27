@@ -54,6 +54,7 @@ BldcController::BldcController(
     status_.measured_current = 0.0f;
     status_.measured_current_filtered = 0.0f;
     status_.bus_voltage = 0.0f;
+    status_.temperature_c = TEMPERATURE_INVALID_C;  // nothing sampled yet
     status_.pll_angle = 0.0f;
     status_.current_pid_saturation = 0;
     status_.target_position = 0xFF;
@@ -107,6 +108,14 @@ BldcController::BldcController(
     // MotorControlParams is a plain struct the caller fills field by field, so
     // a field added later can easily arrive uninitialised from an older call
     // site. These fall back rather than driving the bridge with garbage.
+    //
+    // The thermal limit is one of those late fields, and an indeterminate one
+    // is worse than a wrong one: a tiny or negative value trips the drive into
+    // NEUTRAL at room temperature, a huge one removes the protection.
+    if (!(params_.max_temperature_c > 0.0f)) {  // catches NaN too
+        params_.max_temperature_c = 100.0f;
+    }
+
     FocParams foc_params = params_.foc;
     if (foc_params.max_duty_cycle <= 0.0f || foc_params.max_duty_cycle > 1.0f) {
         foc_params.max_duty_cycle = params_.max_duty_cycle;
@@ -183,6 +192,34 @@ void BldcController::update() noexcept
         filtered_measured_speed_ = alpha * speed_rps + (1.0f - alpha) * filtered_measured_speed_;
     } else {
         filtered_measured_speed_ = speed_rps;
+    }
+
+    // ---- Thermal protection -----------------------------------------------
+    // Sampled here rather than in the PWM ISR on purpose. The NTC is a regular
+    // ADC conversion started on demand - microseconds of polling, and it can be
+    // aborted and restarted by the injected trigger - which has no business in
+    // a 20 kHz loop that already uses a third of its period. 100 Hz is several
+    // orders of magnitude faster than any thermal mass on this board.
+    //
+    // Runs whether or not the motor is running: a drive that has just been
+    // stopped hot is exactly when the limit matters, and it is what stops the
+    // bridge being re-armed into a fault.
+    if (adc_interface_) {
+        const float temperature_c = adc_interface_->readTemperature();
+        {
+            CriticalSection cs;
+            status_.temperature_c = temperature_c;
+        }
+
+        // NEUTRAL below, not inside the critical section above: setDriveMode()
+        // takes one of its own and CriticalSection does not nest - its
+        // destructor re-enables interrupts unconditionally.
+        //
+        // TEMPERATURE_INVALID_C fails this comparison, so an open sensor
+        // coasts rather than trips. See MotorControlParams::max_temperature_c.
+        if (temperature_c > params_.max_temperature_c && dmode_ != DriveMode::NEUTRAL) {
+            setDriveMode(DriveMode::NEUTRAL);
+        }
     }
 
     MotorStatus status;

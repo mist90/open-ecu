@@ -73,7 +73,7 @@ def collect(ecu, seconds):
                         pass
             elif line.startswith("+TM:"):
                 p = line[4:].split(";")
-                if len(p) == 9:
+                if len(p) >= 9:  # temperature was appended as field 9
                     try:
                         # pos;target_pos;tgt_rps;cur_rps;duty;tgt_cur;meas_cur;vbus;angle
                         tm.append((now, float(p[6]), float(p[7]), float(p[5]),

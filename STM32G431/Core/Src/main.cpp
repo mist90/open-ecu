@@ -25,6 +25,10 @@
 #define BLDC_MIN_CURRENT  -6.0f
 #define BLDC_MAX_SPEED 20.0f
 #define BLDC_MAX_ACCELERATION 2.0f
+// Thermal cut-out, degrees C, measured by the NTC on PB14. Above this the
+// drive goes to NEUTRAL, the same way over-voltage does. Not yet calibrated
+// against a reference thermometer - see the NTC note in stm32_adc.cpp.
+#define BLDC_MAX_TEMPERATURE 100.0f
 #define BLDC_INVERTION false
 // Electrical model of one phase, used to compute the current-loop PI gains
 // (see libecu/include/algorithms/current_loop_tuning.hpp).
@@ -75,6 +79,7 @@
 #define BLDC_MIN_CURRENT  -6.0f
 #define BLDC_MAX_SPEED 200.0f
 #define BLDC_MAX_ACCELERATION 100.0f
+#define BLDC_MAX_TEMPERATURE 100.0f
 #define BLDC_INVERTION true
 // Not identified for this motor - run a no-load speed sweep against captures
 // from it before trusting these. Zero L or R falls back to the hand-tuned gains.
@@ -243,8 +248,15 @@ int main(void)
     libecu::VoltageSensorParameters voltage_params;
     voltage_params.r_up = 169000.0f;   // 169kOhm upper resistor
     voltage_params.r_down = 18000.0f;  // 18kOhm lower resistor
+    // NTC divider on PB14 (ADC1_IN5):
+    //   +3.3V -- [10k NTC] -- PB14 -- [4.7k] -- GND
+    // so the pin voltage rises with temperature.
+    libecu::TemperatureSensorParameters temp_params;
+    temp_params.r_pulldown_ohms = 4700.0f;
+    temp_params.ntc_r25_ohms = 10000.0f;
+    temp_params.ntc_beta_k = 3435.0f;   // B25/85 of the fitted thermistor
 
-    if (!adc_driver.initialize(adc_calibration, voltage_params)) {
+    if (!adc_driver.initialize(adc_calibration, voltage_params, temp_params)) {
         Error_Handler();
     }
 
@@ -276,6 +288,7 @@ int main(void)
     motor_params.max_current = BLDC_MAX_CURRENT;
     motor_params.min_current = BLDC_MIN_CURRENT;
     motor_params.max_voltage = 36.0f;
+    motor_params.max_temperature_c = BLDC_MAX_TEMPERATURE;
     motor_params.max_speed_rps = BLDC_MAX_SPEED;
     motor_params.acceleration_rate = BLDC_MAX_ACCELERATION;  // RPS/s
     motor_params.target_speed_lpf_alpha = 0.0f;  // LPF smoothing for noisy potentiometer input
@@ -433,6 +446,12 @@ int main(void)
                 status = motor_controller->getStatus();
             }
 #ifdef LEGACY_POT_CONTROL
+            // NOTE: re-enabling this needs a second look at the ADC regular
+            // group. The NTC on PB14 shares it, and it is read from
+            // BldcController::update() - i.e. from SysTick, which preempts
+            // this loop between the channel select and the DR read. See the
+            // re-entrancy note on Stm32Adc::readRegularChannel().
+            //
             // Read potentiometer and update target speed (runs in main loop)
             if (status.control_mode == libecu::ControlMode::CLOSED_LOOP_VELOCITY ||
                     status.control_mode == libecu::ControlMode::OPEN_LOOP) {

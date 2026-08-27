@@ -496,12 +496,13 @@ void AtCommandProcessor::processCommand() noexcept {
         const MotorControlParams& params = controller_->getParams();
         char buf[96];
         int len = std::snprintf(buf, sizeof(buf),
-            "+MAXVALS:%.2f,%.2f,%.2f,%.2f,%.2f\r\n",
+            "+MAXVALS:%.2f,%.2f,%.2f,%.2f,%.2f,%.2f\r\n",
             params.max_speed_rps,
             params.min_current,
             params.max_current,
             params.max_voltage,
-            params.max_duty_cycle);
+            params.max_duty_cycle,
+            params.max_temperature_c);
         if (len > 0) write(buf, static_cast<std::size_t>(len));
         break;
     }
@@ -596,7 +597,9 @@ void AtCommandProcessor::sendTelemetry(const MotorStatus& status) noexcept {
     }
 
     char buf[128];
-    int len = std::snprintf(buf, sizeof(buf), "+TM:%u;%u;%.2f;%.2f;%.2f;%.2f;%.2f;%.2f;%.1f\n",
+    // Temperature is appended, not woven in, so a host that only knows the
+    // original nine fields still parses the line.
+    int len = std::snprintf(buf, sizeof(buf), "+TM:%u;%u;%.2f;%.2f;%.2f;%.2f;%.2f;%.2f;%.1f;%.1f\n",
             static_cast<unsigned>(status.measured_position),
             static_cast<unsigned>(status.target_position),
             status.target_speed_rps,
@@ -605,7 +608,8 @@ void AtCommandProcessor::sendTelemetry(const MotorStatus& status) noexcept {
             status.target_current,
             status.measured_current_filtered,
             status.bus_voltage,
-            status.pll_angle);
+            status.pll_angle,
+            status.temperature_c);
 
     if (len > 0 && static_cast<std::size_t>(len) < sizeof(buf)) {
         write(buf, static_cast<std::size_t>(len));
