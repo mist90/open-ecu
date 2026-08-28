@@ -67,6 +67,25 @@ static libecu::BldcController* motor_controller = nullptr;
 static libecu::AtCommandProcessor* g_at_processor = nullptr;
 static volatile bool control_tick = false;
 
+/* Throttle sampling.
+ *
+ * The potentiometer on PB12 shares ADC1's regular group with the NTC on PB14,
+ * and Stm32Adc::readRegularChannel() selects the channel and reads DR as two
+ * separate steps - so the two reads must never interleave. The NTC is read
+ * from BldcController::update(), i.e. from HAL_SYSTICK_Callback(), so the
+ * potentiometer is sampled from there as well: same context, and SysTick
+ * cannot preempt itself. The main loop only ever reads the cached result.
+ *
+ * Sampling starts on the first readThrottle() call and not before, so a build
+ * that never asks for the throttle - which is every build with
+ * THROTTLE_BRAKE_CONTROL off - pays no conversion in the control tick.
+ *
+ * Both are single aligned words, so the ISR/main-loop handoff needs no lock:
+ * the main loop sees either the previous sample or the current one.
+ */
+static volatile bool  throttle_sampling = false;
+static volatile float throttle_fraction = 0.0f;
+
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_USART2_UART_Init(void);
@@ -161,6 +180,13 @@ void HAL_SYSTICK_Callback(void) {
     if (motor_controller) {
         // Update motor controller
         motor_controller->update();
+    }
+    // After update(), so the control loop is not held up behind the regular
+    // conversion: an injected trigger aborts and restarts an in-flight regular
+    // conversion, and one arrives every 50 us, so this read can take a few
+    // attempts. Normalised here; readThrottle() applies the caller's scale.
+    if (throttle_sampling) {
+        throttle_fraction = adc_driver.readPotentiometer(1.0f);
     }
 }
 
@@ -318,7 +344,11 @@ public:
 
     float readThrottle(float max_value) noexcept override
     {
-        return adc_driver.readPotentiometer(max_value);
+        // Arms sampling in the control tick; the first call returns 0, which
+        // is the safe direction (no demand), and every later one returns a
+        // sample at most one control period old.
+        throttle_sampling = true;
+        return throttle_fraction * max_value;
     }
 
     bool brakeEngaged() noexcept override { return readBrakeButton(); }

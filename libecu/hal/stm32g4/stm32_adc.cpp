@@ -385,11 +385,19 @@ uint32_t Stm32Adc::getRawTemperatureAdcValue() {
  * Channel selection and the DR read are two separate steps, so a caller
  * preempted between them gets the other caller's channel back. Temperature is
  * read from BldcController::update(), i.e. the SysTick handler, which preempts
- * the main loop - so readPotentiometer() must not be called from the main loop
- * while that is happening. It currently cannot be: the only call sites are
- * under LEGACY_POT_CONTROL, which is compiled out. If that is ever re-enabled,
- * move the potentiometer read into the same 100 Hz context (or give the NTC
- * an injected rank of its own).
+ * the main loop - so the two callers must share a context or one of them will
+ * eventually be handed the other's channel.
+ *
+ * Both now run in the SysTick handler, and SysTick cannot preempt itself:
+ * HAL_SYSTICK_Callback() in the board port samples the potentiometer straight
+ * after BldcController::update(), and Board::readThrottle() only hands the
+ * main loop the cached result. Do not add a caller outside that context; a
+ * main-loop read cannot be made safe with a critical section either, because
+ * readRegularChannel() spins while injected triggers restart the conversion
+ * and would hold off the 20 kHz current loop.
+ *
+ * The alternative, if the regular group ever needs a third user, is to give
+ * the NTC an injected rank of its own and leave this group to the throttle.
  */
 uint32_t Stm32Adc::readRegularChannel(uint32_t channel) noexcept {
     // One conversion per call, rather than a two-rank scan holding both the

@@ -116,6 +116,13 @@ public:
 
     /**
      * @brief Manual throttle input, if the board has one
+     *
+     * Returns the most recent sample rather than converting at call time. On
+     * boards where the throttle shares an ADC group with a sensor read from
+     * the control tick, the two conversions must not interleave, so sampling
+     * belongs in that context. Callers therefore get a value at most one
+     * control period old and must not assume this touches hardware.
+     *
      * @param max_value Value corresponding to a fully open throttle
      * @return Demand in [0, max_value]; 0 when unsupported
      */

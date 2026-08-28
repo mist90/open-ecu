@@ -17,9 +17,23 @@
 
 #include <cstdio>
 
-//#define LEGACY_POT_CONTROL
+#define THROTTLE_BRAKE_CONTROL
 
 namespace {
+
+#ifdef THROTTLE_BRAKE_CONTROL
+/**
+ * @brief Closed-throttle dead-band, as a fraction of full scale
+ *
+ * Below this the throttle counts as released and the drive parks. It has to
+ * clear the potentiometer's own noise - a few LSB of a 12-bit conversion,
+ * around 0.001 - without swallowing usable travel at the bottom of the sweep.
+ * 1 % is a starting point, not a measurement: check it on the bench against
+ * the real pot before relying on it, since a dead-band that is too small makes
+ * the drive chatter between NEUTRAL and FORWARD at rest.
+ */
+constexpr float THROTTLE_DEADBAND = 0.01f;
+#endif
 
 /**
  * @brief Assemble the motor control parameters
@@ -207,27 +221,48 @@ int main(void)
                 libecu::CriticalSection cs;
                 status = motor_controller.getStatus();
             }
-#ifdef LEGACY_POT_CONTROL
-            // NOTE: re-enabling this needs a second look at the ADC regular
-            // group. The NTC shares it, and it is read from
-            // BldcController::update() - i.e. from the control tick, which
-            // preempts this loop between the channel select and the DR read.
-            // See the re-entrancy note on Stm32Adc::readRegularChannel().
+#ifdef THROTTLE_BRAKE_CONTROL
+            // Reads the throttle sampled during the last control tick, not the
+            // hardware: on this board the potentiometer shares an ADC group
+            // with the NTC, so the conversion has to happen in the same
+            // context as the temperature read. See Board::readThrottle() and
+            // the re-entrancy note on Stm32Adc::readRegularChannel().
             //
-            // Read potentiometer and update target speed (runs in main loop)
-            if (status.control_mode == libecu::ControlMode::CLOSED_LOOP_VELOCITY ||
-                    status.control_mode == libecu::ControlMode::OPEN_LOOP) {
-                float target_speed = board.brakeEngaged()? 0.0f : board.readThrottle(motor_params.max_speed_rps);
-                motor_controller.setTargetSpeed(target_speed);
-            } else if (status.control_mode == libecu::ControlMode::CLOSED_LOOP_TORQUE) {
-                if (status.electric_mode == libecu::ElectricMode::CURRENT_MODE) {
-                    float target_current = board.brakeEngaged()? 0.0f : board.readThrottle(motor_params.max_current);
-                    motor_controller.setCurrent(target_current);
-                } else if (status.electric_mode == libecu::ElectricMode::VOLTAGE_MODE) {
-                    float target_duty_cycle = board.brakeEngaged()? 0.0f : board.readThrottle(1.0f);
-                    motor_controller.setDutyCycle(target_duty_cycle);
-                }
+            // Taken once per tick, normalised, and scaled below into the
+            // speed demand.
+            const float throttle = board.readThrottle(1.0f);
+
+            // The throttle is a velocity demand, so the controller is held in
+            // closed-loop velocity for as long as this input owns the drive -
+            // including back out of any mode set over AT. setControlMode()
+            // ignores a no-op itself; testing the snapshot we already hold
+            // saves even the critical section.
+            if (status.control_mode != libecu::ControlMode::CLOSED_LOOP_VELOCITY) {
+                motor_controller.setControlMode(libecu::ControlMode::CLOSED_LOOP_VELOCITY);
             }
+
+            // A closed throttle parks the drive rather than holding a zero
+            // setpoint with the bridge live; anything past the dead-band
+            // engages it forward.
+            //
+            // Edge-triggered against the controller's own mode, because
+            // setDriveMode() is not idempotent: the non-NEUTRAL path runs
+            // algorithm().onEnter(), which under FOC re-arms all three phases
+            // at 50 % duty. Calling it every tick would keep resetting the
+            // loop it is supposed to be driving.
+            const libecu::DriveMode wanted = (throttle <= THROTTLE_DEADBAND)
+                                                 ? libecu::DriveMode::NEUTRAL
+                                                 : libecu::DriveMode::FORWARD;
+            if (motor_controller.getDriveMode() != wanted) {
+                motor_controller.setDriveMode(wanted);
+            }
+
+            // The brake zeroes the demand but deliberately does not park the
+            // drive: with the bridge still live, a zero setpoint is what lets
+            // the speed loop hold the motor down rather than let it coast.
+            const float demand = board.brakeEngaged() ? 0.0f : throttle;
+
+            motor_controller.setTargetSpeed(demand * motor_params.max_speed_rps);
 #endif
 
             if (at_processor.isTelemetryEnabled()) {
