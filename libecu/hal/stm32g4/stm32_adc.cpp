@@ -13,7 +13,7 @@
  */
 
 #include "stm32_adc.hpp"
-#include "../../Core/Inc/main.h"
+#include "main.h"  // board pin map, supplied by the port's include path
 
 // Hardware handles (defined in main.cpp)
 ADC_HandleTypeDef hadc1;

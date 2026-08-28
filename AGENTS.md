@@ -118,18 +118,19 @@ cd STM32G431
 ```
 open-ecu/
 ├── libecu/                    # Platform-independent motor control library
-│   ├── include/               # Public headers
-│   │   ├── interfaces/        # Hardware abstraction (PwmInterface, HallInterface)
-│   │   ├── algorithms/        # Control algorithms (six-step, FOC, PID, PLL)
-│   │   ├── safety/            # Safety monitoring
-│   │   └── platform/          # Platform utilities (critical_section.hpp)
-│   ├── src/                   # Core implementations
+│   ├── include/               # Public headers, all in one flat directory:
+│   │                          #   board.hpp        - abstract board factory
+│   │                          #   *_interface.hpp  - PWM/Hall/ADC abstraction
+│   │                          #   motor_config.hpp - per-motor configuration
+│   │                          #   algorithms (six-step, FOC, PID, PLL, ...)
+│   │                          #   crc16/critical_section utilities
+│   ├── src/                   # Core implementations + main.cpp (the ECU itself)
 │   ├── hal/stm32g4/          # STM32G4-specific HAL implementations
-│   └── Makefile              # Host platform build
+│   └── Makefile              # Host platform build (excludes main.cpp)
 ├── STM32G431/                # STM32G431 platform
-│   ├── Core/                  # Application code
+│   ├── Core/                  # Board port
 │   │   ├── Inc/              # Headers (main.h)
-│   │   ├── Src/              # Sources (main.cpp, stm32g4xx_it.c)
+│   │   ├── Src/              # Sources (board.cpp, stm32g4xx_it.c)
 │   │   └── Startup/          # Startup assembly
 │   ├── Drivers/              # STM32 HAL and CMSIS
 │   ├── CMakeLists.txt        # Platform build config
@@ -236,7 +237,7 @@ float update(float setpoint, float feedback, float dt);
 
 ### Includes
 - **Order**: STM32 HAL → libecu → C++ std → C std
-- **Relative paths** for libecu internal includes: `#include "../include/algorithms/pid_controller.hpp"`
+- **Relative paths** for libecu internal includes: `#include "../include/pid_controller.hpp"`
 - **System includes** with angle brackets: `#include <cstdint>`
 
 Example (main.cpp):
@@ -303,9 +304,25 @@ if (HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1) != HAL_OK) {
 
 ### Platform Independence (libecu)
 - **No hardware dependencies** in `libecu/src/` and `libecu/include/`
-- **Abstract interfaces** in `libecu/include/interfaces/`
+- **Abstract interfaces** in `libecu/include/` (`pwm_interface.hpp`, `hall_interface.hpp`, `adc_interface.hpp`, `board.hpp`)
 - **HAL implementations** in `libecu/hal/<platform>/`
 - **Platform-specific code** only in HAL layer
+
+### Adding a board
+`libecu/src/main.cpp` is the ECU and is the same source on every target. A port
+supplies one translation unit (`<platform>/Core/Src/board.cpp` on STM32G431)
+that:
+1. derives from `libecu::Board` and builds the concrete `PwmInterface`,
+   `HallInterface`, `AdcInterface` and `AtCommandProcessor`,
+2. implements `libecu::createBoard()` returning that instance,
+3. implements `time_us()`, `disable_interrupts()` and `enable_interrupts()`,
+4. fills `BoardInfo` with the facts the ECU cannot know: PWM and control loop
+   rates, nominal bus voltage, requested and actually-programmed dead time.
+
+Motor properties (poles, limits, electrical model, loop tuning) stay in
+`libecu/include/motor_config.hpp`; board properties (shunt, divider, NTC,
+dead time, loop rates, DC link) stay in the port. Nothing above `board.hpp`
+includes a vendor HAL, and nothing below it knows which motor is attached.
 
 ## Key Conventions
 - **HAL drivers**: All STM32 peripherals configured via HAL (not bare metal)

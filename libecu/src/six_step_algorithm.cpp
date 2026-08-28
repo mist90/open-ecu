@@ -3,8 +3,8 @@
  * @brief Implementation of trapezoidal six-step commutation
  */
 
-#include "../include/algorithms/six_step_algorithm.hpp"
-#include "../include/algorithms/foc_math.hpp"
+#include "../include/six_step_algorithm.hpp"
+#include "../include/foc_math.hpp"
 
 #include <algorithm>
 

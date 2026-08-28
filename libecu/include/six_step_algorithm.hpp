@@ -16,7 +16,7 @@
 
 #include <cstdint>
 
-#include "../interfaces/pwm_interface.hpp"
+#include "pwm_interface.hpp"
 #include "motor_algorithm.hpp"
 #include "pid_controller.hpp"
 

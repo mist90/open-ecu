@@ -6,7 +6,7 @@
  * Working range is 0.0...60.0 (10 electrical periods) to prevent phase wrap-around.
  */
 
-#include "../include/algorithms/motor_pll.hpp"
+#include "../include/motor_pll.hpp"
 #include "../include/bldc_controller.hpp"
 #include <cmath>
 

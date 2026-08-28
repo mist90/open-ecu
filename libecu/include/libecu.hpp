@@ -7,15 +7,15 @@
 #define LIBECU_HPP
 
 // Core interfaces
-#include "interfaces/pwm_interface.hpp"
-#include "interfaces/hall_interface.hpp"
+#include "pwm_interface.hpp"
+#include "hall_interface.hpp"
 
 // Motor control algorithms
-#include "algorithms/motor_algorithm.hpp"
-#include "algorithms/six_step_algorithm.hpp"
-#include "algorithms/foc_algorithm.hpp"
-#include "algorithms/foc_math.hpp"
-#include "algorithms/pid_controller.hpp"
+#include "motor_algorithm.hpp"
+#include "six_step_algorithm.hpp"
+#include "foc_algorithm.hpp"
+#include "foc_math.hpp"
+#include "pid_controller.hpp"
 
 // AT command processor
 #include "at_command_processor.hpp"

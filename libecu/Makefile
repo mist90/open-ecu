@@ -13,8 +13,10 @@ TEST_DIR = tests
 BUILD_DIR = build
 LIB_DIR = lib
 
-# Source files
-SOURCES = $(wildcard $(SRC_DIR)/*.cpp) $(wildcard $(SRC_DIR)/platform/*.cpp)
+# Source files. main.cpp is the ECU application, not part of the library: it
+# needs a libecu::Board port to link against and would put a main() symbol in
+# the archive.
+SOURCES = $(filter-out $(SRC_DIR)/main.cpp,$(wildcard $(SRC_DIR)/*.cpp))
 OBJECTS = $(SOURCES:$(SRC_DIR)/%.cpp=$(BUILD_DIR)/%.o)
 
 # Library name
@@ -26,7 +28,6 @@ all: $(LIBRARY)
 # Create build directories
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
-	mkdir -p $(BUILD_DIR)/platform
 
 $(TEST_DIR):
 	mkdir -p $(TEST_DIR)

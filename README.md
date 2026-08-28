@@ -62,10 +62,15 @@ Located in `libecu/hal/<platform>/`:
 
 Located in `<platform>/Core/`:
 
-**STM32G431** (`STM32G431/Core/Src/main.cpp`):
-- Initializes STM32 HAL and peripherals
-- Creates libecu controllers with HAL implementations
-- Runs 1kHz speed control loop (TIM2 periodic timer) and 40kHz current loop (PWM ISR)
+The ECU application itself is platform-independent and lives in
+`libecu/src/main.cpp`. It reaches hardware only through the abstract factory
+`libecu::Board` (`libecu/include/board.hpp`), so a new target is a new board
+port rather than a new main.
+
+**STM32G431** (`STM32G431/Core/Src/board.cpp`):
+- Implements `libecu::Board` for this hardware
+- Initializes STM32 HAL and peripherals, and creates the PWM/Hall/ADC drivers
+- Routes the Hall and PWM interrupts, and arms the speed and current loops
 
 ### Key Features
 - **FOC** with Hall sensor position feedback

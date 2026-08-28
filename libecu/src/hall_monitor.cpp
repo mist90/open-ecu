@@ -3,7 +3,7 @@
  * @brief Hall sensor health monitor - implementation
  */
 
-#include "../include/algorithms/hall_monitor.hpp"
+#include "../include/hall_monitor.hpp"
 #include <cmath>
 
 namespace libecu {

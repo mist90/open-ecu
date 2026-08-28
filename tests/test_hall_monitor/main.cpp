@@ -17,7 +17,7 @@
 #include <algorithm>
 #include <initializer_list>
 
-#include "../../libecu/include/algorithms/hall_monitor.hpp"
+#include "../../libecu/include/hall_monitor.hpp"
 
 using libecu::HallFault;
 using libecu::HallMonitor;

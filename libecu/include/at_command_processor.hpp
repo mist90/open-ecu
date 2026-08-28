@@ -9,8 +9,8 @@
 #include <cstddef>
 #include <cstdint>
 
-#include "algorithms/motor_pll.hpp"
-#include "algorithms/hall_monitor.hpp"
+#include "motor_pll.hpp"
+#include "hall_monitor.hpp"
 
 namespace libecu {
 

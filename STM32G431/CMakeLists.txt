@@ -75,9 +75,7 @@ include_directories(
     Drivers/CMSIS/Device/ST/STM32G4xx/Include
     Drivers/CMSIS/Include
     ../libecu/include
-    ../libecu/include/interfaces
-    ../libecu/include/algorithms
-    ../libecu/include/hal/stm32g4
+    ../libecu/hal/stm32g4
 )
 
 # Convert CPU_PARAMETERS list to string
@@ -127,7 +125,10 @@ file(GLOB STARTUP_FILE
 )
 
 # libecu library sources (using platform-specific hal directory)
+# main.cpp is the platform-independent ECU application; the STM32G431 port of
+# libecu::Board that it runs on is Core/Src/board.cpp, picked up by CORE_SOURCES.
 file(GLOB LIBECU_CORE_SOURCES
+    "../libecu/src/main.cpp"
     "../libecu/src/bldc_controller.cpp"
     "../libecu/src/six_step_algorithm.cpp"
     "../libecu/src/foc_algorithm.cpp"
@@ -135,7 +136,7 @@ file(GLOB LIBECU_CORE_SOURCES
     "../libecu/src/motor_pll.cpp"
     "../libecu/src/hall_monitor.cpp"
     "../libecu/src/at_command_processor.cpp"
-    "../libecu/src/platform/crc16.cpp"
+    "../libecu/src/crc16.cpp"
 )
 
 file(GLOB LIBECU_HAL_SOURCES

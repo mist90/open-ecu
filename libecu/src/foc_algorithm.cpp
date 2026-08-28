@@ -3,7 +3,7 @@
  * @brief Implementation of field-oriented control with space-vector modulation
  */
 
-#include "../include/algorithms/foc_algorithm.hpp"
+#include "../include/foc_algorithm.hpp"
 
 #include <algorithm>
 

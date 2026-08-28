@@ -78,7 +78,7 @@ Every command must carry a CRC-16 checksum appended after a `*` character. The C
 | Output reflection | No |
 | Final XOR | 0x0000 |
 
-The implementation uses a 256-entry lookup table for speed. The full source is in `libecu/src/platform/crc16.cpp`.
+The implementation uses a 256-entry lookup table for speed. The full source is in `libecu/src/crc16.cpp`.
 
 ### Wire Format
 
@@ -290,7 +290,7 @@ gains, which is correct for a motor with Ld == Lq.
 
 Derivation: placing the PI zero on the plant pole (`Ti = L/R`) gives
 `kp = L·ω_c` and `ki = R·ω_c`. See `tuneFocCurrentPi()` in
-`libecu/include/algorithms/current_loop_tuning.hpp`.
+`libecu/include/current_loop_tuning.hpp`.
 
 ### FOC Angle Offset (AT+FANG)
 

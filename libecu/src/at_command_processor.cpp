@@ -1,7 +1,7 @@
 #include "../include/at_command_processor.hpp"
 #include "../include/bldc_controller.hpp"
-#include "../include/platform/crc16.hpp"
-#include "../include/platform/critical_section.hpp"
+#include "../include/crc16.hpp"
+#include "../include/critical_section.hpp"
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>

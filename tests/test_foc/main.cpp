@@ -17,8 +17,8 @@
  * Build and run: ./run.sh
  */
 
-#include "../../libecu/include/algorithms/foc_algorithm.hpp"
-#include "../../libecu/include/algorithms/foc_math.hpp"
+#include "../../libecu/include/foc_algorithm.hpp"
+#include "../../libecu/include/foc_math.hpp"
 
 #include <cmath>
 #include <cstdio>

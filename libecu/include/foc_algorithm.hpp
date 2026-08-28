@@ -73,7 +73,7 @@
 
 #include <cstdint>
 
-#include "../interfaces/pwm_interface.hpp"
+#include "pwm_interface.hpp"
 #include "foc_math.hpp"
 #include "motor_algorithm.hpp"
 

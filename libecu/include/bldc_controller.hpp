@@ -10,16 +10,16 @@
 #include <cstdint>
 #include <array>
 
-#include "interfaces/pwm_interface.hpp"
-#include "interfaces/hall_interface.hpp"
-#include "interfaces/adc_interface.hpp"
-#include "algorithms/motor_algorithm.hpp"
-#include "algorithms/six_step_algorithm.hpp"
-#include "algorithms/foc_algorithm.hpp"
-#include "algorithms/pid_controller.hpp"
-#include "algorithms/motor_pll.hpp"
-#include "algorithms/current_loop_tuning.hpp"
-#include "algorithms/hall_monitor.hpp"
+#include "pwm_interface.hpp"
+#include "hall_interface.hpp"
+#include "adc_interface.hpp"
+#include "motor_algorithm.hpp"
+#include "six_step_algorithm.hpp"
+#include "foc_algorithm.hpp"
+#include "pid_controller.hpp"
+#include "motor_pll.hpp"
+#include "current_loop_tuning.hpp"
+#include "hall_monitor.hpp"
 
 namespace libecu {
 

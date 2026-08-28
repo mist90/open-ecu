@@ -3,7 +3,7 @@
 #include <cmath>
 #include <cstdint>
 #include <iomanip>
-#include "../../libecu/include/algorithms/motor_pll.hpp"
+#include "../../libecu/include/motor_pll.hpp"
 
 int main() {
     // -------------------------------------------------------------------------

@@ -3,7 +3,7 @@
  * @brief Implementation of PID controller with anti-windup
  */
 
-#include "../include/algorithms/pid_controller.hpp"
+#include "../include/pid_controller.hpp"
 #include <algorithm>
 
 namespace libecu {

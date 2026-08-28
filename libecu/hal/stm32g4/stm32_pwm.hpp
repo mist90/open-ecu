@@ -6,7 +6,7 @@
 #ifndef LIBECU_STM32_PWM_HPP
 #define LIBECU_STM32_PWM_HPP
 
-#include "../../include/interfaces/pwm_interface.hpp"
+#include "../../include/pwm_interface.hpp"
 
 namespace libecu {
 

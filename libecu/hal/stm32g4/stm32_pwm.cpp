@@ -4,7 +4,7 @@
  */
 
 #include "stm32_pwm.hpp"
-#include "../../Core/Inc/main.h"
+#include "main.h"  // board pin map, supplied by the port's include path
 
 namespace libecu {
 

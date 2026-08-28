@@ -6,7 +6,7 @@
 #ifndef LIBECU_STM32_ADC_HPP
 #define LIBECU_STM32_ADC_HPP
 
-#include "../../include/interfaces/adc_interface.hpp"
+#include "../../include/adc_interface.hpp"
 
 namespace libecu {
 

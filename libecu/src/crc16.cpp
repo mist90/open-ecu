@@ -1,4 +1,4 @@
-#include "../include/platform/crc16.hpp"
+#include "../include/crc16.hpp"
 
 namespace libecu {
 

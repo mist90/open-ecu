@@ -4,7 +4,7 @@
  */
 
 #include "stm32_hall_sensor.hpp"
-#include "../../Core/Inc/main.h"
+#include "main.h"  // board pin map, supplied by the port's include path
 #include <cstdint>
 
 // Global TIM4 handle (shared with IRQ handler via extern in stm32g4xx_it.c)

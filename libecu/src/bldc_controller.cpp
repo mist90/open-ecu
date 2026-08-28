@@ -4,7 +4,7 @@
  */
 
 #include "../include/bldc_controller.hpp"
-#include "../include/platform/critical_section.hpp"
+#include "../include/critical_section.hpp"
 #include <algorithm>
 #include <stdio.h>
 #include <cmath>

@@ -6,7 +6,7 @@
 #ifndef LIBECU_STM32_HALL_SENSOR_HPP
 #define LIBECU_STM32_HALL_SENSOR_HPP
 
-#include "../../include/interfaces/hall_interface.hpp"
+#include "../../include/hall_interface.hpp"
 #include "stm32g4xx_hal.h"
 
 namespace libecu {
