@@ -17,7 +17,7 @@
 
 #include <cstdio>
 
-#define THROTTLE_BRAKE_CONTROL
+//#define THROTTLE_BRAKE_CONTROL
 
 namespace {
 
