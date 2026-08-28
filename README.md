@@ -2,7 +2,7 @@
 
 Open-source BLDC motor control firmware with platform-independent architecture. Initially developed for the b-g431b-esc1 board (STM32G431CBU), but designed to support multiple hardware platforms.
 
-The firmware implements 6-step trapezoidal commutation with Hall sensor feedback, closed-loop PID speed control, and comprehensive safety monitoring.
+The firmware implements FOC and 6-step trapezoidal commutation with Hall sensor feedback, closed-loop PID speed control, and comprehensive safety monitoring.
 
 ## Supported Platforms
 
@@ -68,6 +68,7 @@ Located in `<platform>/Core/`:
 - Runs 1kHz speed control loop (TIM2 periodic timer) and 40kHz current loop (PWM ISR)
 
 ### Key Features
+- **FOC** with Hall sensor position feedback
 - **6-step trapezoidal control** with Hall sensor position feedback
 - **Closed-loop speed control** using PID algorithm
 - **Safety monitoring** with overcurrent, overtemperature, and undervoltage protection
