@@ -229,7 +229,24 @@ void BldcController::update() noexcept
         status = status_;
     }
 
-    if (status.is_running) {
+    // A parked drive still reaches here every tick, but NEUTRAL has already
+    // high-Z'd the bridge, so the velocity loop has nothing to act on - and
+    // running it anyway is what put a jerk into the next start.
+    //
+    // On release the setpoint drops to zero instantly while the rotor coasts
+    // on, and the slew limiter walks its output down at acceleration_rate, so
+    // the loop sees seconds of large positive error that no amount of output
+    // can answer with the bridge off. It integrates to its ceiling and then
+    // *stays* there, because once the ramp and the rotor both reach zero the
+    // error is zero and nothing unwinds it. setDriveMode() resets the PID on
+    // the way into NEUTRAL, but that reset happens once and the following
+    // ticks simply wound it up again. Measured on MOTOR_1 releasing from
+    // 5 RPS: parked target current settled at 3.2 A and held, and the next
+    // FORWARD applied it as a step - 3.1 A into a stationary rotor inside
+    // 40 ms. Releasing from 12 RPS reached the 9.4 A the throttle logs show.
+    if (dmode_ == DriveMode::NEUTRAL) {
+        holdVelocityLoop();
+    } else if (status.is_running) {
         switch (status.control_mode) {
             case ControlMode::OPEN_LOOP: {
                 uint32_t current_time_us = time_us();
@@ -452,6 +469,21 @@ void BldcController::setDriveMode(DriveMode mode) noexcept
     }
 }
 
+void BldcController::setAccelerationRate(float rate_rps2) noexcept
+{
+    CriticalSection cs;
+    params_.acceleration_rate = rate_rps2;
+    // limited_target_speed_ is deliberately left alone: it is where the ramp
+    // has got to so far, and resetting it to the raw target would turn a change
+    // of rate limit into the very step the limiter exists to prevent.
+}
+
+float BldcController::getAccelerationRate() const noexcept
+{
+    CriticalSection cs;
+    return params_.acceleration_rate;
+}
+
 void BldcController::setSpeedPid(float kp, float ki, float kd) noexcept
 {
     PidParameters p = pid_speed_controller_.getParameters();
@@ -585,6 +617,21 @@ void BldcController::stop() noexcept
 MotorStatus BldcController::getStatus() const noexcept
 {
     return status_;
+}
+
+void BldcController::holdVelocityLoop() noexcept
+{
+    pid_speed_controller_.reset();
+    filtered_target_speed_ = 0.0f;
+    // Park the ramp at the *measured* speed rather than at zero, so that
+    // re-engaging starts from where the rotor actually is - bumpless whether
+    // it is standing still or still coasting.
+    limited_target_speed_ = filtered_measured_speed_;
+    // Nominal dt on the first tick after re-engagement. Left alone, the whole
+    // parked interval would arrive as a single dt, and max_change with it -
+    // which would let the limited setpoint step straight to the demand and
+    // defeat the ramp exactly when it matters most.
+    last_pid_update_time_us_ = 0;
 }
 
 float BldcController::applyAccelerationLimit(float target_speed, float dt) noexcept

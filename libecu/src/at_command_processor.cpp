@@ -168,11 +168,12 @@ namespace {
 enum class CommandId : uint8_t {
     Unknown,
     Spd, Cur, Dut, Mode, EMode, DMode, Spid, Cpid, PllId, Pll, HStatus, HClear, Ver, Status, Tm, Osc, Maxvals,
-    Algo, Fpid, Fang
+    Algo, Fpid, Fang, Acc
 };
 
 CommandId matchCommand(const char* cmd) noexcept {
     if (std::strncmp(cmd, "MAXVALS", 7) == 0) return CommandId::Maxvals;
+    if (std::strncmp(cmd, "ACC", 3) == 0) return CommandId::Acc;
     if (std::strncmp(cmd, "ALGO", 4) == 0) return CommandId::Algo;
     if (std::strncmp(cmd, "FPID", 4) == 0) return CommandId::Fpid;
     if (std::strncmp(cmd, "FANG", 4) == 0) return CommandId::Fang;
@@ -256,7 +257,7 @@ void AtCommandProcessor::processCommand() noexcept {
                             id == CommandId::Dut || id == CommandId::Mode ||
                             id == CommandId::EMode || id == CommandId::DMode ||
                             id == CommandId::Spid || id == CommandId::Cpid ||
-                            id == CommandId::PllId ||
+                            id == CommandId::PllId || id == CommandId::Acc ||
                             id == CommandId::Status || id == CommandId::Maxvals);
     if (needsController && controller_ == nullptr) {
         sendError();
@@ -307,6 +308,24 @@ void AtCommandProcessor::processCommand() noexcept {
                 return;
             }
             controller_->setDutyCycle(val);
+            sendOk();
+        }
+        break;
+    }
+
+    case CommandId::Acc: {
+        // Slew rate limit on the *velocity setpoint*, RPS/s. Defaults to
+        // BLDC_MAX_ACCELERATION; 0 disables the limiter, which makes AT+SPD a
+        // step command.
+        if (query) {
+            sendFloatResponse("ACC", controller_->getAccelerationRate());
+        } else {
+            float val = parseFloatParam(valuePtr);
+            if (val < 0.0f || val > 1000.0f) {
+                sendError();
+                return;
+            }
+            controller_->setAccelerationRate(val);
             sendOk();
         }
         break;

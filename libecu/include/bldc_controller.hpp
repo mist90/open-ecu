@@ -293,6 +293,24 @@ public:
     void setDriveMode(DriveMode mode) noexcept;
 
     /**
+     * @brief Set the target-speed slew rate limit
+     *
+     * Applies to the velocity command only - it is the rate at which the
+     * *setpoint* is allowed to move, not a torque limit, so it does nothing in
+     * TORQUE or OPEN_LOOP mode. Defaults to BLDC_MAX_ACCELERATION.
+     *
+     * Worth keeping below what the PLL can follow: the steady-state tracking
+     * error during a ramp is alpha/ki steps, and past 1.5 steps the commutation
+     * lead goes negative. See the tuning notes under AT+PLLID.
+     *
+     * @param rate_rps2 Rate in RPS per second, 0 disables the limiter
+     */
+    void setAccelerationRate(float rate_rps2) noexcept;
+
+    /// @brief Get the target-speed slew rate limit (RPS/s), 0 = disabled
+    float getAccelerationRate() const noexcept;
+
+    /**
      * @brief Set speed PID controller gains (kp, ki, kd)
      * @param kp Proportional gain
      * @param ki Integral gain
@@ -460,6 +478,15 @@ private:
     float limited_target_speed_;             ///< Rate-limited target speed (after LPF)
 
 
+
+    /**
+     * @brief Hold the velocity loop while the drive is parked in NEUTRAL
+     *
+     * Keeps the speed PID and the slew limiter from integrating against a
+     * setpoint the disabled bridge cannot follow, and leaves both in the state
+     * a bumpless re-engagement needs. See the note at the call site.
+     */
+    void holdVelocityLoop() noexcept;
 
     /**
      * @brief Apply acceleration/deceleration limits to target speed

@@ -249,6 +249,55 @@ class CurrentController(QWidget):
         self._write(cmd.encode("ascii"))
 
 
+class AccelerationController(QWidget):
+    """Slew rate limit on the speed setpoint (AT+ACC), in RPS/s.
+
+    Apply-on-button rather than on valueChanged, like the PID boxes: typing
+    "12" into the spinbox passes through 1 on the way, and each intermediate
+    value would otherwise be sent to the drive.
+    """
+
+    def __init__(self, write_callback):
+        super().__init__()
+        self._write = write_callback
+        self._init_ui()
+
+    def _init_ui(self):
+        group = QGroupBox("Acceleration (AT+ACC)")
+        layout = QHBoxLayout(group)
+
+        layout.addWidget(QLabel("Ramp Rate:"))
+
+        self.spinbox = QDoubleSpinBox()
+        self.spinbox.setRange(0.0, 1000.0)
+        self.spinbox.setDecimals(2)
+        self.spinbox.setSingleStep(0.5)
+        self.spinbox.setValue(0)
+        self.spinbox.setSuffix(" RPS/s")
+        self.spinbox.setMinimumWidth(110)
+        layout.addWidget(self.spinbox, stretch=1)
+
+        self.btn_apply = QPushButton("Apply")
+        self.btn_apply.setFixedWidth(60)
+        self.btn_apply.clicked.connect(self._on_apply)
+        layout.addWidget(self.btn_apply)
+
+        self.group = group
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(group)
+
+    def set_enabled(self, enabled: bool):
+        self.group.setEnabled(enabled)
+
+    def set_value_from_firmware(self, value: float):
+        self.spinbox.setValue(value)
+
+    def _on_apply(self):
+        cmd = format_at_command(f"AT+ACC={self.spinbox.value():.2f}")
+        self._write(cmd.encode("ascii"))
+
+
 class PidTuningWidget(QWidget):
 
     def __init__(self, label: str, at_command: str, write_callback,
@@ -318,6 +367,12 @@ class ControlPanel(QWidget):
         self.current_ctrl = CurrentController(self._write)
         layout.addWidget(self.current_ctrl)
 
+        # Ramp rate for the speed setpoint. Lives next to the speed slider
+        # because that is the only command it acts on - torque and open-loop
+        # duty are unaffected.
+        self.accel_ctrl = AccelerationController(self._write)
+        layout.addWidget(self.accel_ctrl)
+
         # Electrical algorithm selector (AT+ALGO). Orthogonal to control mode:
         # this picks how the bridge is driven, the modes below pick what is
         # being regulated.
@@ -375,6 +430,7 @@ class ControlPanel(QWidget):
         self.algorithm_combo.setEnabled(enabled)
         self.control_mode_combo.setEnabled(enabled)
         self.drive_mode_combo.setEnabled(enabled)
+        self.accel_ctrl.set_enabled(enabled)
         self.spid_widget.setEnabled(enabled)
         self.cpid_widget.setEnabled(enabled)
         self.fpid_widget.setEnabled(enabled)
@@ -458,6 +514,9 @@ class ControlPanel(QWidget):
 
     def _set_target_current_from_firmware(self, value: float):
         self.current_ctrl.set_value_from_firmware(value)
+
+    def _set_acceleration_from_firmware(self, value: float):
+        self.accel_ctrl.set_value_from_firmware(value)
 
     def _set_spid_from_firmware(self, kp: float, ki: float, kd: float):
         self.spid_widget.set_values(kp, ki, kd)
@@ -1155,6 +1214,7 @@ class MonitorWindow(QMainWindow):
         self._send_data(format_at_command("AT+STATUS").encode("ascii"))
         self._send_data(format_at_command("AT+DMODE?").encode("ascii"))
         self._send_data(format_at_command("AT+SPD?").encode("ascii"))
+        self._send_data(format_at_command("AT+ACC?").encode("ascii"))
         self._send_data(format_at_command("AT+SPID?").encode("ascii"))
         self._send_data(format_at_command("AT+CPID?").encode("ascii"))
         self._send_data(format_at_command("AT+ALGO?").encode("ascii"))
@@ -1208,6 +1268,8 @@ class MonitorWindow(QMainWindow):
             self._parse_float_response(line, "+SPD:", self._apply_target_speed)
         elif line.startswith("+CUR:"):
             self._parse_float_response(line, "+CUR:", self._apply_target_current)
+        elif line.startswith("+ACC:"):
+            self._parse_float_response(line, "+ACC:", self._apply_acceleration)
         elif line.startswith("+MODE:"):
             self._handle_mode_prefix(line, "MODE")
         elif line.startswith("+DMODE:"):
@@ -1234,6 +1296,10 @@ class MonitorWindow(QMainWindow):
     def _apply_target_current(self, value: float) -> None:
         if self.control_panel is not None:
             self.control_panel._set_target_current_from_firmware(value)
+
+    def _apply_acceleration(self, value: float) -> None:
+        if self.control_panel is not None:
+            self.control_panel._set_acceleration_from_firmware(value)
 
     def _parse_status(self, line: str) -> None:
         try:

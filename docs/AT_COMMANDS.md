@@ -181,6 +181,55 @@ Negative current values reverse the current direction, enabling regenerative bra
 < +CUR:3.50\r\n
 ```
 
+### Acceleration Limit (AT+ACC)
+
+Set or read the slew rate limit applied to the **speed setpoint**, in RPS per
+second.
+
+| | |
+|---|---|
+| **Set** | `AT+ACC=<val>*<CRC>\r\n` |
+| **Query** | `AT+ACC?*<CRC>\r\n` |
+| **Set response** | `OK\r\n` |
+| **Query response** | `+ACC:4.00\r\n` |
+| **Range** | 0.0 to 1000.0 RPS/s |
+| **Default** | `BLDC_MAX_ACCELERATION` from `libecu/include/motor_config.hpp` (4.0 on MOTOR_1) |
+
+This limits how fast the *command* is allowed to move, not the torque: it is
+the second stage of the target-speed filter (LPF → slew rate limiter, see
+`applyAccelerationLimit()`), so it only bites in `MODE=1` (VELOCITY). In TORQUE
+and OPEN_LOOP the speed setpoint is not used at all and the setting has no
+effect.
+
+`0` disables the limiter, which makes `AT+SPD` a step command — the drive will
+demand whatever current the speed PID asks for to close the gap immediately.
+
+Changing the rate does not move the ramp that is already in progress; the new
+rate applies from the next control tick.
+
+> **The ramp is not visible on `+TM:tgt_speed`.** That field reports the raw
+> setpoint, which steps the moment `AT+SPD` lands; the limiter output is
+> internal. Watch `cur_speed` instead. Measured on MOTOR_1 stepping to 5 RPS:
+> `ACC=1` gives 0.99 RPS/s, `ACC=4` gives 4.7 RPS/s, `ACC=0` gives 25.6 RPS/s.
+
+Note that `AT+SPD` is ignored entirely while `DMODE=2` (NEUTRAL), so a ramp
+cannot be observed there.
+
+**Keep it below what the PLL can follow.** The steady-state PLL tracking error
+during a ramp is `e_ss = α / ki` steps (α in steps/s², 1 RPS/s = 48 steps/s² on
+a 40-pole motor), and past 1.5 steps the commutation lead goes negative and the
+motor runs away. See the tuning notes under [AT+PLLID](#pll-gain-tuning-atpllid).
+
+**Examples:**
+
+```
+> AT+ACC=2.5*XXXX\r\n
+< OK\r\n
+
+> AT+ACC?*XXXX\r\n
+< +ACC:2.50\r\n
+```
+
 ### Duty Cycle (AT+DUT)
 
 Set duty cycle in open-loop mode or read current duty cycle.
@@ -770,6 +819,8 @@ ERROR\r\n
 | `AT+SPD?` | Query | -- | `+SPD:123.45` |
 | `AT+CUR=<val>` | Set | -6.0 .. 6.0 A | `OK` |
 | `AT+CUR?` | Query | -- | `+CUR:2.50` |
+| `AT+ACC=<val>` | Set | 0.0 .. 1000.0 RPS/s | `OK` |
+| `AT+ACC?` | Query | -- | `+ACC:4.00` |
 | `AT+DUT=<val>` | Set | 0.0 .. 1.0 | `OK` |
 | `AT+DUT?` | Query | -- | `+DUT:0.30` |
 | `AT+MODE=<val>` | Set | 0, 1, 2 | `OK` |

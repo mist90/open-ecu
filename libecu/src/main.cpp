@@ -257,12 +257,16 @@ int main(void)
                 motor_controller.setDriveMode(wanted);
             }
 
-            // The brake zeroes the demand but deliberately does not park the
-            // drive: with the bridge still live, a zero setpoint is what lets
-            // the speed loop hold the motor down rather than let it coast.
-            const float demand = board.brakeEngaged() ? 0.0f : throttle;
+            if (wanted != libecu::DriveMode::NEUTRAL) {
+                // The brake zeroes the demand but deliberately does not park the
+                // drive: with the bridge still live, a zero setpoint is what lets
+                // the speed loop hold the motor down rather than let it coast.
+                const float demand = board.brakeEngaged() ? 0.0f : throttle - THROTTLE_DEADBAND;
 
-            motor_controller.setTargetSpeed(demand * motor_params.max_speed_rps);
+                motor_controller.setTargetSpeed(demand * motor_params.max_speed_rps);
+            } else {
+                motor_controller.setTargetSpeed(0.0f);
+            }
 #endif
 
             if (at_processor.isTelemetryEnabled()) {
