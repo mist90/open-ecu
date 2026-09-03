@@ -18,7 +18,7 @@
 #define BLDC_MAX_CURRENT 18.0f
 #define BLDC_MIN_CURRENT  -6.0f
 #define BLDC_MAX_SPEED 12.0f
-#define BLDC_MAX_ACCELERATION 4.0f
+#define BLDC_MAX_ACCELERATION 6.0f
 // Over-voltage cut-out: above this the bus is being pushed by regeneration
 // hard enough to damage the battery, and the drive goes to NEUTRAL.
 #define BLDC_MAX_VOLTAGE 36.0f
