@@ -17,6 +17,11 @@ endif()
 option(ENABLE_DEBUG_PWM_ISR "Enable PWM ISR debug data capture (uses ~8KB RAM)" OFF)
 option(ENABLE_THROTTLE_BRAKE_CONTROL "Use the physical throttle and brake as control inputs" ON)
 option(ENABLE_BENCH_PROFILING "Capture PWM callback cycle counts through SWD" OFF)
+set(PI_NUMERIC_PROFILE "float" CACHE STRING "PI kernel arithmetic: float or fixed (other algorithms use float)")
+set_property(CACHE PI_NUMERIC_PROFILE PROPERTY STRINGS float fixed)
+if(NOT PI_NUMERIC_PROFILE STREQUAL "float" AND NOT PI_NUMERIC_PROFILE STREQUAL "fixed")
+    message(FATAL_ERROR "PI_NUMERIC_PROFILE must be float or fixed")
+endif()
 
 # MCU and target configuration
 set(MCU_FAMILY STM32G4xx)
@@ -42,6 +47,10 @@ endif()
 if(ENABLE_BENCH_PROFILING)
     add_compile_definitions(BENCH_PROFILING)
 endif()
+if(PI_NUMERIC_PROFILE STREQUAL "fixed")
+    add_compile_definitions(ECU_FIXED_PI)
+endif()
+message(STATUS "PI numeric profile: ${PI_NUMERIC_PROFILE}")
 
 # Optional debug features
 if(ENABLE_DEBUG_PWM_ISR)

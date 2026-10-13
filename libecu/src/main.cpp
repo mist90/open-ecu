@@ -210,7 +210,7 @@ int main(void)
         board.fail();
     }
 
-    printf("ECU started\n");
+    printf("ECU started, PI arithmetic: %s\n", libecu::PI_PROFILE_NAME);
     while (1) {
         // motor control loop
         if (board.takeControlTick()) {

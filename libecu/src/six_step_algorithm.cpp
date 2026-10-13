@@ -41,10 +41,11 @@ void SixStepAlgorithm::setParams(const SixStepParams& params) noexcept
     params_ = params;
 }
 
-void SixStepAlgorithm::setCurrentPi(const PiParameters& params) noexcept
+bool SixStepAlgorithm::setCurrentPi(const PiParameters& params) noexcept
 {
-    current_pi_.setParameters(params);
+    if (!current_pi_.setParameters(params)) return false;
     current_pi_.reset();
+    return true;
 }
 
 const PiParameters& SixStepAlgorithm::getCurrentPi() const noexcept

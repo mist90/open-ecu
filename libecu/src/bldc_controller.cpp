@@ -143,6 +143,7 @@ const MotorAlgorithm& BldcController::algorithm() const noexcept
 bool BldcController::initialize() noexcept
 {
     pwm_interface_.setNeutral();
+    if (!pi_speed_controller_.isConfigured() || !six_step_.isCurrentPiConfigured()) return false;
 
     // Reset PI controller
     pi_speed_controller_.reset();
@@ -348,24 +349,19 @@ void BldcController::setControlMode(ControlMode mode) noexcept
     }
 }
 
-void BldcController::setElectricMode(ElectricMode mode) noexcept
+bool BldcController::setElectricMode(ElectricMode mode) noexcept
 {
     CriticalSection cs;
+    const PiParameters& tuning = mode == ElectricMode::VOLTAGE_MODE
+                               ? params_.pi_voltage_mode : params_.pi_current_mode;
+    if (!pi_speed_controller_.setParameters(tuning)) return false;
     status_.electric_mode = mode;
-
-    // Reconfigure PI controller with appropriate parameters for the mode
-    if (mode == ElectricMode::VOLTAGE_MODE) {
-        // VOLTAGE_MODE: PI outputs duty cycle (0.0-1.0)
-        pi_speed_controller_.setParameters(params_.pi_voltage_mode);
-    } else {
-        // CURRENT_MODE: PI outputs current (Amperes)
-        pi_speed_controller_.setParameters(params_.pi_current_mode);
-    }
     pi_speed_controller_.reset();
 
     // The inner loop changes shape underneath the outer one; a stale
     // integrator from the other mode is meaningless.
     algorithm().reset();
+    return true;
 }
 
 void BldcController::setAlgorithm(DriveAlgorithm new_algorithm) noexcept
@@ -469,26 +465,28 @@ float BldcController::getAccelerationRate() const noexcept
     return params_.acceleration_rate;
 }
 
-void BldcController::setSpeedPi(float kp, float ki) noexcept
+bool BldcController::setSpeedPi(float kp, float ki) noexcept
 {
     CriticalSection cs;
     PiParameters p = pi_speed_controller_.getParameters();
     p.kp = kp;
     p.ki = ki;
-    pi_speed_controller_.setParameters(p);
+    if (!pi_speed_controller_.setParameters(p)) return false;
     pi_speed_controller_.reset();
     if (status_.electric_mode == ElectricMode::VOLTAGE_MODE) params_.pi_voltage_mode = p;
     else params_.pi_current_mode = p;
+    return true;
 }
 
-void BldcController::setCurrentPi(float kp, float ki) noexcept
+bool BldcController::setCurrentPi(float kp, float ki) noexcept
 {
     CriticalSection cs;
     PiParameters p = params_.pi_current_regulator;
     p.kp = kp;
     p.ki = ki;
+    if (!six_step_.setCurrentPi(p)) return false;
     params_.pi_current_regulator = p;
-    six_step_.setCurrentPi(p);
+    return true;
 }
 
 HallMonitor::Info BldcController::getHallInfo() const noexcept {

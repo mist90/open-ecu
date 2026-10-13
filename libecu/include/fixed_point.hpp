@@ -6,6 +6,7 @@
 #define LIBECU_FIXED_POINT_HPP
 
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <type_traits>
 
@@ -82,6 +83,45 @@ public:
     /** @brief Saturate a widened raw result to this storage type. */
     static constexpr FixedPointType fromWideRaw(int64_t raw) noexcept {
         return fromRaw(signedMagnitude(fixed_detail::magnitude(raw), raw < 0));
+    }
+
+    /**
+     * @brief Explicit IEEE-754 conversion at a float-facing interface
+     * @param clipped Set on range overflow, infinity or NaN; optional
+     * @return Rounded/saturated value; NaN converts to zero
+     *
+     * Decode the significand with integer operations. This avoids undefined
+     * out-of-range float-to-integer casts, including at the int64 boundaries.
+     */
+    static FixedPointType fromFloat(float value, bool* clipped = nullptr) noexcept {
+        static_assert(sizeof(float) == sizeof(uint32_t) && std::numeric_limits<float>::is_iec559,
+                      "The float interface requires IEEE-754 binary32");
+        if (clipped) *clipped = false;
+        uint32_t bits = 0;
+        std::memcpy(&bits, &value, sizeof(bits));
+        const bool negative = (bits >> 31) != 0;
+        const unsigned exponent = (bits >> 23) & 0xffu;
+        const uint32_t fraction = bits & 0x7fffffu;
+        if (exponent == 0xffu) {
+            if (clipped) *clipped = true;
+            return fraction ? FixedPointType{} : fromRaw(signedMagnitude(UINT64_MAX, negative));
+        }
+        const uint64_t significand = exponent ? (fraction | 0x800000u) : fraction;
+        const int shift = (exponent ? int(exponent) - 127 : -126) - 23 + int(FractionBits);
+        uint64_t raw = 0;
+        if (shift >= 0) {
+            if (shift >= 64 || significand > (limit(negative) >> shift)) {
+                if (clipped) *clipped = true;
+                return fromRaw(signedMagnitude(UINT64_MAX, negative));
+            }
+            raw = significand << shift;
+        } else {
+            const unsigned discard = static_cast<unsigned>(-shift);
+            if (discard > 24) return FixedPointType{};
+            raw = (significand + (uint64_t(1) << (discard - 1))) >> discard;
+        }
+        if (raw > limit(negative) && clipped) *clipped = true;
+        return fromRaw(signedMagnitude(raw, negative));
     }
 
     /**

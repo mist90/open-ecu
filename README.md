@@ -174,6 +174,10 @@ cd STM32G431
 
 ### Testing
 
+The experimental branch can select PI kernel arithmetic with the CMake option
+`PI_NUMERIC_PROFILE=float|fixed`. See [docs/PI_NUMERIC_BENCH.md](docs/PI_NUMERIC_BENCH.md)
+for the integration boundary, build commands and JK42BLS01 hardware comparison.
+
 JK42BLS01 six-step tuning, bench data and motor selection are documented in
 [docs/JK42BLS01_TUNING.md](docs/JK42BLS01_TUNING.md). Comment out `MOTOR_1` in
 `libecu/include/motor_config.hpp` for this motor; define it for the scooter motor.

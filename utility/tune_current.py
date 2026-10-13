@@ -92,6 +92,7 @@ def main():
                             "AT+HSTATUS=0", "AT+HCLEAR", "AT+ALGO=0", "AT+MODE=0", "AT+EMODE=1",
                             "AT+CPID=" + gains, "AT+TM=1", "AT+HSTATUS=1"):
                 bench.command(command)
+            report["firmware"] = bench.command("AT+VER?", "+VER:")
             bench.armed = True
             bench.command("AT+DMODE=0")
             bench.command("AT+SPD=20")

@@ -2,6 +2,7 @@
 build/
 build-release/
 build-bench-float/
+build-bench-fixed/
 STM32G431/Core/Src/main.cpp.bak
 tests/test_motor_pll/*.csv
 tests/test_motor_pll/test
@@ -12,6 +13,7 @@ tests/test_numeric/test
 tests/test_control/test
 tests/test_adc_scaling/test
 tests/test_motor_alignment/test
+tests/test_pi_interface/test
 tests/test_hall_handoff/test
 libecu/lib/
 __pycache__/

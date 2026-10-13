@@ -370,7 +370,7 @@ void AtCommandProcessor::processCommand() noexcept {
                 sendError();
                 return;
             }
-            controller_->setElectricMode(static_cast<ElectricMode>(val));
+            if (!controller_->setElectricMode(static_cast<ElectricMode>(val))) { sendError(); return; }
             sendOk();
         }
         break;
@@ -454,7 +454,7 @@ void AtCommandProcessor::processCommand() noexcept {
         } else {
             float kp, ki;
             if (!parsePiGains(valuePtr, kp, ki)) { sendError(); return; }
-            controller_->setSpeedPi(kp, ki);
+            if (!controller_->setSpeedPi(kp, ki)) { sendError(); return; }
             sendOk();
         }
         break;
@@ -471,7 +471,7 @@ void AtCommandProcessor::processCommand() noexcept {
         } else {
             float kp, ki;
             if (!parsePiGains(valuePtr, kp, ki)) { sendError(); return; }
-            controller_->setCurrentPi(kp, ki);
+            if (!controller_->setCurrentPi(kp, ki)) { sendError(); return; }
             sendOk();
         }
         break;
@@ -496,7 +496,7 @@ void AtCommandProcessor::processCommand() noexcept {
     }
 
     case CommandId::Ver: {
-        sendResponse("VER", "1.0.0");
+        sendResponse("VER", PI_FIRMWARE_VERSION);
         break;
     }
 

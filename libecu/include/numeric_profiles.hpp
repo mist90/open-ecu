@@ -46,8 +46,9 @@ struct FixedProfile {
     using Duty = FixedPointType<30>;
     using Fraction = FixedPointType<30>;
     using Gain = FixedPointType<16>;
+    using SpeedGain = FixedPointType<24>;
     using Accumulator = FixedPointType<32, int64_t>;
-    using SpeedPiTypes = PiLoopTypes<Speed, Current, Gain, FixedPointType<22>,
+    using SpeedPiTypes = PiLoopTypes<Speed, Current, SpeedGain, FixedPointType<28>,
                                     Accumulator, FixedPointType<12>>;
     using CurrentPiTypes = PiLoopTypes<Current, Duty, Gain, FixedPointType<28>,
                                       Accumulator, FixedPointType<12>>;

@@ -104,6 +104,12 @@ static void testSpeedClock() {
 }
 
 static void testSlewClock() {
+#ifdef ECU_FIXED_PI
+    // The speed-facing conversion rounds to Q16 before applying the unit gain.
+    constexpr float tolerance = 1.0f / FixedProfile::Speed::SCALE;
+#else
+    constexpr float tolerance = 1e-6f;
+#endif
     Pwm pwm;
     Hall hall;
     auto params = makeParams();
@@ -116,11 +122,11 @@ static void testSlewClock() {
     controller.setDriveMode(DriveMode::FORWARD);
     controller.setTargetSpeed(10.0f);
     for (int tick = 0; tick < 10; ++tick) controller.update();
-    check(std::abs(controller.getStatus().target_current - 20.0f / ActiveTiming::SPEED_HZ) < 1e-6f,
+    check(std::abs(controller.getStatus().target_current - 20.0f / ActiveTiming::SPEED_HZ) < tolerance,
           "acceleration limit advances by rate/frequency per sample");
     controller.setAccelerationRate(4.0f);
     controller.update();
-    check(std::abs(controller.getStatus().target_current - 24.0f / ActiveTiming::SPEED_HZ) < 1e-6f,
+    check(std::abs(controller.getStatus().target_current - 24.0f / ActiveTiming::SPEED_HZ) < tolerance,
           "changing acceleration refreshes the cached increment");
 }
 
@@ -151,6 +157,12 @@ static void testCommands() {
     float kp, ki;
     controller.getSpeedPiGains(kp, ki);
     check(kp == 0.75f && ki == 3.0f, "speed tuning survives a mode round-trip");
+#ifdef ECU_FIXED_PI
+    check(console.command("AT+SPID=1000,3") == "ERROR\r\n", "speed-gain format overflow is rejected");
+    check(console.command("AT+CPID=0.15,40000") == "ERROR\r\n", "current-gain format overflow is rejected");
+    controller.getSpeedPiGains(kp, ki);
+    check(kp == 0.75f && ki == 3.0f, "rejected fixed-point gains preserve the previous tuning");
+#endif
 }
 
 static void testHallDuration() {
@@ -173,11 +185,28 @@ static void testHallDuration() {
           "inactive drive does not accumulate Hall persistence");
 }
 
+#ifdef ECU_FIXED_PI
+static void testRejectedModeTuning() {
+    Pwm pwm;
+    Hall hall;
+    auto params = makeParams();
+    params.pi_voltage_mode.kp = 200.0f; // Outside the speed gain format's range.
+    BldcController controller(pwm, hall, params);
+    check(controller.initialize(), "valid initial current mode initializes");
+    check(!controller.setElectricMode(ElectricMode::VOLTAGE_MODE), "unrepresentable alternate tuning is rejected");
+    check(controller.getStatus().electric_mode == ElectricMode::CURRENT_MODE,
+          "failed retuning keeps the original output units and mode");
+}
+#endif
+
 int main() {
     testSpeedClock();
     testSlewClock();
     testCommands();
     testHallDuration();
+#ifdef ECU_FIXED_PI
+    testRejectedModeTuning();
+#endif
     std::printf("Control integration: %d checks, %d failures\n", checks, failures);
     return failures != 0;
 }

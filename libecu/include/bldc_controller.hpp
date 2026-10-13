@@ -16,7 +16,7 @@
 #include "motor_algorithm.hpp"
 #include "six_step_algorithm.hpp"
 #include "foc_algorithm.hpp"
-#include "pi_controller.hpp"
+#include "pi_float_interface.hpp"
 #include "ecu_config.hpp"
 #include "motor_pll.hpp"
 #include "current_loop_tuning.hpp"
@@ -242,8 +242,9 @@ public:
     /**
      * @brief Set electric mode (electrical control strategy)
      * @param mode Electric mode
+     * @return false if the target mode's tuning cannot be represented; the old mode remains active
      */
-    void setElectricMode(ElectricMode mode) noexcept;
+    bool setElectricMode(ElectricMode mode) noexcept;
 
     /**
      * @brief Select the electrical algorithm (six-step or FOC)
@@ -316,8 +317,9 @@ public:
      * @param ki Integral gain
      *
      * Preserves existing output limits.
+     * @return false if the selected numerical profile cannot represent the tuning
      */
-    void setSpeedPi(float kp, float ki) noexcept;
+    bool setSpeedPi(float kp, float ki) noexcept;
 
     /**
      * @brief Set current PI controller gains (kp, ki)
@@ -325,8 +327,9 @@ public:
      * @param ki Integral gain
      *
      * Preserves existing output limits.
+     * @return false if the selected numerical profile cannot represent the tuning
      */
-    void setCurrentPi(float kp, float ki) noexcept;
+    bool setCurrentPi(float kp, float ki) noexcept;
 
     /**
      * @brief Get PLL internal state snapshot (for telemetry)
@@ -428,7 +431,7 @@ private:
     // Owned components
     HallMonitor hall_monitor_;
     MotorPLL motor_pll_;
-    PiController<FloatProfile::SpeedPiTypes, ActiveTiming::SPEED_HZ> pi_speed_controller_;
+    PiFloatInterface<ActivePiProfile::SpeedPiTypes, ActiveTiming::SPEED_HZ> pi_speed_controller_;
 
     // Electrical algorithms. Both are constructed and kept alive; only the one
     // selected by algorithm_ is ticked. Keeping the unselected one around

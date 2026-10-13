@@ -437,6 +437,9 @@ compile-time current-loop rate (20 kHz on STM32G431).
 
 Read the firmware version string.
 
+The numerical-profile branch reports `1.0.0-pi-float` or `1.0.0-pi-fixed` to
+identify the selected speed/six-step-current PI kernel arithmetic.
+
 | | |
 |---|---|
 | **Query** | `AT+VER?*<CRC>\r\n` |

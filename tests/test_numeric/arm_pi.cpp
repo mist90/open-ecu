@@ -6,6 +6,10 @@
 using Types = libecu::FixedProfile::CurrentPiTypes;
 static libecu::PiController<Types, 20000> controller;
 
+extern "C" int32_t convert_input(float input) {
+    return Types::Input::fromFloat(input).raw();
+}
+
 extern "C" void configure_pi(int32_t kp_raw, int32_t ki_raw, int32_t kb_raw) {
     libecu::PiParametersT<Types> params{};
     params.kp = Types::Gain::fromRaw(kp_raw);

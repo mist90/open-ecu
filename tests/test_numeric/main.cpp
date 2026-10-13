@@ -54,6 +54,24 @@ static void testFixed() {
     check(multiplyTo<Acc>(Q::fromRatio(-3, 2), Q::fromRatio(5, 4)).raw() == -8053063680LL,
           "mixed accumulator product retains exact physical value");
 
+    bool clipped = true;
+    check(Q::fromFloat(-1.5f, &clipped).raw() == -98304 && !clipped, "float boundary preserves sign and scale");
+    check(Tiny::fromFloat(0.03125f).raw() == 1, "float positive tie rounds away from zero");
+    check(Tiny::fromFloat(-0.03125f).raw() == -1, "float negative tie rounds away from zero");
+    check(Q::fromFloat(-0.0f, &clipped).raw() == 0 && !clipped, "negative float zero is exact");
+    check(Q::fromFloat(std::numeric_limits<float>::denorm_min(), &clipped).raw() == 0 && !clipped,
+          "subnormal float rounds to fixed zero");
+    check(Q::fromFloat(32768.0f, &clipped).raw() == INT32_MAX && clipped, "float upper boundary is detected");
+    check(Q::fromFloat(-32768.0f, &clipped).raw() == INT32_MIN && !clipped, "float lower boundary is representable");
+    check(Acc::fromFloat(-2147483648.0f, &clipped).raw() == INT64_MIN && !clipped,
+          "float conversion handles the signed 64-bit minimum");
+    check(Acc::fromFloat(2147483648.0f, &clipped).raw() == INT64_MAX && clipped,
+          "float conversion saturates above the signed 64-bit maximum");
+    check(Q::fromFloat(std::numeric_limits<float>::infinity(), &clipped).raw() == INT32_MAX && clipped,
+          "float infinity is reported as clipped");
+    check(Q::fromFloat(std::numeric_limits<float>::quiet_NaN(), &clipped).raw() == 0 && clipped,
+          "float NaN has a defined rejected representation");
+
     for (int a = -100; a <= 100; ++a) {
         for (int b : {-97, -1, 0, 1, 97}) {
             const auto result = multiplyTo<FixedPointType<18>>(Q::fromRatio(a, 4),

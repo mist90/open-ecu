@@ -24,6 +24,10 @@ class Bench:
     def __init__(self, args):
         self.args = args
         self.port = serial.Serial(args.port, BAUD, timeout=0.01, exclusive=True)
+        # Park immediately if the link is already live, then allow ST-Link VCP
+        # line coding to settle before the acknowledged setup sequence.
+        self.port.write(frame("AT+DMODE=2") + frame("AT+SPD=0"))
+        time.sleep(0.3)
         self.buffer = b""
         self.started = time.monotonic()
         self.last_tm = self.started
@@ -250,6 +254,7 @@ def main():
                         f"AT+MODE={0 if args.mode.startswith('open') else 1 if args.mode.startswith('speed') else 2}",
                         "AT+ACC=5"):
             bench.command(command)
+        report["firmware"] = bench.command("AT+VER?", "+VER:")
         for setting in args.set:
             bench.command("AT+" + setting)
         report["gains"] = {name: bench.command("AT+" + name + "?", "+" + name + ":")
