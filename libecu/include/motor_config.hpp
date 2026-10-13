@@ -11,7 +11,7 @@
 #ifndef LIBECU_MOTOR_CONFIG_HPP
 #define LIBECU_MOTOR_CONFIG_HPP
 
-#define MOTOR_1
+// #define MOTOR_1  // Scooter motor; leave disabled for JK42BLS01.
 
 #ifdef MOTOR_1
 #define BLDC_NUM_POLES 40
@@ -27,6 +27,15 @@
 // against a reference thermometer - see the NTC note in stm32_adc.cpp.
 #define BLDC_MAX_TEMPERATURE 100.0f
 #define BLDC_INVERTION false
+#define BLDC_SPEED_VOLTAGE_KP 0.1f
+#define BLDC_SPEED_VOLTAGE_KI 0.2f
+#define BLDC_SPEED_CURRENT_KP 2.0f
+#define BLDC_SPEED_CURRENT_KI 2.0f
+#define BLDC_CURRENT_FALLBACK_KP 0.1f
+#define BLDC_CURRENT_FALLBACK_KI 50.0f
+#define BLDC_PLL_KP 100.0f
+#define BLDC_PLL_KI 5000.0f
+#define BLDC_START_WITH_FOC true
 // Electrical model of one phase, used to compute the current-loop PI gains
 // (see libecu/include/current_loop_tuning.hpp).
 //
@@ -53,14 +62,25 @@
 // more than worst-case excursion.
 #define BLDC_ILOOP_BW_HZ        500.0f
 #else
+// JK42BLS01, tuned unloaded at 20.8 V. See docs/JK42BLS01_TUNING.md.
 #define BLDC_NUM_POLES 8
 #define BLDC_MAX_CURRENT 6.0f
 #define BLDC_MIN_CURRENT  -6.0f
 #define BLDC_MAX_SPEED 200.0f
-#define BLDC_MAX_ACCELERATION 100.0f
+#define BLDC_MAX_ACCELERATION 20.0f
 #define BLDC_MAX_VOLTAGE 36.0f
 #define BLDC_MAX_TEMPERATURE 100.0f
 #define BLDC_INVERTION true
+#define BLDC_SPEED_VOLTAGE_KP 0.005f
+#define BLDC_SPEED_VOLTAGE_KI 0.02f
+#define BLDC_SPEED_CURRENT_KP 0.01f
+#define BLDC_SPEED_CURRENT_KI 0.05f
+#define BLDC_CURRENT_FALLBACK_KP 0.15f
+#define BLDC_CURRENT_FALLBACK_KI 200.0f
+#define BLDC_PLL_KP 100.0f
+#define BLDC_PLL_KI 5000.0f
+// Start with the tuned six-step loop while the FOC motor model is unidentified.
+#define BLDC_START_WITH_FOC false
 // Not identified for this motor - run a no-load speed sweep against captures
 // from it before trusting these. Zero L or R falls back to the hand-tuned gains.
 #define BLDC_KE_V_S_PER_RAD_E   0.0f

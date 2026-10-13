@@ -7,6 +7,10 @@ tests/test_motor_pll/test
 tests/test_motor_pll/*.png
 tests/test_hall_monitor/test
 tests/test_foc/test
+tests/test_adc_scaling/test
+tests/test_motor_alignment/test
+libecu/lib/
+__pycache__/
 
 # Extracted STM32 HAL Drivers (source of truth: STM32G431/Drivers.tar.gz)
 STM32G431/Drivers/

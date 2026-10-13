@@ -35,6 +35,7 @@ struct CurrentSensorCalibration {
     float offset_voltage_u;          ///< Zero-current offset voltage in Volts for U phase (e.g., 1.65)
     float offset_voltage_v;          ///< Zero-current offset voltage in Volts for V phase (e.g., 1.65)
     float offset_voltage_w;          ///< Zero-current offset voltage in Volts for W phase (e.g., 1.65)
+    uint16_t injected_sample_sum = 1; ///< Unshifted ADC samples summed per injected result
 };
 
 /**
@@ -91,6 +92,7 @@ public:
     bool initialize(const CurrentSensorCalibration& calibration,
                     const VoltageSensorParameters& params,
                     const TemperatureSensorParameters& temp_params = TemperatureSensorParameters{}) noexcept {
+        if (calibration.injected_sample_sum == 0) return false;
         calibration_ = calibration;
         voltage_params_ = params;
         temp_params_ = temp_params;
@@ -104,13 +106,13 @@ public:
     /**
      * @brief Get raw ADC value for a channel (for debugging/calibration)
      * @param channel Phase channel
-     * @return Raw ADC value (0 to 2^resolution - 1)
+     * @return Injected sum, up to (2^resolution - 1) * injected_sample_sum
      */
     virtual uint32_t getRawAdcValue(PwmChannel channel) = 0;
 
     /**
      * @brief Get raw ADC value for bus voltage channel
-     * @return Raw ADC value for Vbus (0 to 2^resolution - 1)
+     * @return Injected Vbus sum, up to (2^resolution - 1) * injected_sample_sum
      */
     virtual uint32_t getRawAdcValue() = 0;
 
@@ -128,13 +130,13 @@ public:
 
     /**
      * @brief Convert raw ADC value to current in Amperes
-     * @param adc_raw Raw ADC reading (0 to 4095 for 12-bit)
+     * @param adc_raw Raw injected sum, including the configured sample-sum scale
      * @param channel PWM channel to use correct offset
      * @return Current in Amperes
      */
     float convertAdcToCurrent(uint32_t adc_raw, PwmChannel channel) noexcept {
         // Convert ADC raw value to voltage
-        float adc_max_value = (1 << calibration_.adc_resolution_bits) - 1;  // e.g., 4095 for 12-bit
+        const float adc_max_value = injectedFullScale();
         float v_adc = (adc_raw * calibration_.adc_reference_voltage) / adc_max_value;
 
         // Select offset voltage for this specific phase
@@ -172,7 +174,7 @@ public:
      * @return Bus voltage in Volts, accounting for resistor divider ratio
      */
     float convertAdcToVoltage(uint32_t adc_raw) noexcept {
-        float adc_max_value = (1 << calibration_.adc_resolution_bits) - 1;
+        const float adc_max_value = injectedFullScale();
         float divider_ratio = (voltage_params_.r_up + voltage_params_.r_down) / voltage_params_.r_down;
         return (adc_raw * calibration_.adc_reference_voltage * divider_ratio) / adc_max_value;
     }
@@ -298,7 +300,7 @@ public:
             uint32_t adc_v = getRawAdcValue(PwmChannel::PHASE_V);
             uint32_t adc_w = getRawAdcValue(PwmChannel::PHASE_W);
 
-            float adc_max = (1 << calibration_.adc_resolution_bits) - 1;
+            const float adc_max = injectedFullScale();
             sum_u += (adc_u * calibration_.adc_reference_voltage) / adc_max;
             sum_v += (adc_v * calibration_.adc_reference_voltage) / adc_max;
             sum_w += (adc_w * calibration_.adc_reference_voltage) / adc_max;
@@ -321,6 +323,11 @@ public:
     }
 
 private:
+    // Regular conversions (NTC/throttle) still use the physical ADC resolution.
+    float injectedFullScale() const noexcept {
+        return float((1u << calibration_.adc_resolution_bits) - 1u) * calibration_.injected_sample_sum;
+    }
+
     CurrentSensorCalibration calibration_;
     bool initialized_ = false;
     VoltageSensorParameters voltage_params_;

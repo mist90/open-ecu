@@ -61,12 +61,12 @@ libecu::MotorControlParams makeMotorParams(const libecu::BoardInfo& board_info) 
     // bulk of the transient without holding the duty for much of a short sector.
     motor_params.current_blanking_cycles = 6;
     motor_params.control_frequency = board_info.control_frequency_hz;
-    motor_params.pid_voltage_mode = {0.1f, 0.2f}; // Speed PID for VOLTAGE_MODE (outputs duty cycle 0.0-1.0)
+    motor_params.pid_voltage_mode = {BLDC_SPEED_VOLTAGE_KP, BLDC_SPEED_VOLTAGE_KI};
     motor_params.pid_voltage_mode.integral_max = 0.8f;
     motor_params.pid_voltage_mode.integral_min = 0.0f;
     motor_params.pid_voltage_mode.kb = 2.0f;
 
-    motor_params.pid_current_mode = {2.0f, 2.0f}; // Speed PID for CURRENT_MODE (outputs current, A)
+    motor_params.pid_current_mode = {BLDC_SPEED_CURRENT_KP, BLDC_SPEED_CURRENT_KI};
     motor_params.pid_current_mode.integral_max = 12.0f;
     motor_params.pid_current_mode.integral_min = -4.0f;
     motor_params.pid_current_mode.kb = 2.0f;
@@ -83,8 +83,8 @@ libecu::MotorControlParams makeMotorParams(const libecu::BoardInfo& board_info) 
         iloop.bandwidth_hz = BLDC_ILOOP_BW_HZ;
         libecu::PidParameters ip = libecu::tuneCurrentPi(iloop);
         if (ip.kp <= 0.0f) {
-            ip.kp = 0.1f;   // un-identified motor: previous hand-tuned values
-            ip.ki = 50.0f;
+            ip.kp = BLDC_CURRENT_FALLBACK_KP;
+            ip.ki = BLDC_CURRENT_FALLBACK_KI;
         }
         motor_params.pid_current_regulator = ip;
     }
@@ -96,7 +96,7 @@ libecu::MotorControlParams makeMotorParams(const libecu::BoardInfo& board_info) 
     motor_params.useInverseCommTable = BLDC_INVERTION;
 
     // ---- FOC ---------------------------------------------------------------
-    // FOC is the default. Measured against six-step at 6.00 RPS on this motor
+    // FOC is the MOTOR_1 default. Measured against six-step at 6.00 RPS on that motor
     // (docs/FOC_HANDOFF.md section 9.5): current ripple 0.0308 A vs 0.2398 A -
     // 7.8x smoother - holding the same speed on about 17 % less RMS phase
     // current, i.e. roughly a third less copper loss, with Id regulated to
@@ -107,7 +107,8 @@ libecu::MotorControlParams makeMotorParams(const libecu::BoardInfo& board_info) 
     // 8 RPS, under about 1 A. High modulation index - where the low-side
     // sampling window shrinks and the worst-phase shunt rejection starts
     // earning its keep - is still unexercised.
-    motor_params.algorithm = libecu::DriveAlgorithm::FOC;
+    motor_params.algorithm = BLDC_START_WITH_FOC
+                           ? libecu::DriveAlgorithm::FOC : libecu::DriveAlgorithm::SIX_STEP;
 
     motor_params.foc.max_modulation = 0.95f;
     motor_params.foc.max_duty_cycle = motor_params.max_duty_cycle;
@@ -194,6 +195,7 @@ int main(void)
         board.pwm(), board.hall(), motor_params, board.adc());
 
     motor_controller.setHallMonitorParams(makeHallMonitorParams());
+    motor_controller.setPllGains(BLDC_PLL_KP, BLDC_PLL_KI);
 
     if (!motor_controller.initialize()) {
         board.fail();

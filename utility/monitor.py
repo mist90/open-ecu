@@ -307,7 +307,7 @@ class PidTuningWidget(QWidget):
         self._at_command = at_command
         # AT+FPID takes only kp,ki, and its gains are in volts per amp - ki is
         # around 2067 on MOTOR_1, which does not fit the 0..100 range the
-        # duty-output loops use. Hence both being configurable.
+        # speed loops use. CPID also needs a larger range for Ki=200 on JK42BLS01.
         self._fields = fields
         self._init_ui(label, max_value)
 
@@ -413,7 +413,8 @@ class ControlPanel(QWidget):
         # series, FPID outputs volts and sees one, so on MOTOR_1 the gains are
         # 0.141/132 and 2.20/2067 respectively. Showing both at once invites
         # someone to type one set into the other.
-        self.cpid_widget = PidTuningWidget("Current PID (AT+CPID, 6-step)", "AT+CPID", self._write)
+        self.cpid_widget = PidTuningWidget("Current PID (AT+CPID, 6-step)", "AT+CPID",
+                                          self._write, max_value=1000.0)
         layout.addWidget(self.cpid_widget)
 
         self.fpid_widget = PidTuningWidget("FOC d/q Current PI (AT+FPID, V/A)", "AT+FPID",

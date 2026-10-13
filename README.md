@@ -41,7 +41,7 @@ Located in `libecu/src/` and `libecu/include/`:
 
 - **SixStepAlgorithm**: 6-step trapezoidal commutation with Hall sensor feedback and an inner current loop
 - **FocAlgorithm**: Field-oriented control with space-vector modulation (SVPWM)
-- **MotorAlgorithm**: Common interface the two above implement; selected at runtime with `AT+ALGO` (FOC is the default)
+- **MotorAlgorithm**: Common interface selected at runtime with `AT+ALGO`; motor-specific startup algorithm
 - **PidController**: Digital PID controller with anti-windup and derivative filtering
 - **SafetyMonitor**: Real-time fault detection (overcurrent, overtemperature, undervoltage)
 - **BldcController**: High-level motor controller integrating all subsystems
@@ -173,6 +173,14 @@ cd STM32G431
 ```
 
 ### Testing
+
+JK42BLS01 six-step tuning, bench data and motor selection are documented in
+[docs/JK42BLS01_TUNING.md](docs/JK42BLS01_TUNING.md). Comment out `MOTOR_1` in
+`libecu/include/motor_config.hpp` for this motor; define it for the scooter motor.
+
+Additional host regressions:
+- `tests/test_motor_alignment/run.sh` — both motors, both directions, PLL and discrete commutation
+- `tests/test_adc_scaling/run.sh` — injected ADC sums, zero calibration and regular-channel isolation
 
 **No automated unit tests** - the `libecu/tests/` directory does not exist.
 

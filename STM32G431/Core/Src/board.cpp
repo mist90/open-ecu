@@ -242,6 +242,7 @@ public:
         adc_calibration.opamp_gain = 16.0f;              // PGA gain
         adc_calibration.adc_reference_voltage = 3.3f;    // 3.3V ADC reference
         adc_calibration.adc_resolution_bits = 12;        // 12-bit ADC
+        adc_calibration.injected_sample_sum = Stm32Adc::INJECTED_SAMPLE_SUM;
         // Configure voltage sensor (resistor divider for Vbus measurement)
         VoltageSensorParameters voltage_params;
         voltage_params.r_up = 169000.0f;   // 169kOhm upper resistor

@@ -106,10 +106,13 @@ uint8_t MotorPLL::getNextHall(const volatile DriveMode &mode) noexcept {
     else if (mode == DriveMode::REVERSE)
         offset = -2.0f;
 
-    // An inverse commutation table runs the step sequence backwards, so the
-    // sign of the offset flips with it.
-    if (is_inverse_commutation_table_)
-        offset = -offset;
+    // Swap the torque directions for the inverse motor alignment. Merely
+    // negating +1/-2 produces -1/+2, one sector late in both directions.
+    // JK42BLS01 bench alignment: forward -2, reverse +1 (180 degrees apart).
+    if (is_inverse_commutation_table_) {
+        if (mode == DriveMode::FORWARD) offset = -2.0f;
+        else if (mode == DriveMode::REVERSE) offset = 1.0f;
+    }
 
     if (!use_pll_) {
         int next_step = static_cast<int>(hall_state_raw_) + static_cast<int>(offset);

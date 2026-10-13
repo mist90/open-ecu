@@ -112,7 +112,11 @@ bool Stm32Adc::initializeHardware() noexcept {
 void Stm32Adc::initADC1() noexcept {
     ADC_MultiModeTypeDef multimode = {0};
     ADC_ChannelConfTypeDef sConfig = {0};
-    ADC_InjOversamplingTypeDef sConfigOversampling = {.Ratio = ADC_OVERSAMPLING_RATIO_2, .RightBitShift = ADC_RIGHTBITSHIFT_1};
+    // Keep both samples' sum. Board calibration accounts for the factor of two,
+    // preserving half-LSB current information at the original sampling latency.
+    static_assert(INJECTED_SAMPLE_SUM == 2, "Update the hardware oversampling ratio with the calibration scale");
+    ADC_InjOversamplingTypeDef sConfigOversampling = {
+        .Ratio = ADC_OVERSAMPLING_RATIO_2, .RightBitShift = ADC_RIGHTBITSHIFT_NONE};
 
     /** Common config
      */
@@ -259,7 +263,9 @@ void Stm32Adc::initADC2() noexcept {
     /** Configure Injected Channel 1: Phase V current (OPAMP2)
      */
     ADC_InjectionConfTypeDef sConfigInjected = {0};
-    ADC_InjOversamplingTypeDef sConfigOversampling = {.Ratio = ADC_OVERSAMPLING_RATIO_2, .RightBitShift = ADC_RIGHTBITSHIFT_1};
+    static_assert(INJECTED_SAMPLE_SUM == 2, "Update the hardware oversampling ratio with the calibration scale");
+    ADC_InjOversamplingTypeDef sConfigOversampling = {
+        .Ratio = ADC_OVERSAMPLING_RATIO_2, .RightBitShift = ADC_RIGHTBITSHIFT_NONE};
     sConfigInjected.InjectedChannel = ADC_CHANNEL_VOPAMP2;  // OPAMP2_OUT internally connected
     sConfigInjected.InjectedRank = ADC_INJECTED_RANK_1;
     sConfigInjected.InjectedSamplingTime = ADC_SAMPLETIME_6CYCLES_5;  // Match ADC1 timing

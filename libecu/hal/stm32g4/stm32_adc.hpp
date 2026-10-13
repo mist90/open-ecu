@@ -18,6 +18,9 @@ namespace libecu {
  */
 class Stm32Adc : public AdcInterface {
 public:
+    /// @brief Scale of the unshifted two-sample injected ADC sums.
+    static constexpr uint16_t INJECTED_SAMPLE_SUM = 2;
+
     /**
      * @brief Constructor
      */
