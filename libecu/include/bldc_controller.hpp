@@ -135,7 +135,8 @@ struct MotorControlParams {
 /**
  * @brief Motor status information
  */
-struct MotorStatus {
+template<class P>
+struct MotorStatusT {
     /**
      * @brief Measured motor speed (RPS), signed relative to the commanded direction
      *
@@ -146,21 +147,21 @@ struct MotorStatus {
      * drive run away when the shaft was turned backwards. See the long note in
      * BldcController::update().
      */
-    float current_speed_rps;
-    float target_speed_rps;   ///< Target motor speed (RPS)
-    float duty_cycle;         ///< Current duty cycle
-    float target_current;     ///< Target motor current (A)
-    float measured_current;   ///< Measured motor current (A), raw per-PWM-cycle sample
-    float measured_current_filtered; ///< Measured current after the telemetry LPF (A)
-    float bus_voltage;         ///< Measured bus voltage (V)
+    typename P::Speed current_speed_rps;
+    typename P::Speed target_speed_rps;   ///< Target motor speed (RPS)
+    typename P::Duty duty_cycle;         ///< Current duty cycle
+    typename P::Current target_current;     ///< Target motor current (A)
+    typename P::Current measured_current;   ///< Raw per-PWM-cycle sample (A)
+    typename P::Current measured_current_filtered; ///< Telemetry LPF (A)
+    typename P::Voltage bus_voltage;         ///< Measured bus voltage (V)
     /**
      * @brief Measured NTC temperature (deg C), sampled at the 100 Hz loop rate
      *
      * TEMPERATURE_INVALID_C (-273) means the sensor read open or the ADC
      * conversion did not complete - not a cold motor.
      */
-    float temperature_c;
-    float pll_angle;          ///< Rotor angle from PLL (degrees, 0-360)
+    typename P::Temperature temperature_c;
+    typename P::Angle pll_angle;          ///< Rotor angle from PLL (steps, 0-6)
     int8_t current_pi_saturation; ///< +1/-1 if duty is clamped high/low, else 0 (for speed PI anti-windup)
     uint8_t target_position;   ///< Driven motor position
     uint8_t measured_position;   ///< Measured motor position
@@ -171,22 +172,64 @@ struct MotorStatus {
     /// @name FOC state, zero while six-step is selected
     ///@{
     DriveAlgorithm algorithm; ///< Electrical algorithm currently running
-    float i_d;                ///< Measured d-axis current (A)
-    float i_q;                ///< Measured q-axis current (A)
-    float v_d;                ///< Applied d-axis voltage (V)
-    float v_q;                ///< Applied q-axis voltage (V)
-    float angle_e_rad;        ///< Electrical angle used by the algorithm (rad)
-    float duty_u;             ///< Phase U duty actually applied
-    float duty_v;             ///< Phase V duty actually applied
-    float duty_w;             ///< Phase W duty actually applied
+    typename P::Current i_d;                ///< Measured d-axis current (A)
+    typename P::Current i_q;                ///< Measured q-axis current (A)
+    typename P::Voltage v_d;                ///< Applied d-axis voltage (V)
+    typename P::Voltage v_q;                ///< Applied q-axis voltage (V)
+    typename P::Angle angle_e_rad;        ///< Electrical angle used by the algorithm (rad)
+    typename P::Duty duty_u;             ///< Phase U duty actually applied
+    typename P::Duty duty_v;             ///< Phase V duty actually applied
+    typename P::Duty duty_w;             ///< Phase W duty actually applied
     ///@}
 };
+
+using MotorStatus = MotorStatusT<FloatProfile>;
+using NativeMotorStatus = MotorStatusT<ActiveNumericProfile>;
+
+/** @brief Convert a completed status snapshot at a diagnostics boundary. */
+template<class OutProfile, class InProfile>
+MotorStatusT<OutProfile> motorStatusCast(const MotorStatusT<InProfile>& in) noexcept {
+    MotorStatusT<OutProfile> out{};
+    out.current_speed_rps = numberCast<typename OutProfile::Speed>(in.current_speed_rps);
+    out.target_speed_rps = numberCast<typename OutProfile::Speed>(in.target_speed_rps);
+    out.duty_cycle = numberCast<typename OutProfile::Duty>(in.duty_cycle);
+    out.target_current = numberCast<typename OutProfile::Current>(in.target_current);
+    out.measured_current = numberCast<typename OutProfile::Current>(in.measured_current);
+    out.measured_current_filtered = numberCast<typename OutProfile::Current>(in.measured_current_filtered);
+    out.bus_voltage = numberCast<typename OutProfile::Voltage>(in.bus_voltage);
+    out.temperature_c = numberCast<typename OutProfile::Temperature>(in.temperature_c);
+    out.pll_angle = numberCast<typename OutProfile::Angle>(in.pll_angle);
+    out.current_pi_saturation = in.current_pi_saturation;
+    out.target_position = in.target_position;
+    out.measured_position = in.measured_position;
+    out.is_running = in.is_running;
+    out.control_mode = in.control_mode;
+    out.electric_mode = in.electric_mode;
+    out.algorithm = in.algorithm;
+    out.i_d = numberCast<typename OutProfile::Current>(in.i_d);
+    out.i_q = numberCast<typename OutProfile::Current>(in.i_q);
+    out.v_d = numberCast<typename OutProfile::Voltage>(in.v_d);
+    out.v_q = numberCast<typename OutProfile::Voltage>(in.v_q);
+    out.angle_e_rad = numberCast<typename OutProfile::Angle>(in.angle_e_rad);
+    out.duty_u = numberCast<typename OutProfile::Duty>(in.duty_u);
+    out.duty_v = numberCast<typename OutProfile::Duty>(in.duty_v);
+    out.duty_w = numberCast<typename OutProfile::Duty>(in.duty_w);
+    return out;
+}
 
 /**
  * @brief High-level BLDC motor controller
  */
 class BldcController {
 public:
+    using Profile = ActiveNumericProfile;
+    using Current = Profile::Current;
+    using Voltage = Profile::Voltage;
+    using Speed = Profile::Speed;
+    using Duty = Profile::Duty;
+    using Fraction = Profile::Fraction;
+    using Temperature = Profile::Temperature;
+    using Accumulator = Profile::Accumulator;
     /**
      * @brief Constructor
      * @param pwm_interface PWM interface
@@ -217,6 +260,8 @@ public:
      * @param speed_rps Target speed in RPS
      */
     void setTargetSpeed(float speed_rps) noexcept;
+    /** @brief Set a native throttle/speed-loop request without float conversion. */
+    void setNativeTargetSpeed(Speed speed_rps) noexcept;
 
     /**
      * @brief Set duty cycle for open-loop control
@@ -268,7 +313,7 @@ public:
      * @param kp Proportional gain (V/A)
      * @param ki Integral gain (V/A/s)
      */
-    void setFocCurrentPi(float kp, float ki) noexcept;
+    bool setFocCurrentPi(float kp, float ki) noexcept;
 
     /// @brief Get the FOC d/q current regulator gains
     void getFocCurrentPi(float& kp, float& ki) const noexcept;
@@ -282,7 +327,7 @@ public:
      *
      * @param degrees_e Offset in electrical degrees
      */
-    void setFocAngleOffsetDeg(float degrees_e) noexcept;
+    bool setFocAngleOffsetDeg(float degrees_e) noexcept;
 
     /// @brief Get the FOC electrical angle offset, in electrical degrees
     float getFocAngleOffsetDeg() const noexcept;
@@ -349,14 +394,14 @@ public:
     void clearHallFault() noexcept;
 
     /// @brief Configure the Hall health monitor
-    void setHallMonitorParams(const HallMonitorParams& params) noexcept;
+    bool setHallMonitorParams(const HallMonitorParams& params) noexcept;
 
     /**
      * @brief Set PLL base PI gains (kp_base, ki_base)
      * @param kp Base proportional gain
      * @param ki Base integral gain
      */
-    void setPllGains(float kp, float ki) noexcept;
+    bool setPllGains(float kp, float ki) noexcept;
 
     /**
      * @brief Get current drive mode
@@ -401,6 +446,9 @@ public:
      */
     MotorStatus getStatus() const noexcept;
 
+    /** @brief Native snapshot for the PWM callback; caller owns synchronization. */
+    const NativeMotorStatus& getNativeStatus() const noexcept { return status_; }
+
     /**
      * @brief Get motor control parameters (configured limits)
      * @return Reference to the parameters the controller was configured with
@@ -444,9 +492,19 @@ private:
 
     // Configuration
     MotorControlParams params_;
+    struct NativeLimits {
+        Duty max_duty{};
+        Current max_current{}, min_current{};
+        Voltage max_voltage{};
+        Temperature max_temperature{};
+        Speed max_speed{};
+        Fraction target_alpha{}, speed_alpha{}, current_alpha{};
+    } limits_;
+    bool parameters_valid_ = false;
+    bool acceleration_enabled_ = false;
 
     // State variables
-    MotorStatus status_;
+    NativeMotorStatus status_{};
     volatile DriveMode dmode_;
     bool initialized_;
 
@@ -465,14 +523,14 @@ private:
      * modulation index rather than the command it was given, so a single field
      * serving as both would feed the report back in as the next command.
      */
-    float duty_command_;
+    Duty duty_command_;
 
     // Target speed filtering state (LPF → slew rate limiter cascade)
-    float filtered_target_speed_;            ///< LPF-filtered target speed
-    float filtered_measured_speed_;
-    float filtered_measured_current_;           ///< LPF-filtered measured current, telemetry only
-    float limited_target_speed_;             ///< Rate-limited target speed (after LPF)
-    float acceleration_step_;                ///< Maximum target-speed change per control tick
+    Speed filtered_target_speed_;            ///< LPF-filtered target speed
+    Speed filtered_measured_speed_;
+    Current filtered_measured_current_;       ///< LPF-filtered current, telemetry only
+    Accumulator limited_target_speed_;        ///< Retains sub-LSB ramp increments
+    Accumulator acceleration_step_;           ///< Maximum target-speed change per control tick
 
 
 
@@ -497,14 +555,14 @@ private:
      * @param target_speed Desired target speed
      * @return Rate-limited target speed
      */
-    float applyAccelerationLimit(float target_speed) noexcept;
+    Speed applyAccelerationLimit(Speed target_speed) noexcept;
 
     /**
      * @brief Calculate step interval from target speed for open-loop control
      * @param speed_rps Target speed in RPS
      * @return Step interval in microseconds
      */
-    uint32_t calculateOpenLoopStepInterval(float speed_rps) noexcept;
+    uint32_t calculateOpenLoopStepInterval(Speed speed_rps) noexcept;
 };
 
 } // namespace libecu

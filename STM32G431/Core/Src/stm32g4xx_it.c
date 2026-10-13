@@ -11,6 +11,12 @@
 // Forward declarations - actual functions are in main.cpp
 extern void motor_controller_hall_interrupt_handler(void);
 extern void motor_controller_pwm_interrupt_handler(void);
+/* USER CODE BEGIN BenchDeclarations */
+#ifdef BENCH_PROFILING
+extern uint32_t bench_pwm_irq_begin(void);
+extern void bench_pwm_irq_end(uint32_t started);
+#endif
+/* USER CODE END BenchDeclarations */
 
 void HAL_SYSTICK_Callback(void);
 
@@ -128,7 +134,17 @@ void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim)
   */
 void TIM1_UP_TIM16_IRQHandler(void)
 {
+    /* USER CODE BEGIN TIM1_UP_TIM16_IRQn 0 */
+#ifdef BENCH_PROFILING
+    const uint32_t started = bench_pwm_irq_begin();
+#endif
+    /* USER CODE END TIM1_UP_TIM16_IRQn 0 */
     HAL_TIM_IRQHandler(&htim1);
+    /* USER CODE BEGIN TIM1_UP_TIM16_IRQn 1 */
+#ifdef BENCH_PROFILING
+    bench_pwm_irq_end(started);
+#endif
+    /* USER CODE END TIM1_UP_TIM16_IRQn 1 */
 }
 
 /**

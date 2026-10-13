@@ -31,7 +31,7 @@ SixStepAlgorithm::SixStepAlgorithm(PwmInterface& pwm_interface) noexcept
     , cached_phase_v_state_(PwmState::OFF)
     , cached_phase_w_state_(PwmState::OFF)
     , cycles_since_commutation_(255)
-    , last_duty_(0.0f)
+    , last_duty_{}
     , last_saturation_(0)
 {
 }
@@ -39,6 +39,7 @@ SixStepAlgorithm::SixStepAlgorithm(PwmInterface& pwm_interface) noexcept
 void SixStepAlgorithm::setParams(const SixStepParams& params) noexcept
 {
     params_ = params;
+    max_duty_ = numberCast<Duty>(params.max_duty_cycle);
 }
 
 bool SixStepAlgorithm::setCurrentPi(const PiParameters& params) noexcept
@@ -58,7 +59,7 @@ void SixStepAlgorithm::reset() noexcept
     current_pi_.reset();
     current_step_ = 0xFF;
     cycles_since_commutation_ = 255;
-    last_duty_ = 0.0f;
+    last_duty_ = Duty{};
     last_saturation_ = 0;
 }
 
@@ -72,19 +73,24 @@ void SixStepAlgorithm::onEnter() noexcept
 
 MotorAlgorithmOutput SixStepAlgorithm::update(const MotorAlgorithmInput& in) noexcept
 {
-    MotorAlgorithmOutput out{};
+    return motorOutputCast<MotorAlgorithmOutput>(updateNative(motorInputCast<Input>(in)));
+}
+
+SixStepAlgorithm::Output SixStepAlgorithm::updateNative(const Input& in) noexcept
+{
+    Output out{};
 
     // Read the shunt *before* this cycle's commutation: the sample belongs to
     // the period that just ended, under the switching states still cached.
-    const float measured_current = currentFromActivePhase(in);
+    const Current measured_current = currentFromActivePhase(in);
 
     const bool commutating = (in.step <= 5) && (in.step != current_step_);
 
-    float duty;
+    Duty duty;
     int8_t saturation;
 
     if (in.electric_mode == ElectricMode::VOLTAGE_MODE) {
-        duty = std::max(0.0f, std::min(in.duty_command, params_.max_duty_cycle));
+        duty = numericClamp(in.duty_command, Duty{}, max_duty_);
         saturation = 0;
     } else {
         const bool blanked = params_.blanking_cycles > 0 &&
@@ -98,8 +104,10 @@ MotorAlgorithmOutput SixStepAlgorithm::update(const MotorAlgorithmInput& in) noe
             // The PI gains come from the motor's electrical model (see
             // current_loop_tuning.hpp), so the loop bandwidth is set by physics
             // rather than by hand-tuning.
-            const float duty_raw = current_pi_.update(in.target_current, measured_current);
-            duty = std::max(0.0f, std::min(duty_raw, params_.max_duty_cycle));
+            using PiCurrent = ActivePiProfile::CurrentPiTypes::Input;
+            const Duty duty_raw = numberCast<Duty>(current_pi_.updateNative(
+                numberCast<PiCurrent>(in.target_current), numberCast<PiCurrent>(measured_current)));
+            duty = numericClamp(duty_raw, Duty{}, max_duty_);
 
             // Saturation is reported from the *clamped* duty, not from the
             // regulator's own limits: max_duty_cycle is applied here, outside
@@ -108,8 +116,7 @@ MotorAlgorithmOutput SixStepAlgorithm::update(const MotorAlgorithmInput& in) noe
             // stuck; see PiController.
             saturation = static_cast<int8_t>(current_pi_.saturationSign());
             if (saturation == 0) {
-                saturation = (duty_raw > params_.max_duty_cycle) ? 1
-                           : (duty_raw < 0.0f)                   ? -1 : 0;
+                saturation = (duty_raw > max_duty_) ? 1 : (duty_raw < Duty{}) ? -1 : 0;
             }
         }
     }
@@ -126,7 +133,7 @@ MotorAlgorithmOutput SixStepAlgorithm::update(const MotorAlgorithmInput& in) noe
         // Modulation depth only. All three phases carry the same duty; the
         // switching state set at the last commutation decides which of them
         // actually modulates it.
-        pwm_interface_.updateDutyCycle(duty);
+        pwm_interface_.updateNativeDutyCycle(duty);
     }
 
     last_duty_ = duty;
@@ -137,16 +144,14 @@ MotorAlgorithmOutput SixStepAlgorithm::update(const MotorAlgorithmInput& in) noe
     out.duty_w = duty;
     out.duty = duty;
     out.measured_current = measured_current;
-    out.i_d = 0.0f;
-    out.i_q = 0.0f;
-    out.v_d = 0.0f;
-    out.v_q = duty * in.bus_voltage;
-    out.angle_e_rad = in.angle_steps * FOC_RAD_PER_STEP;
+    out.v_q = multiplyTo<Profile::Voltage>(duty, in.bus_voltage);
+    out.angle_e_rad = multiplyTo<Profile::Angle>(in.angle_steps,
+        number_v<Profile::Angle, 10471975511966LL, 10000000000000LL>);
     out.saturation = saturation;
     return out;
 }
 
-void SixStepAlgorithm::applyCommutationStep(const CommutationStep& step, float duty_cycle) noexcept
+void SixStepAlgorithm::applyCommutationStep(const CommutationStep& step, Duty duty_cycle) noexcept
 {
     cached_phase_u_state_ = step.phase_u;
     cached_phase_v_state_ = step.phase_v;
@@ -161,13 +166,13 @@ void SixStepAlgorithm::applyCommutationStep(const CommutationStep& step, float d
     // while the switching states above are preloaded against the COM event
     // below. Both are atomic within themselves, and neither has to wait for the
     // other, because no phase state is encoded in a compare register.
-    pwm_interface_.updateDutyCycle(duty_cycle);
+    pwm_interface_.updateNativeDutyCycle(duty_cycle);
 
     // Apply all three channel states atomically (TIM_EGR_COMG on STM32)
     pwm_interface_.apply();
 }
 
-float SixStepAlgorithm::currentFromActivePhase(const MotorAlgorithmInput& in) const noexcept
+SixStepAlgorithm::Current SixStepAlgorithm::currentFromActivePhase(const Input& in) const noexcept
 {
     if (cached_phase_u_state_ == PwmState::DOWN) {
         return in.i_u;
@@ -178,7 +183,7 @@ float SixStepAlgorithm::currentFromActivePhase(const MotorAlgorithmInput& in) co
     }
     // No DOWN phase (all OFF, or FOC left the bridge in all-UP): nothing on a
     // shunt that means anything.
-    return 0.0f;
+    return Current{};
 }
 
 PwmState SixStepAlgorithm::getPhaseState(PwmChannel channel) const noexcept

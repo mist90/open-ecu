@@ -1,199 +1,39 @@
-/**
- * @file hall_monitor.cpp
- * @brief Hall sensor health monitor - implementation
+/** @file hall_monitor.cpp
+ * @brief Float-facing boundary of the numerical Hall monitor core
  */
-
 #include "../include/hall_monitor.hpp"
-#include "ecu_config.hpp"
-#include <cmath>
 
 namespace libecu {
 
-namespace {
-
-/// Signed cyclic distance between two Hall positions, in steps, range [-2, +3].
-inline int stepDelta(uint8_t from, uint8_t to) noexcept {
-    int d = static_cast<int>(to) - static_cast<int>(from);
-    d = ((d % 6) + 6) % 6;        // 0..5
-    if (d > 3) d -= 6;            // -2..3
-    return d;
+HallMonitor::HallMonitor() noexcept {
+    setParameters(HallMonitorParams{500000, 0.0f, 1, 300, 0.35f, 10.0f, true});
 }
 
-} // namespace
-
-HallMonitor::HallMonitor() noexcept
-    : params_{}
-    , decay_(0.0f)
-    , invalid_limit_ticks_(0)
-    , invalid_score_(0.0f)
-    , erratic_score_(0.0f)
-    , edge_accum_(0.0f)
-    , reversal_accum_(0.0f)
-    , last_delta_sign_(0)
-    , last_position_(0)
-    , have_last_(false)
-    , invalid_run_(0)
-    , invalid_ticks_(0)
-    , last_invalid_(false)
-    , invalid_counted_(false)
-    , invalid_events_(0)
-    , edges_(0)
-    , fault_(HallFault::NONE)
-{
-    // Sized for a 40-pole motor at 20 kHz. With decay_time_us = 500000:
-    //  - a stuck line at 600 steps/s puts one illegal code per electrical
-    //    revolution, i.e. ~100/s, settling the accumulator near 50
-    //  - an isolated glitch or two peaks at 2 and fades
-    //  - sustained chatter above 40 reversing edges/s trips the erratic
-    //    detector, while a burst of fewer than 20 does not
-    params_.decay_time_us          = 500000;
-    params_.invalid_threshold      = 0.0f;    // disabled - see the header
-    params_.invalid_debounce       = 1;       // readings are already deferred
-    params_.invalid_persist_time_us = 300;
-    params_.erratic_fraction       = 0.35f;   // healthy under load measures ~0.06
-    params_.erratic_min_edges      = 10.0f;
-    params_.require_drive_active   = true;
-    setParameters(params_);
-}
-
-void HallMonitor::setParameters(const HallMonitorParams& params) noexcept {
+bool HallMonitor::setParameters(const HallMonitorParams& params) noexcept {
+    Core::Params typed{};
+    typed.decay_time_us = params.decay_time_us;
+    typed.invalid_debounce = params.invalid_debounce;
+    typed.invalid_persist_time_us = params.invalid_persist_time_us;
+    typed.require_drive_active = params.require_drive_active;
+    if (!tryNumber(params.invalid_threshold, typed.invalid_threshold) ||
+        !tryNumber(params.erratic_fraction, typed.erratic_fraction) ||
+        !tryNumber(params.erratic_min_edges, typed.erratic_min_edges)) return false;
+    if (!core_.setParameters(typed)) return false;
     params_ = params;
-    const uint32_t tau_us = params.decay_time_us > 0 ? params.decay_time_us : 1000u;
-    const float keep = 1.0f - 1000000.0f / (float(ActiveTiming::CURRENT_HZ) * tau_us);
-    decay_ = keep > 0.0f ? keep : 0.0f;
-    invalid_limit_ticks_ = ActiveTiming::CurrentClock::ticksFromUs(params.invalid_persist_time_us);
+    return true;
 }
 
-void HallMonitor::clearFault() noexcept {
-    fault_           = HallFault::NONE;
-    invalid_score_   = 0.0f;
-    erratic_score_   = 0.0f;
-    edge_accum_      = 0.0f;
-    reversal_accum_  = 0.0f;
-    last_delta_sign_ = 0;
-    invalid_run_     = 0;
-    invalid_ticks_   = 0;
-    invalid_counted_ = false;
-}
-
-void HallMonitor::reset() noexcept {
-    clearFault();
-    last_position_  = 0;
-    have_last_      = false;
-    last_invalid_   = false;
-    invalid_events_ = 0;
-    edges_          = 0;
-}
-
-void HallMonitor::tick(bool drive_active) noexcept {
-    // The leak is what separates a burst from a breakdown, so it has to run on
-    // the PWM time base rather than on Hall events - those arrive at the
-    // commutation rate, which is exactly what is unreliable when something is
-    // broken.
-    invalid_score_  *= decay_;
-    edge_accum_     *= decay_;
-    reversal_accum_ *= decay_;
-
-    const bool accumulate = drive_active || !params_.require_drive_active;
-
-    // Age a standing illegal code.  A disconnected loom yields one edge as the
-    // lines settle and then silence, so without this it would never be caught.
-    if (last_invalid_ && accumulate) {
-        if (invalid_ticks_ < UINT32_MAX) ++invalid_ticks_;
-        if (invalid_limit_ticks_ > 0 &&
-            invalid_ticks_ >= invalid_limit_ticks_ &&
-            fault_ == HallFault::NONE) {
-            fault_ = HallFault::INVALID_CODE;
-        }
-    }
-
-    evaluate();
-}
-
-void HallMonitor::onPosition(uint8_t position, bool drive_active) noexcept {
-    const bool accumulate = drive_active || !params_.require_drive_active;
-
-    if (position == HALL_POSITION_INVALID) {
-        last_invalid_ = true;
-        if (invalid_run_ < 255) ++invalid_run_;
-        const uint8_t need = (params_.invalid_debounce > 0) ? params_.invalid_debounce : 1;
-        if (!invalid_counted_ && invalid_run_ >= need) {
-            invalid_counted_ = true;
-            ++invalid_events_;
-            if (accumulate) invalid_score_ += 1.0f;
-        }
-        // An illegal code carries no position, so the edge bookkeeping is left
-        // alone - the next valid reading continues from the last valid one.
-    } else {
-        last_invalid_    = false;
-        invalid_run_     = 0;
-        invalid_ticks_   = 0;
-        invalid_counted_ = false;
-
-        if (!have_last_) {
-            last_position_ = position;
-            have_last_     = true;
-        } else if (position != last_position_) {
-            const int d = stepDelta(last_position_, position);
-            last_position_ = position;
-            ++edges_;
-
-            const int8_t sign = (d > 0) ? 1 : (d < 0 ? -1 : 0);
-            if (accumulate) {
-                edge_accum_ += 1.0f;
-                // Only a *change* of direction scores. Turning the shaft around
-                // costs one event; chatter scores on every edge because each one
-                // undoes the last.
-                if (last_delta_sign_ != 0 && sign != 0 && sign != last_delta_sign_) {
-                    reversal_accum_ += 1.0f;
-                }
-            }
-            if (sign != 0) {
-                last_delta_sign_ = sign;
-            }
-        }
-    }
-
-    evaluate();
-}
-
-void HallMonitor::evaluate() noexcept {
-    // Healthy motion keeps turning the same way, so consecutive edges share a
-    // sign and reversals are rare. Chatter alternates between two positions and
-    // reverses on every edge. No direction input is needed, and unlike the net
-    // -progress form this used to use, a genuine change of direction costs one
-    // event instead of cancelling the whole window (see the header).
-    // Express it as a *fraction* of all edges, not a count: the count scales
-    // with the edge rate, so any absolute threshold is really a speed limit.
-    erratic_score_ = (edge_accum_ >= params_.erratic_min_edges && reversal_accum_ > 0.0f)
-                   ? (reversal_accum_ / edge_accum_)
-                   : 0.0f;
-
-    // A threshold of zero disables that detector.
-    if (fault_ == HallFault::NONE) {
-        if (params_.invalid_threshold > 0.0f &&
-            invalid_score_ >= params_.invalid_threshold) {
-            fault_ = HallFault::INVALID_CODE;
-        } else if (params_.erratic_fraction > 0.0f &&
-                   erratic_score_ >= params_.erratic_fraction) {
-            fault_ = HallFault::ERRATIC_SEQUENCE;
-        }
-    }
-}
+void HallMonitor::tick(bool active) noexcept { core_.tick(active); }
+void HallMonitor::onPosition(uint8_t position, bool active) noexcept { core_.onPosition(position, active); }
+void HallMonitor::clearFault() noexcept { core_.clearFault(); }
+void HallMonitor::reset() noexcept { core_.reset(); }
 
 HallMonitor::Info HallMonitor::getInfo() const noexcept {
-    Info info;
-    info.invalid_score  = invalid_score_;
-    info.erratic_score  = erratic_score_;
-    info.edge_accum     = edge_accum_;
-    info.reversal_accum = reversal_accum_;
-    info.invalid_events = invalid_events_;
-    info.invalid_run    = invalid_run_;
-    info.invalid_time_us = ActiveTiming::CurrentClock::ticksToUs(invalid_ticks_);
-    info.edges          = edges_;
-    info.last_position  = last_position_;
-    info.fault          = fault_;
-    return info;
+    const auto info = core_.getInfo();
+    return {numberCast<float>(info.invalid_score), numberCast<float>(info.erratic_score),
+            numberCast<float>(info.edge_accum), numberCast<float>(info.reversal_accum),
+            info.invalid_events, info.invalid_run, info.invalid_time_us, info.edges,
+            info.last_position, info.fault};
 }
 
 } // namespace libecu

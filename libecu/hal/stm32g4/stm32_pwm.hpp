@@ -25,6 +25,7 @@ public:
     bool initialize(uint32_t frequency, uint16_t dead_time_ns) override;
     void setChannelState(PwmChannel channel, PwmState state) override;
     void updateDutyCycle(float duty_u, float duty_v, float duty_w) override;
+    void updateNativeDutyCycle(NativeDuty u, NativeDuty v, NativeDuty w) override;
     void enable(bool enable) override;
     void apply() override;
 
@@ -60,7 +61,7 @@ private:
      * @param duty_cycle Duty cycle (0.0 to 1.0)
      * @return Timer compare value
      */
-    uint32_t calculateCompareValue(float duty_cycle) noexcept;
+    uint32_t calculateCompareValue(NativeDuty duty_cycle) noexcept;
 };
 
 } // namespace libecu

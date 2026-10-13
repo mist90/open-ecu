@@ -187,12 +187,20 @@ int main(void)
     }
 
     libecu::MotorControlParams motor_params = makeMotorParams(board.info());
+#ifdef THROTTLE_BRAKE_CONTROL
+    using NativeDuty = libecu::ActiveNumericProfile::Duty;
+    using NativeSpeed = libecu::ActiveNumericProfile::Speed;
+    constexpr NativeDuty native_deadband = libecu::constant<NativeDuty>(THROTTLE_DEADBAND);
+    const NativeSpeed native_max_speed = libecu::numberCast<NativeSpeed>(motor_params.max_speed_rps);
+#endif
 
     static libecu::BldcController motor_controller(
         board.pwm(), board.hall(), motor_params, board.adc());
 
-    motor_controller.setHallMonitorParams(makeHallMonitorParams());
-    motor_controller.setPllGains(BLDC_PLL_KP, BLDC_PLL_KI);
+    if (!motor_controller.setHallMonitorParams(makeHallMonitorParams()) ||
+        !motor_controller.setPllGains(BLDC_PLL_KP, BLDC_PLL_KI)) {
+        board.fail();
+    }
 
     if (!motor_controller.initialize()) {
         board.fail();
@@ -210,16 +218,12 @@ int main(void)
         board.fail();
     }
 
-    printf("ECU started, PI arithmetic: %s\n", libecu::PI_PROFILE_NAME);
+    printf("ECU started, control: %s, PI: %s\n", libecu::CONTROL_PROFILE_NAME, libecu::PI_PROFILE_NAME);
     while (1) {
         // motor control loop
         if (board.takeControlTick()) {
             // Update motor controller status
-            libecu::MotorStatus status;
-            {
-                libecu::CriticalSection cs;
-                status = motor_controller.getStatus();
-            }
+            const libecu::MotorStatus status = motor_controller.getStatus();
 #ifdef THROTTLE_BRAKE_CONTROL
             // Reads the throttle sampled during the last control tick, not the
             // hardware: on this board the potentiometer shares an ADC group
@@ -229,7 +233,7 @@ int main(void)
             //
             // Taken once per tick, normalised, and scaled below into the
             // speed demand.
-            const float throttle = board.readThrottle(1.0f);
+            const NativeDuty throttle = board.readNativeThrottle();
 
             // The throttle is a velocity demand, so the controller is held in
             // closed-loop velocity for as long as this input owns the drive -
@@ -249,7 +253,7 @@ int main(void)
             // algorithm().onEnter(), which under FOC re-arms all three phases
             // at 50 % duty. Calling it every tick would keep resetting the
             // loop it is supposed to be driving.
-            const libecu::DriveMode wanted = (throttle <= THROTTLE_DEADBAND)
+            const libecu::DriveMode wanted = (throttle <= native_deadband)
                                                  ? libecu::DriveMode::NEUTRAL
                                                  : libecu::DriveMode::FORWARD;
             if (motor_controller.getDriveMode() != wanted) {
@@ -260,11 +264,11 @@ int main(void)
                 // The brake zeroes the demand but deliberately does not park the
                 // drive: with the bridge still live, a zero setpoint is what lets
                 // the speed loop hold the motor down rather than let it coast.
-                const float demand = board.brakeEngaged() ? 0.0f : throttle - THROTTLE_DEADBAND;
+                const NativeDuty demand = board.brakeEngaged() ? NativeDuty{} : throttle - native_deadband;
 
-                motor_controller.setTargetSpeed(demand * motor_params.max_speed_rps);
+                motor_controller.setNativeTargetSpeed(libecu::multiplyTo<NativeSpeed>(demand, native_max_speed));
             } else {
-                motor_controller.setTargetSpeed(0.0f);
+                motor_controller.setNativeTargetSpeed(NativeSpeed{});
             }
 #endif
 

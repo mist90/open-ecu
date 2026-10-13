@@ -2,10 +2,12 @@
 set -e
 cd "$(dirname "$0")"
 flags=()
-if [[ ${1:-float} == fixed ]]; then
+if [[ ${1:-float} == numeric-fixed ]]; then
+    flags=(-DECU_FIXED_NUMERIC)
+elif [[ ${1:-float} == fixed ]]; then
     flags=(-DECU_FIXED_PI)
 elif [[ ${1:-float} != float ]]; then
-    echo "Usage: $0 [float|fixed]" >&2
+    echo "Usage: $0 [float|fixed|numeric-fixed]" >&2
     exit 1
 fi
 g++ -std=c++17 -O2 -Wall -Wextra -Werror -fsanitize=undefined -fno-sanitize-recover=all \

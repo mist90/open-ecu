@@ -18,6 +18,21 @@ uint32_t time_us(void);
 
 namespace libecu {
 
+namespace {
+template<class Speed>
+uint32_t openLoopInterval(Speed speed, uint32_t steps_per_revolution) noexcept {
+    if (!steps_per_revolution) return 0;
+    if constexpr (std::is_same<Speed, float>::value) {
+        const float interval = 10000000.0f / (speed * steps_per_revolution);
+        return interval >= 4294967296.0f ? UINT32_MAX : static_cast<uint32_t>(interval);
+    } else {
+        const uint64_t interval = uint64_t(10000000) * Speed::SCALE /
+                                  (uint64_t(speed.raw()) * steps_per_revolution);
+        return interval > UINT32_MAX ? UINT32_MAX : static_cast<uint32_t>(interval);
+    }
+}
+} // namespace
+
 BldcController::BldcController(
     PwmInterface& pwm_interface,
     HallInterface& hall_interface,
@@ -38,38 +53,22 @@ BldcController::BldcController(
     , hall_update_pending_(false)
     , open_loop_step_(0)
     , open_loop_last_step_time_us_(0)
-    , duty_command_(0.0f)
-    , filtered_target_speed_(0.0f)
-    , filtered_measured_speed_(0.0f)
-    , filtered_measured_current_(0.0f)
-    , limited_target_speed_(0.0f)
-    , acceleration_step_(params.acceleration_rate / ActiveTiming::SPEED_HZ)
+    , duty_command_{}
+    , filtered_target_speed_{}
+    , filtered_measured_speed_{}
+    , filtered_measured_current_{}
+    , limited_target_speed_{}
+    , acceleration_step_{}
 
 {
     // Initialize status
-    status_.current_speed_rps = 0.0f;
-    status_.target_speed_rps = 0.0f;
-    status_.duty_cycle = 0.0f;
-    status_.target_current = 0.0f;
-    status_.measured_current = 0.0f;
-    status_.measured_current_filtered = 0.0f;
-    status_.bus_voltage = 0.0f;
-    status_.temperature_c = TEMPERATURE_INVALID_C;  // nothing sampled yet
-    status_.pll_angle = 0.0f;
+    status_.temperature_c = number_v<Temperature, -273>;  // nothing sampled yet
     status_.current_pi_saturation = 0;
     status_.target_position = 0xFF;
     status_.measured_position = 0xFF;
     status_.is_running = false;
     status_.control_mode = ControlMode::CLOSED_LOOP_VELOCITY;
     status_.electric_mode = ElectricMode::CURRENT_MODE;
-    status_.i_d = 0.0f;
-    status_.i_q = 0.0f;
-    status_.v_d = 0.0f;
-    status_.v_q = 0.0f;
-    status_.angle_e_rad = 0.0f;
-    status_.duty_u = 0.0f;
-    status_.duty_v = 0.0f;
-    status_.duty_w = 0.0f;
 
     if (algorithm_ != DriveAlgorithm::FOC) {
         algorithm_ = DriveAlgorithm::SIX_STEP;
@@ -120,8 +119,25 @@ BldcController::BldcController(
         foc_params.max_modulation = 0.95f;
     }
     params_.foc = foc_params;
-    foc_.setParams(foc_params);
-    foc_.setCurrentPiGains(params_.foc_current_regulator.kp, params_.foc_current_regulator.ki);
+    Profile::PllSpeed max_electrical_speed{};
+    Speed acceleration{};
+    parameters_valid_ =
+        params.num_poles > 0 &&
+        tryNumber(params.max_speed_rps * params.num_poles * BLDC_NUM_PHASES, max_electrical_speed) &&
+        tryNumber(params_.max_duty_cycle, limits_.max_duty) &&
+        tryNumber(params_.max_current, limits_.max_current) &&
+        tryNumber(params_.min_current, limits_.min_current) &&
+        tryNumber(params_.max_voltage, limits_.max_voltage) &&
+        tryNumber(params_.max_temperature_c, limits_.max_temperature) &&
+        tryNumber(params_.max_speed_rps, limits_.max_speed) &&
+        tryNumber(params_.target_speed_lpf_alpha, limits_.target_alpha) &&
+        tryNumber(params_.measured_speed_lpf_alpha, limits_.speed_alpha) &&
+        tryNumber(params_.measured_current_lpf_alpha, limits_.current_alpha) &&
+        tryNumber(params_.acceleration_rate, acceleration) &&
+        foc_.setParams(foc_params) &&
+        foc_.setCurrentPiGains(params_.foc_current_regulator.kp, params_.foc_current_regulator.ki);
+    acceleration_step_ = divideByInteger<Accumulator>(acceleration, ActiveTiming::SPEED_HZ);
+    acceleration_enabled_ = acceleration > Speed{};
 
     motor_pll_.setUsePLL(true);
 }
@@ -143,7 +159,8 @@ const MotorAlgorithm& BldcController::algorithm() const noexcept
 bool BldcController::initialize() noexcept
 {
     pwm_interface_.setNeutral();
-    if (!pi_speed_controller_.isConfigured() || !six_step_.isCurrentPiConfigured()) return false;
+    if (!parameters_valid_ || !pi_speed_controller_.isConfigured() || !six_step_.isCurrentPiConfigured())
+        return false;
 
     // Reset PI controller
     pi_speed_controller_.reset();
@@ -180,13 +197,13 @@ void BldcController::update() noexcept
     // Signed feedback fixes all four quadrants: turning against the command now
     // yields a *positive* error and therefore corrective torque, while turning
     // with it behaves exactly as before.
-    const float direction = (dmode_ == DriveMode::REVERSE) ? -1.0f : 1.0f;
-    float speed_rps = direction * motor_pll_.getSpeedStepsSec()
-                    / (params_.num_poles * BLDC_NUM_PHASES);
+    Speed speed_rps = divideByInteger<Speed>(motor_pll_.getNativeSpeedStepsSec(),
+                                            params_.num_poles * BLDC_NUM_PHASES);
+    if (dmode_ == DriveMode::REVERSE) speed_rps = -speed_rps;
 
-    float alpha = params_.measured_speed_lpf_alpha;
-    if (alpha > 0.0f && alpha < 1.0f) {
-        filtered_measured_speed_ = alpha * speed_rps + (1.0f - alpha) * filtered_measured_speed_;
+    const Fraction alpha = limits_.speed_alpha;
+    if (alpha > Fraction{} && alpha < number_v<Fraction, 1>) {
+        filtered_measured_speed_ += multiplyTo<Speed>(alpha, speed_rps - filtered_measured_speed_);
     } else {
         filtered_measured_speed_ = speed_rps;
     }
@@ -202,7 +219,7 @@ void BldcController::update() noexcept
     // stopped hot is exactly when the limit matters, and it is what stops the
     // bridge being re-armed into a fault.
     if (adc_interface_) {
-        const float temperature_c = adc_interface_->readTemperature();
+        const Temperature temperature_c = adc_interface_->readNativeTemperature();
         {
             CriticalSection cs;
             status_.temperature_c = temperature_c;
@@ -214,16 +231,23 @@ void BldcController::update() noexcept
         //
         // TEMPERATURE_INVALID_C fails this comparison, so an open sensor
         // coasts rather than trips. See MotorControlParams::max_temperature_c.
-        if (temperature_c > params_.max_temperature_c && dmode_ != DriveMode::NEUTRAL) {
+        if (temperature_c > limits_.max_temperature && dmode_ != DriveMode::NEUTRAL) {
             setDriveMode(DriveMode::NEUTRAL);
         }
     }
 
-    MotorStatus status;
+    NativeMotorStatus status;
     {
         CriticalSection cs;
         status_.current_speed_rps = filtered_measured_speed_;
         status = status_;
+    }
+
+    if (status.algorithm == DriveAlgorithm::FOC) {
+        const Duty modulation = FocAlgorithm::Core::modulationMagnitude(status.v_d, status.v_q, status.bus_voltage);
+        CriticalSection cs;
+        if (algorithm_ == DriveAlgorithm::FOC)
+            status_.duty_cycle = dmode_ == DriveMode::NEUTRAL ? Duty{} : modulation;
     }
 
     // A parked drive still reaches here every tick, but NEUTRAL has already
@@ -257,10 +281,11 @@ void BldcController::update() noexcept
             }
 
             case ControlMode::CLOSED_LOOP_VELOCITY: {
-                const float limited_target = applyAccelerationLimit(status.target_speed_rps);
-                const float pi_output = pi_speed_controller_.update(
-                    limited_target,
-                    status.current_speed_rps,
+                const Speed limited_target = applyAccelerationLimit(status.target_speed_rps);
+                using PiSpeed = ActivePiProfile::SpeedPiTypes::Input;
+                const auto pi_output = pi_speed_controller_.updateNative(
+                    numberCast<PiSpeed>(limited_target),
+                    numberCast<PiSpeed>(status.current_speed_rps),
                     status.current_pi_saturation
                 );
 
@@ -269,14 +294,14 @@ void BldcController::update() noexcept
                     // VOLTAGE_MODE: PI outputs the duty command directly
                     {
                         CriticalSection cs;
-                        duty_command_ = pi_output;
+                        duty_command_ = numberCast<Duty>(pi_output);
                     }
                 } else {
                     // CURRENT_MODE: PI outputs target current
                     // Store for inner current loop (runs in pwmInterruptHandler)
                     {
                         CriticalSection cs;
-                        status_.target_current = pi_output;
+                        status_.target_current = numberCast<Current>(pi_output);
                     }
 
                     // duty_cycle is calculated by pwmInterruptHandler() (atomic read)
@@ -294,18 +319,26 @@ void BldcController::update() noexcept
 
 void BldcController::setTargetSpeed(float speed_rps) noexcept
 {
+    Speed target{};
+    if (!tryNumber(speed_rps, target)) return;
+    setNativeTargetSpeed(target);
+}
+
+void BldcController::setNativeTargetSpeed(Speed target) noexcept {
     CriticalSection cs;
 
     if (dmode_ == DriveMode::NEUTRAL)
         return;
-    if (speed_rps < 0.0f)
+    if (target < Speed{})
         return;
     // Clamp to maximum speed
-    status_.target_speed_rps = std::min(std::abs(speed_rps), params_.max_speed_rps);
+    status_.target_speed_rps = std::min(target, limits_.max_speed);
 }
 
 void BldcController::setDutyCycle(float duty_cycle) noexcept
 {
+    Duty target{};
+    if (!tryNumber(duty_cycle, target)) return;
     CriticalSection cs;
     if (dmode_ == DriveMode::NEUTRAL)
         return;
@@ -315,16 +348,18 @@ void BldcController::setDutyCycle(float duty_cycle) noexcept
     // reports back. They are the same number in six-step voltage mode but not
     // in FOC, where the reported value is the modulation index of the applied
     // voltage vector - feeding that back as the command would make it decay.
-    duty_command_ = std::max(0.0f, std::min(duty_cycle, params_.max_duty_cycle));
+    duty_command_ = numericClamp(target, Duty{}, limits_.max_duty);
     status_.duty_cycle = duty_command_;
 }
 
 void BldcController::setCurrent(float current_a) noexcept
 {
+    Current target{};
+    if (!tryNumber(current_a, target)) return;
     CriticalSection cs;
     if (dmode_ == DriveMode::NEUTRAL)
         return;
-    status_.target_current = std::max(params_.min_current, std::min(current_a, params_.max_current));
+    status_.target_current = numericClamp(target, limits_.min_current, limits_.max_current);
 }
 
 void BldcController::setControlMode(ControlMode mode) noexcept
@@ -392,12 +427,13 @@ DriveAlgorithm BldcController::getAlgorithm() const noexcept
     return algorithm_;
 }
 
-void BldcController::setFocCurrentPi(float kp, float ki) noexcept
+bool BldcController::setFocCurrentPi(float kp, float ki) noexcept
 {
     CriticalSection cs;
+    if (!foc_.setCurrentPiGains(kp, ki)) return false;
     params_.foc_current_regulator.kp = kp;
     params_.foc_current_regulator.ki = ki;
-    foc_.setCurrentPiGains(kp, ki);
+    return true;
 }
 
 void BldcController::getFocCurrentPi(float& kp, float& ki) const noexcept
@@ -406,12 +442,13 @@ void BldcController::getFocCurrentPi(float& kp, float& ki) const noexcept
     foc_.getCurrentPiGains(kp, ki);
 }
 
-void BldcController::setFocAngleOffsetDeg(float degrees_e) noexcept
+bool BldcController::setFocAngleOffsetDeg(float degrees_e) noexcept
 {
     CriticalSection cs;
     const float rad = degrees_e * (FOC_PI / 180.0f);
+    if (!foc_.setAngleOffsetRad(rad)) return false;
     params_.foc.angle_offset_rad = rad;
-    foc_.setAngleOffsetRad(rad);
+    return true;
 }
 
 float BldcController::getFocAngleOffsetDeg() const noexcept
@@ -430,13 +467,13 @@ void BldcController::setDriveMode(DriveMode mode) noexcept
         // commanded off rather than merely abandoned.
         pwm_interface_.setNeutral();
         pwm_interface_.enable(false);
-        status_.target_speed_rps = 0.0f;
-        status_.duty_cycle = 0.0f;
-        duty_command_ = 0.0f;
-        status_.target_current = 0.0f;
+        status_.target_speed_rps = Speed{};
+        status_.duty_cycle = Duty{};
+        duty_command_ = Duty{};
+        status_.target_current = Current{};
         pi_speed_controller_.reset();
         algorithm().reset();
-        filtered_measured_current_ = 0.0f;
+        filtered_measured_current_ = Current{};
     } else {
         if (was_neutral && status_.control_mode != ControlMode::OPEN_LOOP) {
             synchronizeHallPosition();
@@ -451,9 +488,12 @@ void BldcController::setDriveMode(DriveMode mode) noexcept
 
 void BldcController::setAccelerationRate(float rate_rps2) noexcept
 {
+    Speed rate{};
+    if (!tryNumber(rate_rps2, rate) || rate < Speed{}) return;
     CriticalSection cs;
     params_.acceleration_rate = rate_rps2;
-    acceleration_step_ = rate_rps2 / ActiveTiming::SPEED_HZ;
+    acceleration_step_ = divideByInteger<Accumulator>(rate, ActiveTiming::SPEED_HZ);
+    acceleration_enabled_ = rate > Speed{};
     // limited_target_speed_ is deliberately left alone: it is where the ramp
     // has got to so far, and resetting it to the raw target would turn a change
     // of rate limit into the very step the limiter exists to prevent.
@@ -499,9 +539,9 @@ void BldcController::clearHallFault() noexcept {
     hall_monitor_.clearFault();
 }
 
-void BldcController::setHallMonitorParams(const HallMonitorParams& params) noexcept {
+bool BldcController::setHallMonitorParams(const HallMonitorParams& params) noexcept {
     CriticalSection cs;
-    hall_monitor_.setParameters(params);
+    return hall_monitor_.setParameters(params);
 }
 
 MotorPLL::PllInfo BldcController::getPllInfo() const noexcept {
@@ -509,9 +549,9 @@ MotorPLL::PllInfo BldcController::getPllInfo() const noexcept {
     return motor_pll_.getInfo();
 }
 
-void BldcController::setPllGains(float kp, float ki) noexcept {
+bool BldcController::setPllGains(float kp, float ki) noexcept {
     CriticalSection cs;
-    motor_pll_.setGains(kp, ki);
+    return motor_pll_.setGains(kp, ki);
 }
 
 DriveMode BldcController::getDriveMode() const noexcept {
@@ -568,38 +608,43 @@ void BldcController::start() noexcept
     }
 
     // Reset target speed filters
-    filtered_target_speed_ = 0.0f;
-    filtered_measured_speed_ = 0.0f;
-    limited_target_speed_ = 0.0f;
+    filtered_target_speed_ = Speed{};
+    filtered_measured_speed_ = Speed{};
+    limited_target_speed_ = Accumulator{};
 }
 
 void BldcController::stop() noexcept
 {
     CriticalSection cs;
     status_.is_running = false;
-    status_.duty_cycle = 0.0f;
-    duty_command_ = 0.0f;
+    status_.duty_cycle = Duty{};
+    duty_command_ = Duty{};
     // Zero the torque command too. The PWM ISR keeps running after stop() and
     // recomputes the duty from the current loop every cycle, so clearing only
     // the duty left the drive producing exactly as much torque as before.
-    status_.target_current = 0.0f;
+    status_.target_current = Current{};
     open_loop_step_ = 0;
     algorithm().reset();
-    pwm_interface_.updateDutyCycle(0.0f);
+    pwm_interface_.updateNativeDutyCycle(Duty{});
 
-    status_.current_speed_rps = 0.0f;
+    status_.current_speed_rps = Speed{};
 }
 
 MotorStatus BldcController::getStatus() const noexcept
 {
-    return status_;
+    NativeMotorStatus snapshot;
+    {
+        CriticalSection cs;
+        snapshot = status_;
+    }
+    return motorStatusCast<FloatProfile>(snapshot);
 }
 
 void BldcController::synchronizeHallPosition(bool discard_tracking) noexcept
 {
     const uint8_t hall = hall_interface_.getPosition();
     status_.measured_position = hall;
-    const bool changed = motor_pll_.getInfo().hall_state_raw != hall;
+    const bool changed = motor_pll_.getHallStateRaw() != hall;
     if (hall <= 5) motor_pll_.updateHall(hall);
     // Preserve a real PLL that is already tracking a coasting rotor.
     if (discard_tracking || changed || hall > 5) motor_pll_.reset();
@@ -611,52 +656,54 @@ void BldcController::synchronizeHallPosition(bool discard_tracking) noexcept
 void BldcController::holdVelocityLoop() noexcept
 {
     pi_speed_controller_.reset();
-    filtered_target_speed_ = 0.0f;
+    filtered_target_speed_ = Speed{};
     // Park the ramp at the *measured* speed rather than at zero, so that
     // re-engaging starts from where the rotor actually is - bumpless whether
     // it is standing still or still coasting.
-    limited_target_speed_ = filtered_measured_speed_;
+    limited_target_speed_ = numberCast<Accumulator>(filtered_measured_speed_);
 }
 
-float BldcController::applyAccelerationLimit(float target_speed) noexcept
+BldcController::Speed BldcController::applyAccelerationLimit(Speed target_speed) noexcept
 {
     // Stage 1: LPF to smooth noisy analog input
-    float alpha = params_.target_speed_lpf_alpha;
-    if (alpha > 0.0f && alpha < 1.0f) {
-        filtered_target_speed_ = alpha * target_speed + (1.0f - alpha) * filtered_target_speed_;
+    const Fraction alpha = limits_.target_alpha;
+    if (alpha > Fraction{} && alpha < number_v<Fraction, 1>) {
+        filtered_target_speed_ += multiplyTo<Speed>(alpha, target_speed - filtered_target_speed_);
     } else {
         filtered_target_speed_ = target_speed;
     }
 
     // Stage 2: Slew rate limiter
-    if (params_.acceleration_rate == 0.0f) {
-        limited_target_speed_ = filtered_target_speed_;
-        return limited_target_speed_;
+    if (!acceleration_enabled_) {
+        limited_target_speed_ = numberCast<Accumulator>(filtered_target_speed_);
+        return filtered_target_speed_;
     }
 
-    float speed_diff = filtered_target_speed_ - limited_target_speed_;
-    const float max_change = acceleration_step_;
+    const Accumulator target = numberCast<Accumulator>(filtered_target_speed_);
+    const Accumulator speed_diff = target - limited_target_speed_;
+    const Accumulator max_change = acceleration_step_;
 
-    if (std::abs(speed_diff) <= max_change) {
-        limited_target_speed_ = filtered_target_speed_;
-    } else if (speed_diff > 0.0f) {
+    if (numericAbs(speed_diff) <= max_change) {
+        limited_target_speed_ = target;
+    } else if (speed_diff > Accumulator{}) {
         limited_target_speed_ += max_change;
     } else {
         limited_target_speed_ -= max_change;
     }
 
-    return limited_target_speed_;
+    return numberCast<Speed>(limited_target_speed_);
 }
 
-uint32_t BldcController::calculateOpenLoopStepInterval(float speed_rps) noexcept
+uint32_t BldcController::calculateOpenLoopStepInterval(Speed speed_rps) noexcept
 {
     // step_interval_us = 1,000,000 / (speed_rps / 60 * num_poles * 6)
     // = 1,000,000 * 60 / (speed_rps * num_poles * 6)
     // = 10,000,000 / (speed_rps * num_poles)
-    if (speed_rps <= 0.0f) {
+    if (speed_rps <= Speed{}) {
         return 0;
     }
-    return static_cast<uint32_t>(10000000.0f / (speed_rps * params_.num_poles * BLDC_NUM_PHASES));
+    // Preserve the existing OPEN_LOOP scale/scheduling until its separate fix.
+    return openLoopInterval(speed_rps, params_.num_poles * BLDC_NUM_PHASES);
 }
 
 void BldcController::hallSensorInterruptHandler() noexcept
@@ -679,14 +726,14 @@ void BldcController::pwmInterruptHandler() noexcept {
     // One snapshot of everything, taken once, handed to whichever algorithm is
     // selected. Neither algorithm reaches into hardware for measurements, so
     // they cannot disagree about what this PWM period looked like.
-    MotorAlgorithmInput in;
+    MotorAlgorithmInputT<Profile> in{};
 
     // ADC already converted all injected channels — reading registers adds no
     // latency. All three shunts are read even in six-step, which uses one of
     // them: the cost is two extra register reads and two conversions, and it
     // is what lets the two algorithms share a single input path.
-    adc_interface_->readAllCurrents(in.i_u, in.i_v, in.i_w);
-    in.bus_voltage = adc_interface_->readBusVoltage();
+    adc_interface_->readNativeCurrents(in.i_u, in.i_v, in.i_w);
+    in.bus_voltage = adc_interface_->readNativeBusVoltage();
 
     // Hall health time base. Reads no hardware; it only decays the monitor's
     // accumulators and ages a standing illegal code, both of which have to run
@@ -722,8 +769,8 @@ void BldcController::pwmInterruptHandler() noexcept {
         in.duty_command = duty_command_;
         motor_pll_.updateTick();
         in.step = motor_pll_.getNextHall(dmode_);
-        in.angle_steps = motor_pll_.getAngle();
-        in.speed_steps_s = motor_pll_.getSpeedStepsSec();
+        in.angle_steps = motor_pll_.getNativeAngle();
+        in.speed_steps_s = motor_pll_.getNativeSpeedStepsSec();
     }
     in.drive_mode = dmode_;
 
@@ -734,7 +781,7 @@ void BldcController::pwmInterruptHandler() noexcept {
         setDriveMode(DriveMode::NEUTRAL);
     }
 
-    if (in.bus_voltage > params_.max_voltage)
+    if (in.bus_voltage > limits_.max_voltage)
         setDriveMode(DriveMode::NEUTRAL);
 
     // ---- Algorithm selection ----------------------------------------------
@@ -743,7 +790,7 @@ void BldcController::pwmInterruptHandler() noexcept {
     // inline it, and at 20 kHz in a `-O0` build every avoided indirection is
     // worth having. The base class still exists for the non-ISR paths
     // (reset/onEnter), where clarity is worth more than cycles.
-    MotorAlgorithmOutput out{};
+    MotorAlgorithmOutputT<Profile> out{};
     if (dmode_ == DriveMode::NEUTRAL) {
         // Bridge disabled - there is nothing to regulate. Running the
         // algorithm anyway lets the d/q integrators random-walk on ADC noise
@@ -752,16 +799,16 @@ void BldcController::pwmInterruptHandler() noexcept {
         // clears them when the drive re-arms, but a thoroughly misleading
         // number to put in telemetry - and indistinguishable, from the
         // outside, from the bridge actually being at 95 %.
-        out.angle_e_rad = in.angle_steps * FOC_RAD_PER_STEP;
+        out.angle_e_rad = multiplyTo<Profile::Angle>(in.angle_steps, FocAlgorithm::Core::RAD_PER_STEP);
     } else {
         switch (algorithm_) {
             case DriveAlgorithm::FOC:
-                out = foc_.update(in);
+                out = foc_.updateNative(in);
                 break;
 
             case DriveAlgorithm::SIX_STEP:
             default:
-                out = six_step_.update(in);
+                out = six_step_.updateNative(in);
                 break;
         }
     }
@@ -771,15 +818,16 @@ void BldcController::pwmInterruptHandler() noexcept {
         // Report a filtered current: the raw value is a single ADC sample per
         // PWM cycle, and sampling that at 100 Hz aliases the chopping ripple
         // into the telemetry. Control and +OSC keep the raw value.
-        const float i_alpha = params_.measured_current_lpf_alpha;
-        if (i_alpha > 0.0f && i_alpha < 1.0f) {
-            filtered_measured_current_ += i_alpha * (out.measured_current - filtered_measured_current_);
+        const Fraction i_alpha = limits_.current_alpha;
+        if (i_alpha > Fraction{} && i_alpha < number_v<Fraction, 1>) {
+            filtered_measured_current_ += multiplyTo<Current>(i_alpha,
+                                                             out.measured_current - filtered_measured_current_);
         } else {
             filtered_measured_current_ = out.measured_current;
         }
         status_.measured_current = out.measured_current;
         status_.measured_current_filtered = filtered_measured_current_;
-        status_.duty_cycle = out.duty;
+        if (algorithm_ != DriveAlgorithm::FOC) status_.duty_cycle = out.duty;
         status_.duty_u = out.duty_u;
         status_.duty_v = out.duty_v;
         status_.duty_w = out.duty_w;

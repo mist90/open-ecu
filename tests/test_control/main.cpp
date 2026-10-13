@@ -28,12 +28,29 @@ public:
     bool initialize(uint32_t frequency, uint16_t) override { frequency_ = frequency; return true; }
     void setChannelState(PwmChannel, PwmState) override {}
     void updateDutyCycle(float, float, float) override {}
-    void enable(bool) override {}
+    void updateNativeDutyCycle(NativeDuty u, NativeDuty v, NativeDuty w) override {
+        ++native_writes;
+        check(u >= NativeDuty{} && v >= NativeDuty{} && w >= NativeDuty{}, "native PWM is nonnegative");
+    }
+    void enable(bool value) override { enabled = value; }
+    unsigned native_writes = 0;
+    bool enabled = false;
 };
 class Hall final : public HallInterface {
 public:
     bool initialize() override { return true; }
     uint8_t getPosition() override { return 0; }
+};
+class Adc final : public AdcInterface {
+public:
+    Adc() {
+        check(initialize(CurrentSensorCalibration{0.003f, 16.0f, 3.3f, 12, 1.65f, 1.65f, 1.65f, 2},
+                         VoltageSensorParameters{169000.0f, 18000.0f}), "ADC calibration initializes");
+    }
+    uint32_t getRawAdcValue(PwmChannel) override { return 4107; }
+    uint32_t getRawAdcValue() override { return bus; }
+    uint32_t getRawTemperatureAdcValue() override { return 1000; }
+    uint32_t bus = 5000;
 };
 class Console final : public AtCommandProcessor {
 public:
@@ -50,6 +67,11 @@ public:
         position_ = 0;
         output_.clear();
         process();
+        return output_;
+    }
+    std::string drainOsc() {
+        output_.clear();
+        for (unsigned i = 0; i < OSC_BUFFER_SIZE; ++i) processOscOutput();
         return output_;
     }
 private:
@@ -104,7 +126,7 @@ static void testSpeedClock() {
 }
 
 static void testSlewClock() {
-#ifdef ECU_FIXED_PI
+#if defined(ECU_FIXED_PI) || defined(ECU_FIXED_NUMERIC)
     // The speed-facing conversion rounds to Q16 before applying the unit gain.
     constexpr float tolerance = 1.0f / FixedProfile::Speed::SCALE;
 #else
@@ -157,11 +179,23 @@ static void testCommands() {
     float kp, ki;
     controller.getSpeedPiGains(kp, ki);
     check(kp == 0.75f && ki == 3.0f, "speed tuning survives a mode round-trip");
-#ifdef ECU_FIXED_PI
+#if defined(ECU_FIXED_PI) || defined(ECU_FIXED_NUMERIC)
     check(console.command("AT+SPID=1000,3") == "ERROR\r\n", "speed-gain format overflow is rejected");
     check(console.command("AT+CPID=0.15,40000") == "ERROR\r\n", "current-gain format overflow is rejected");
     controller.getSpeedPiGains(kp, ki);
     check(kp == 0.75f && ki == 3.0f, "rejected fixed-point gains preserve the previous tuning");
+#endif
+#ifdef ECU_FIXED_NUMERIC
+    const auto foc_before = console.command("AT+FPID?");
+    check(console.command("AT+FPID=1,40000") == "ERROR\r\n", "FOC gain overflow is rejected");
+    check(console.command("AT+FPID?") == foc_before, "rejected FOC gains are transactional");
+    const auto pll_before = console.command("AT+PLLID?");
+    check(console.command("AT+PLLID=100,200000") == "ERROR\r\n", "PLL gain overflow is rejected");
+    check(console.command("AT+PLLID?") == pll_before, "rejected PLL gains are transactional");
+    auto bad = makeParams();
+    bad.foc_current_regulator.ki = 40000.0f;
+    BldcController invalid_foc(pwm, hall, bad);
+    check(!invalid_foc.initialize(), "unrepresentable FOC boot configuration prevents initialization");
 #endif
 }
 
@@ -183,9 +217,64 @@ static void testHallDuration() {
     for (int tick = 0; tick < 100; ++tick) monitor.tick(false);
     check(!monitor.isFaulted() && monitor.getInfo().invalid_time_us == 0,
           "inactive drive does not accumulate Hall persistence");
+#ifdef ECU_FIXED_NUMERIC
+    const auto previous = monitor.getParameters();
+    auto oversized = previous;
+    oversized.decay_time_us = 2000000;
+    check(!monitor.setParameters(oversized), "Hall window exceeding the count range is rejected");
+    check(monitor.getParameters().decay_time_us == previous.decay_time_us,
+          "rejected Hall tuning preserves the running configuration");
+#endif
 }
 
-#ifdef ECU_FIXED_PI
+static void testNativePath() {
+    Pwm pwm;
+    Hall hall;
+    Adc adc;
+    auto params = makeParams();
+    params.max_voltage = 24.0f;
+    BldcController controller(pwm, hall, params, &adc);
+    check(controller.initialize(), "native controller initializes");
+    controller.start();
+    controller.setControlMode(ControlMode::CLOSED_LOOP_TORQUE);
+    controller.setElectricMode(ElectricMode::VOLTAGE_MODE);
+    controller.setDriveMode(DriveMode::FORWARD);
+    controller.setDutyCycle(0.1f);
+    const unsigned initial_writes = pwm.native_writes;
+    controller.pwmInterruptHandler();
+    controller.pwmInterruptHandler();
+    check(pwm.native_writes == initial_writes + 2, "both PWM samples use the native interface");
+    check(std::abs(controller.getStatus().measured_current - 0.1007326f) < 0.0001f,
+          "integer ADC sum reaches six-step current telemetry with the right physical scale");
+    controller.setAlgorithm(DriveAlgorithm::FOC);
+    controller.pwmInterruptHandler();
+    controller.update();
+    check(std::abs(controller.getStatus().duty_cycle - 0.095f) < 0.00003f,
+          "FOC modulation telemetry is computed from a slow coherent native snapshot");
+    adc.bus = 8190;
+    controller.pwmInterruptHandler();
+    check(!pwm.enabled && controller.getDriveMode() == DriveMode::NEUTRAL,
+          "native bus measurement still trips overvoltage protection");
+    check(controller.getStatus().duty_cycle == 0.0f && controller.getStatus().target_current == 0.0f,
+          "protection parks command and telemetry together");
+
+    Console console(controller);
+    NativeMotorStatus sample{};
+    using P = ActiveNumericProfile;
+    sample.target_current = number_v<P::Current, 50>;
+    sample.measured_current = number_v<P::Current, -50>;
+    sample.i_d = number_v<P::Current, -1, 8>;
+    sample.i_q = number_v<P::Current, 1, 8>;
+    sample.angle_e_rad = -number_v<P::Angle, 1570796326795LL, 1000000000000LL>;
+    sample.duty_cycle = number_v<P::Duty, 95, 100>;
+    sample.measured_position = 4;
+    console.startOscilloscope();
+    for (unsigned i = 0; i < Console::OSC_BUFFER_SIZE; ++i) console.captureNativeOscSample(sample);
+    check(console.drainOsc().find("+OSC:0,-32768,32767,95,4,-125,125,270\r\n") == 0,
+          "native OSC preserves signs, saturates milliamps and wraps negative angles");
+}
+
+#if defined(ECU_FIXED_PI) || defined(ECU_FIXED_NUMERIC)
 static void testRejectedModeTuning() {
     Pwm pwm;
     Hall hall;
@@ -204,7 +293,8 @@ int main() {
     testSlewClock();
     testCommands();
     testHallDuration();
-#ifdef ECU_FIXED_PI
+    testNativePath();
+#if defined(ECU_FIXED_PI) || defined(ECU_FIXED_NUMERIC)
     testRejectedModeTuning();
 #endif
     std::printf("Control integration: %d checks, %d failures\n", checks, failures);

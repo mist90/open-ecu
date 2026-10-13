@@ -7,8 +7,7 @@
  * virtual commutation steps with optional 90-degree field offset for maximum torque.
  *
  * The angle is measured in "steps" where one electrical period = 6.0 steps.
- * The working range is expanded to 60.0 steps (10 electrical periods) to prevent
- * phase wrap-around issues during rapid acceleration/deceleration.
+ * The phase is wrapped into [0, 6) at every sample.
  */
 
 #ifndef LIBECU_MOTOR_PLL_HPP
@@ -16,18 +15,9 @@
 
 #include <cstdint>
 #include "ecu_config.hpp"
+#include "motor_pll_core.hpp"
 
 namespace libecu {
-
-/**
- * @brief Motor rotation mode
- */
-enum class DriveMode : uint8_t {
-    FORWARD = 0,
-    REVERSE = 1,
-    NEUTRAL = 2
-    // PARKING = 3
-};
 
 /**
  * @brief Motor rotor angle PLL (Phase-Locked Loop)
@@ -43,6 +33,10 @@ enum class DriveMode : uint8_t {
  */
 class MotorPLL {
 public:
+    using Core = MotorPLLCore<ActiveNumericProfile, ActiveTiming::CURRENT_HZ>;
+    Core::Angle getNativeAngle() const noexcept { return core_.getAngle(); }
+    Core::Speed getNativeSpeedStepsSec() const noexcept { return core_.getSpeedStepsSec(); }
+    uint8_t getHallStateRaw() const noexcept { return core_.getInfo().hall_state_raw; }
     static constexpr float LIMIT_ANGLE_ERROR = 0.5f;
     static constexpr float ANGLE_MAX = 6.0f;
     static constexpr float SYNC_SPEED = 5.0f;
@@ -148,8 +142,8 @@ public:
         float angle;               ///< PLL-estimated angle in steps [0..ANGLE_MAX)
         float angle_per_second;    ///< PLL-estimated speed in steps/sec
         float pll_integral;        ///< PI integrator term in steps/sec
-        float kp;                  ///< Current effective proportional gain (after adaptive)
-        float ki;                  ///< Current effective integral gain (after adaptive)
+        float kp;                  ///< Proportional gain
+        float ki;                  ///< Continuous integral gain
         bool is_sync;              ///< PLL synchronized with Hall sensor flag
     };
 
@@ -161,12 +155,12 @@ public:
     PllInfo getInfo() const noexcept;
 
     /**
-     * @brief Set base PI gains (used by adaptive gain schedule)
-     * @param kp_base Base proportional gain (at zero speed)
-     * @param ki_base Base integral gain (at zero speed)
-     * @note Adaptive schedule: kp = kp_base + 20*speed_factor, ki = ki_base + 400*speed_factor
+     * @brief Set continuous PI gains and cache Ki/sample_frequency
+     * @param kp_base Proportional gain
+     * @param ki_base Integral gain
+     * @return false if a coefficient does not fit the active profile
      */
-    void setGains(float kp_base, float ki_base) noexcept;
+    bool setGains(float kp_base, float ki_base) noexcept;
 
     /**
      * @brief Get base PI gains
@@ -176,18 +170,7 @@ public:
     void getBaseGains(float& kp_base, float& ki_base) const noexcept;
 
 private:
-    uint8_t hall_state_raw_ = 0;         ///< Actual Hall sensor reading [0..5]
-    float angle_ = 0.0f;
-    float angle_per_second_ = 0.0f;
-    float pll_step_error_filtered = 0.0f;
-    bool is_inverse_commutation_table_ = false;
-    bool is_sync = false;
-    bool use_pll_ = false;
-    float pll_integral_ = 0.0f;
-    float max_electrical_speed_;
-    float pll_kp_ = 100.0f;   ///< Base proportional gain (tunable via AT+PLLID)
-    float pll_ki_ = 5000.0f;  ///< Base integral gain (tunable via AT+PLLID)
-    float pll_ki_step_ = 5000.0f / ActiveTiming::CURRENT_HZ;
+    Core core_;
 };
 
 } // namespace libecu

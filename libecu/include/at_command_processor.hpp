@@ -16,7 +16,9 @@ namespace libecu {
 
 // Forward declarations
 class BldcController;
-struct MotorStatus;
+template<class P> struct MotorStatusT;
+using MotorStatus = MotorStatusT<FloatProfile>;
+using NativeMotorStatus = MotorStatusT<ActiveNumericProfile>;
 
 /**
  * @brief AT command processor for serial communication with motor controller
@@ -102,6 +104,7 @@ public:
      * @param status Motor status snapshot for this PWM cycle
      */
     void captureOscSample(const MotorStatus& status) noexcept;
+    void captureNativeOscSample(const NativeMotorStatus& status) noexcept;
 
     /**
      * @brief Process oscilloscope output (send one sample per call)

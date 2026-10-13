@@ -174,9 +174,11 @@ cd STM32G431
 
 ### Testing
 
-The experimental branch can select PI kernel arithmetic with the CMake option
-`PI_NUMERIC_PROFILE=float|fixed`. See [docs/PI_NUMERIC_BENCH.md](docs/PI_NUMERIC_BENCH.md)
-for the integration boundary, build commands and JK42BLS01 hardware comparison.
+The experimental branch selects control/ADC/PWM arithmetic with
+`./build.sh --numeric-profile float|fixed` or CMake `-DNUMERIC_PROFILE=fixed`.
+See [docs/CONTROL_NUMERIC_BENCH.md](docs/CONTROL_NUMERIC_BENCH.md) for the native
+control path, remaining float-facing configuration/diagnostics, and JK42BLS01 measurements.
+`PI_NUMERIC_PROFILE=fixed` remains a PI-only override for the float control profile.
 
 JK42BLS01 six-step tuning, bench data and motor selection are documented in
 [docs/JK42BLS01_TUNING.md](docs/JK42BLS01_TUNING.md). Comment out `MOTOR_1` in
@@ -186,12 +188,17 @@ Additional host regressions:
 - `tests/test_motor_alignment/run.sh` — both motors, both directions, PLL and discrete commutation
 - `tests/test_hall_handoff/run.sh` — physical Hall resynchronization after open-loop operation and parking
 - `tests/test_adc_scaling/run.sh` — injected ADC sums, zero calibration and regular-channel isolation
+- `tests/test_numeric_pll/run.sh` — paired float/fixed traces at 10/20/40 kHz
+- `tests/test_profile_math/run.sh` — LUT/transforms, voltage limits and Cortex-M0 helper audit
+- `tests/test_numeric_adc/run.sh` — full-range current, bus, NTC and PWM comparisons
+- `tests/test_foc/run.sh float|fixed` — closed-loop motor model and anti-windup recovery
+- `tests/test_control/run.sh float|numeric-fixed` — commands, native I/O, protection, ramp and OSC
 
-**No automated unit tests** - the `libecu/tests/` directory does not exist.
+Host tests live under `tests/`; each directory has a standalone `run.sh`.
 
 Manual hardware testing required:
 - Test on b-g431b-esc1 board with BLDC motor
-- Monitor via UART (115200 baud) on PA2 (TX), PA3 (RX)
+- Monitor via UART (2,000,000 baud on the current bench firmware) on PA2 (TX), PA3 (RX)
 - `make test-compile` in `libecu/` validates library builds only (not actual tests)
 
 ## Project Structure

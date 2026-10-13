@@ -77,6 +77,7 @@
 #include "foc_math.hpp"
 #include "motor_algorithm.hpp"
 #include "ecu_config.hpp"
+#include "foc_control_core.hpp"
 
 namespace libecu {
 
@@ -153,6 +154,8 @@ struct FocParams {
  */
 class FocAlgorithm final : public MotorAlgorithm {
 public:
+    using Core = FocControlCore<ActiveNumericProfile, ActiveTiming::CURRENT_HZ>;
+    Core::Output updateNative(const Core::Input& input) noexcept;
     /**
      * @brief Constructor
      * @param pwm_interface PWM interface this algorithm drives
@@ -160,7 +163,7 @@ public:
     explicit FocAlgorithm(PwmInterface& pwm_interface) noexcept;
 
     /// @brief Set modulation limits, angle offset and feed-forward configuration
-    void setParams(const FocParams& params) noexcept;
+    bool setParams(const FocParams& params) noexcept;
 
     /// @brief Get the current configuration
     const FocParams& getParams() const noexcept { return params_; }
@@ -176,13 +179,13 @@ public:
      * @param kp Proportional gain (V/A)
      * @param ki Integral gain (V/A/s)
      */
-    void setCurrentPiGains(float kp, float ki) noexcept;
+    bool setCurrentPiGains(float kp, float ki) noexcept;
 
     /// @brief Get the d/q current regulator gains
     void getCurrentPiGains(float& kp, float& ki) const noexcept;
 
     /// @brief Set the electrical angle offset (radians)
-    void setAngleOffsetRad(float offset_rad) noexcept;
+    bool setAngleOffsetRad(float offset_rad) noexcept;
 
     /// @brief Get the electrical angle offset (radians)
     float getAngleOffsetRad() const noexcept { return params_.angle_offset_rad; }
@@ -191,31 +194,13 @@ public:
     void onEnter() noexcept override;
     MotorAlgorithmOutput update(const MotorAlgorithmInput& in) noexcept override;
 
+    /// @brief Modulation magnitude for a slow telemetry snapshot, outside the PWM ISR.
+    static float modulationMagnitude(float d, float q, float bus) noexcept;
+
 private:
-    /**
-     * @brief Phase currents with the least trustworthy shunt reconstructed
-     *
-     * See the file comment. Uses the duties that were in force during the
-     * sampled period - last cycle's, not this cycle's.
-     */
-    void reconstructCurrents(const MotorAlgorithmInput& in,
-                             float& i_u, float& i_v, float& i_w) const noexcept;
-
     PwmInterface& pwm_interface_;
-    FocParams params_;
-
-    float kp_;              ///< d/q proportional gain (V/A)
-    float ki_;              ///< d/q integral gain (V/A/s)
-    float ki_step_;         ///< d/q integral gain per PWM sample (V/A)
-
-    float integral_d_;      ///< d-axis integrator (V)
-    float integral_q_;      ///< q-axis integrator (V)
-
-    /// Duties applied on the previous cycle - the ones the ADC sample was taken
-    /// under, which is what decides which shunt to distrust.
-    float prev_duty_u_;
-    float prev_duty_v_;
-    float prev_duty_w_;
+    FocParams params_{};
+    Core core_;
 };
 
 } // namespace libecu

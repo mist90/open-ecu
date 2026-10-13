@@ -45,6 +45,7 @@ BUILD_TYPE="Release"
 CLEAN_BUILD=false
 VERBOSE=false
 DEBUG_PWM_ISR=true
+NUMERIC_PROFILE="float"
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -68,6 +69,14 @@ while [[ $# -gt 0 ]]; do
             DEBUG_PWM_ISR=false
             shift
             ;;
+        --numeric-profile)
+            NUMERIC_PROFILE="${2:-}"
+            if [[ $NUMERIC_PROFILE != float && $NUMERIC_PROFILE != fixed ]]; then
+                echo "--numeric-profile requires float or fixed" >&2
+                exit 1
+            fi
+            shift 2
+            ;;
         -h|--help)
             echo "Usage: $0 [options]"
             echo "Options:"
@@ -76,6 +85,7 @@ while [[ $# -gt 0 ]]; do
             echo "  -c, --clean      Clean build directory before building"
             echo "  -v, --verbose    Verbose build output"
             echo "  --nodebug-pwm    Disable PWM ISR debug capture (default: enabled)"
+            echo "  --numeric-profile float|fixed  Control/ADC/PWM arithmetic (default: float)"
             echo "  -h, --help       Show this help message"
             exit 0
             ;;
@@ -97,6 +107,7 @@ echo "  Build Type: $BUILD_TYPE"
 echo "  Build Directory: $BUILD_DIR"
 echo "  Clean Build: $CLEAN_BUILD"
 echo "  PWM ISR Debug: $DEBUG_PWM_ISR"
+echo "  Numeric Profile: $NUMERIC_PROFILE"
 echo
 
 # Clean build directory if requested
@@ -111,7 +122,7 @@ cd $BUILD_DIR
 
 # Configure with CMake
 echo -e "${YELLOW}Configuring with CMake...${NC}"
-CMAKE_ARGS="-DCMAKE_BUILD_TYPE=$BUILD_TYPE"
+CMAKE_ARGS="-DCMAKE_BUILD_TYPE=$BUILD_TYPE -DNUMERIC_PROFILE=$NUMERIC_PROFILE -DPI_NUMERIC_PROFILE=float"
 if [[ $VERBOSE == true ]]; then
     CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_VERBOSE_MAKEFILE=ON"
 fi

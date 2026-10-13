@@ -5,6 +5,7 @@
 CXX = g++
 CXXFLAGS = -std=c++17 -Wall -Wextra -O2 -fPIC -MMD -MP
 PLATFORM ?= STM32G431
+NUMERIC_PROFILE ?= float
 INCLUDES = -Iinclude -I../$(PLATFORM)/Core/Inc
 
 # Directories
@@ -13,6 +14,13 @@ INCLUDE_DIR = include
 TEST_DIR = tests
 BUILD_DIR = build
 LIB_DIR = lib
+ifeq ($(NUMERIC_PROFILE),fixed)
+CPPFLAGS += -DECU_FIXED_NUMERIC
+BUILD_DIR = build/fixed
+LIB_DIR = lib/fixed
+else ifneq ($(NUMERIC_PROFILE),float)
+$(error NUMERIC_PROFILE must be float or fixed)
+endif
 
 # Source files. main.cpp is the ECU application, not part of the library: it
 # needs a libecu::Board port to link against and would put a main() symbol in
@@ -41,7 +49,7 @@ $(LIB_DIR):
 # Compile source files
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.cpp | $(BUILD_DIR)
 	@mkdir -p $(dir $@)
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
 # Create static library
 $(LIBRARY): $(OBJECTS) | $(LIB_DIR)

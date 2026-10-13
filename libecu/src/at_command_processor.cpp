@@ -404,7 +404,7 @@ void AtCommandProcessor::processCommand() noexcept {
         } else {
             float kp, ki;
             if (!parsePiGains(valuePtr, kp, ki)) { sendError(); return; }
-            controller_->setFocCurrentPi(kp, ki);
+            if (!controller_->setFocCurrentPi(kp, ki)) { sendError(); return; }
             sendOk();
         }
         break;
@@ -422,7 +422,7 @@ void AtCommandProcessor::processCommand() noexcept {
                 sendError();
                 return;
             }
-            controller_->setFocAngleOffsetDeg(val);
+            if (!controller_->setFocAngleOffsetDeg(val)) { sendError(); return; }
             sendOk();
         }
         break;
@@ -489,7 +489,7 @@ void AtCommandProcessor::processCommand() noexcept {
         } else {
             float kp, ki;
             if (!parsePiGains(valuePtr, kp, ki)) { sendError(); return; }
-            controller_->setPllGains(kp, ki);
+            if (!controller_->setPllGains(kp, ki)) { sendError(); return; }
             sendOk();
         }
         break;
@@ -704,16 +704,38 @@ void AtCommandProcessor::stopOscilloscope() noexcept {
 namespace {
 
 /// Amperes to the int16 milliamp field, saturating rather than wrapping
-inline int16_t oscMilliamps(float amps) noexcept {
-    float ma = amps * 1000.0f;
-    if (ma > 32767.0f)  ma =  32767.0f;
-    if (ma < -32768.0f) ma = -32768.0f;
-    return static_cast<int16_t>(ma);
+template<class Current>
+int16_t oscMilliamps(Current amps) noexcept {
+    if constexpr (std::is_same<Current, float>::value) {
+        const float ma = numericClamp(amps * 1000.0f, -32768.0f, 32767.0f);
+        return static_cast<int16_t>(ma);
+    } else {
+        const int64_t ma = int64_t(amps.raw()) * 1000 / int64_t(Current::SCALE);
+        return static_cast<int16_t>(numericClamp<int64_t>(ma, -32768, 32767));
+    }
+}
+
+template<class Angle>
+uint16_t oscAngle(Angle angle) noexcept {
+    if constexpr (std::is_same<Angle, float>::value) {
+        float rev = angle * (1.0f / FOC_TWO_PI);
+        rev -= static_cast<float>(static_cast<int32_t>(rev));
+        if (rev < 0.0f) rev += 1.0f;
+        return static_cast<uint16_t>(rev * 65536.0f);
+    } else {
+        constexpr Angle period = number_v<Angle, 628318530718LL, 100000000000LL>;
+        const auto wrapped = wrapValue(angle, period);
+        return static_cast<uint16_t>((uint64_t(wrapped.raw()) << 16) / uint32_t(period.raw()));
+    }
 }
 
 } // namespace
 
 void AtCommandProcessor::captureOscSample(const MotorStatus& status) noexcept {
+    captureNativeOscSample(motorStatusCast<ActiveNumericProfile>(status));
+}
+
+void AtCommandProcessor::captureNativeOscSample(const NativeMotorStatus& status) noexcept {
     if (osc_phase_ != OscPhase::Accumulating)
         return;
 
@@ -721,7 +743,7 @@ void AtCommandProcessor::captureOscSample(const MotorStatus& status) noexcept {
         return;
 
     OscSample& sample = osc_buffer_[osc_write_index_];
-    sample.duty_cycle = static_cast<uint8_t>(status.duty_cycle * 100.0f);
+    sample.duty_cycle = static_cast<uint8_t>(dutyToCompare(status.duty_cycle, 100));
     sample.target_current_ma = oscMilliamps(status.target_current);
     sample.measured_current_ma = oscMilliamps(status.measured_current);
     sample.i_d_ma = oscMilliamps(status.i_d);
@@ -730,10 +752,7 @@ void AtCommandProcessor::captureOscSample(const MotorStatus& status) noexcept {
     // Electrical angle folded to one revolution and scaled to 16 bits, so the
     // consumer divides by 65536 to get revolutions without ever seeing a wrap
     // discontinuity that is not real.
-    float rev = status.angle_e_rad * (1.0f / FOC_TWO_PI);
-    rev -= static_cast<float>(static_cast<int32_t>(rev));
-    if (rev < 0.0f) rev += 1.0f;
-    sample.angle_e = static_cast<uint16_t>(rev * 65536.0f);
+    sample.angle_e = oscAngle(status.angle_e_rad);
 
     sample.position = status.measured_position;
 
@@ -756,8 +775,7 @@ void AtCommandProcessor::processOscOutput() noexcept {
     // The first five fields are unchanged from before FOC existed, so an older
     // consumer that splits on commas and takes what it knows still works; the
     // three FOC fields are appended. Angle is in electrical degrees.
-    const int angle_deg_e = static_cast<int>(
-        (static_cast<float>(sample.angle_e) * (360.0f / 65536.0f)));
+    const int angle_deg_e = uint32_t(sample.angle_e) * 360u / 65536u;
 
     char out_buf[96];
     int len = std::snprintf(out_buf, sizeof(out_buf), "+OSC:%d,%d,%d,%u,%u,%d,%d,%d\r\n",

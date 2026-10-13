@@ -76,20 +76,10 @@
 #define LIBECU_HALL_MONITOR_HPP
 
 #include <cstdint>
+#include "ecu_config.hpp"
+#include "hall_monitor_core.hpp"
 
 namespace libecu {
-
-/// Position value used by HallInterface::getPosition() for an illegal code
-static constexpr uint8_t HALL_POSITION_INVALID = 0xFF;
-
-/**
- * @brief Why the monitor latched a fault
- */
-enum class HallFault : uint8_t {
-    NONE = 0,
-    INVALID_CODE,     ///< Illegal 000/111, either sustained or recurring
-    ERRATIC_SEQUENCE, ///< Sustained edges that keep reversing direction
-};
 
 /**
  * @brief Configuration for HallMonitor
@@ -209,7 +199,7 @@ public:
      */
     HallMonitor() noexcept;
 
-    void setParameters(const HallMonitorParams& params) noexcept;
+    bool setParameters(const HallMonitorParams& params) noexcept;
     const HallMonitorParams& getParameters() const noexcept { return params_; }
 
     /**
@@ -226,10 +216,10 @@ public:
     void onPosition(uint8_t position, bool drive_active) noexcept;
 
     /// @return true while a fault is latched
-    bool isFaulted() const noexcept { return fault_ != HallFault::NONE; }
+    bool isFaulted() const noexcept { return core_.isFaulted(); }
 
     /// @return Which detector latched, or HallFault::NONE
-    HallFault faultCause() const noexcept { return fault_; }
+    HallFault faultCause() const noexcept { return core_.faultCause(); }
 
     /**
      * @brief Clear a latched fault and reset the accumulators
@@ -262,33 +252,9 @@ public:
     Info getInfo() const noexcept;
 
 private:
-    /// Recompute the erratic score and latch any threshold crossing
-    void evaluate() noexcept;
-
-    HallMonitorParams  params_;
-    float decay_;               ///< Retained fraction, precomputed at configuration time
-    uint32_t invalid_limit_ticks_;
-
-    float    invalid_score_;
-    float    erratic_score_;
-    float    edge_accum_;
-    float    reversal_accum_;
-
-    /// Sign of the previous edge's step delta, 0 before the first edge. Only
-    /// a *change* of sign counts as a reversal, so the first edge after a
-    /// reset - and the single edge that turns a hand-rotation around - is free.
-    int8_t   last_delta_sign_;
-
-    uint8_t  last_position_;
-    bool     have_last_;
-    uint8_t  invalid_run_;      ///< Consecutive illegal readings
-    uint32_t invalid_ticks_;    ///< Samples for which the latest reading has been illegal
-    bool     last_invalid_;     ///< Latest reading was an illegal code
-    bool     invalid_counted_;  ///< This run of illegal samples already scored
-
-    uint32_t invalid_events_;
-    uint32_t edges_;
-    HallFault fault_;
+    using Core = HallMonitorCore<ActiveNumericProfile, ActiveTiming::CURRENT_HZ>;
+    Core core_;
+    HallMonitorParams params_{};
 };
 
 } // namespace libecu

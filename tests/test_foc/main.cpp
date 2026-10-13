@@ -23,6 +23,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <initializer_list>
 
 using namespace libecu;
 
@@ -345,7 +346,7 @@ struct LoopResult {
  *        nonsense, to prove the reconstruction is actually load-bearing
  */
 static LoopResult runLoop(float iq_command, DriveMode drive_mode, float speed_hz_e,
-                          float seconds, bool corrupt_worst_shunt = false)
+                          float seconds, bool corrupt_worst_shunt = false, bool decoupling = false)
 {
     FakePwm pwm;
     FocAlgorithm foc(pwm);
@@ -355,7 +356,7 @@ static LoopResult runLoop(float iq_command, DriveMode drive_mode, float speed_hz
     p.max_duty_cycle = 0.95f;
     p.angle_offset_rad = 0.0f;   // the model and the algorithm share one angle
     p.id_target = 0.0f;
-    p.use_decoupling = false;
+    p.use_decoupling = decoupling;
     p.l_phase_h = L_PHASE;
     p.flux_linkage_wb = FLUX_WB;
     p.anti_windup_kb = 1.0f;
@@ -493,6 +494,14 @@ static void testCurrentSignConvention()
 static void testClosedLoop()
 {
     std::printf("Closed-loop FOC against the MOTOR_1 model\n");
+
+    for (DriveMode mode : {DriveMode::FORWARD, DriveMode::REVERSE}) {
+        const float frequency = mode == DriveMode::FORWARD ? 120.0f : -120.0f;
+        const auto result = runLoop(6.0f, mode, frequency, 0.05f, false, true);
+        checkNear(result.i_d, 0.0f, 0.05f, "feed-forward holds the d-axis current");
+        checkNear(result.i_q, mode == DriveMode::FORWARD ? 6.0f : -6.0f, 0.05f,
+                  "feed-forward current tracking works in both directions");
+    }
 
     // Standstill, DC currents in the rotor frame
     {

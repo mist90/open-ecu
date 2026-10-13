@@ -69,6 +69,7 @@ static libecu::AtCommandProcessor* g_at_processor = nullptr;
 static volatile bool control_tick = false;
 
 #ifdef BENCH_PROFILING
+#include "numeric_bench.hpp"
 // Arm a bounded capture through SWD by clearing the counters, then writing
 // remaining last. It freezes at zero so all fields can be read consistently
 // without halting a running motor. The measured body includes OSC capture.
@@ -81,6 +82,34 @@ struct PwmBenchProfile {
     uint32_t overruns;
 };
 volatile PwmBenchProfile pwm_bench_profile = {};
+volatile PwmBenchProfile pwm_irq_bench_profile = {};
+static uint32_t pwm_irq_previous_samples = 0;
+
+uint32_t bench_pwm_irq_begin(void) {
+    pwm_irq_previous_samples = pwm_bench_profile.samples;
+    // Capture even before arming: an SWD write can arm the callback midway
+    // through this IRQ, and its first sample must have a matching IRQ sample.
+    return DWT->CYCCNT;
+}
+
+void bench_pwm_irq_end(uint32_t started) {
+    // The opposite half of a centre-aligned PWM period also raises TIM1's IRQ,
+    // but does not call the controller. Count only the full control samples.
+    const uint32_t samples = pwm_bench_profile.samples;
+    if (!samples || samples == pwm_irq_previous_samples) return;
+    const uint32_t cycles = DWT->CYCCNT - started;
+    if (samples == 1) {
+        pwm_irq_bench_profile.samples = 0;
+        pwm_irq_bench_profile.total_cycles = 0;
+        pwm_irq_bench_profile.max_cycles = 0;
+        pwm_irq_bench_profile.overruns = 0;
+    }
+    pwm_irq_bench_profile.remaining = pwm_bench_profile.remaining;
+    ++pwm_irq_bench_profile.samples;
+    pwm_irq_bench_profile.total_cycles += cycles;
+    if (cycles > pwm_irq_bench_profile.max_cycles) pwm_irq_bench_profile.max_cycles = cycles;
+    if (cycles >= SystemCoreClock / PWM_TIMER_FREQ) ++pwm_irq_bench_profile.overruns;
+}
 }
 #endif
 
@@ -101,7 +130,7 @@ volatile PwmBenchProfile pwm_bench_profile = {};
  * the main loop sees either the previous sample or the current one.
  */
 static volatile bool  throttle_sampling = false;
-static volatile float throttle_fraction = 0.0f;
+static volatile uint32_t throttle_adc_raw = 0;
 
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
@@ -187,7 +216,7 @@ extern "C" void motor_controller_pwm_interrupt_handler(void)
 #endif
     if (motor_controller != nullptr) {
         motor_controller->pwmInterruptHandler();
-        g_at_processor->captureOscSample(motor_controller->getStatus());
+        g_at_processor->captureNativeOscSample(motor_controller->getNativeStatus());
     }
 #ifdef BENCH_PROFILING
     if (pwm_bench_profile.remaining != 0) {
@@ -214,9 +243,9 @@ void HAL_SYSTICK_Callback(void) {
     // After update(), so the control loop is not held up behind the regular
     // conversion: an injected trigger aborts and restarts an in-flight regular
     // conversion, and one arrives every 50 us, so this read can take a few
-    // attempts. Normalised here; readThrottle() applies the caller's scale.
+    // attempts. Publish a raw integer; the application converts the cached sample.
     if (throttle_sampling) {
-        throttle_fraction = adc_driver.readPotentiometer(1.0f);
+        throttle_adc_raw = adc_driver.readRawPotentiometer();
     }
 }
 
@@ -242,6 +271,9 @@ public:
         CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
         DWT->CYCCNT = 0;
         DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+        disable_interrupts();
+        benchmarkNumericCores();
+        enable_interrupts();
 #endif
 
         /* Initialize all configured peripherals */
@@ -381,11 +413,16 @@ public:
 
     float readThrottle(float max_value) noexcept override
     {
+        return numberCast<float>(readNativeThrottle()) * max_value;
+    }
+
+    ActiveNumericProfile::Duty readNativeThrottle() noexcept override
+    {
         // Arms sampling in the control tick; the first call returns 0, which
         // is the safe direction (no demand), and every later one returns a
         // sample at most one control period old.
         throttle_sampling = true;
-        return throttle_fraction * max_value;
+        return adc_driver.convertNativeThrottle(throttle_adc_raw);
     }
 
     bool brakeEngaged() noexcept override { return readBrakeButton(); }

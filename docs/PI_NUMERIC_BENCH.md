@@ -1,5 +1,8 @@
 # Float / fixed-point PI на JK42BLS01
 
+Это отчёт о завершённом PI-only этапе. Текущий тракт с fixed PLL/FOC/ADC/PWM:
+[CONTROL_NUMERIC_BENCH.md](CONTROL_NUMERIC_BENCH.md).
+
 Проверено на STM32G431, Release `-Os`, около 20,8 В, без нагрузки на валу.
 Выбор арифметики выполняется при сборке через `PI_NUMERIC_PROFILE=float|fixed`.
 

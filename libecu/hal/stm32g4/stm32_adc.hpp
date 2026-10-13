@@ -47,6 +47,8 @@ public:
      * @return output (0 to max_value)
      */
     float readPotentiometer(float max_value);
+    /** @brief Raw regular-channel throttle reading, sampled alongside NTC in the slow tick. */
+    uint32_t readRawPotentiometer();
 
 private:
     /**

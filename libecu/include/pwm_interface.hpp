@@ -7,6 +7,8 @@
 #define LIBECU_PWM_INTERFACE_HPP
 
 #include <cstdint>
+#include "ecu_config.hpp"
+#include "numeric_ops.hpp"
 
 namespace libecu {
 
@@ -43,6 +45,7 @@ enum class PwmState : uint8_t {
  */
 class PwmInterface {
 public:
+    using NativeDuty = ActiveNumericProfile::Duty;
     virtual ~PwmInterface() = default;
 
     /**
@@ -84,6 +87,12 @@ public:
      */
     virtual void updateDutyCycle(float duty_u, float duty_v, float duty_w) = 0;
 
+    /** @brief Native control-loop output; ports override this to avoid float round-trips. */
+    virtual void updateNativeDutyCycle(NativeDuty u, NativeDuty v, NativeDuty w) {
+        updateDutyCycle(numberCast<float>(u), numberCast<float>(v), numberCast<float>(w));
+    }
+    void updateNativeDutyCycle(NativeDuty duty) { updateNativeDutyCycle(duty, duty, duty); }
+
     /**
      * @brief Set the same modulation depth on all three phases (six-step)
      */
@@ -112,7 +121,7 @@ public:
         setChannelState(PwmChannel::PHASE_U, PwmState::OFF);
         setChannelState(PwmChannel::PHASE_V, PwmState::OFF);
         setChannelState(PwmChannel::PHASE_W, PwmState::OFF);
-        updateDutyCycle(0.0f);
+        updateNativeDutyCycle(NativeDuty{});
         apply();
     }
 

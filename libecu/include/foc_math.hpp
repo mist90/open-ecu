@@ -97,8 +97,11 @@ constexpr uint32_t FOC_SIN_TABLE_QUARTER = FOC_SIN_TABLE_SIZE / 4u;
 /// Table entries per radian
 constexpr float FOC_SIN_TABLE_SCALE = static_cast<float>(FOC_SIN_TABLE_SIZE) / FOC_TWO_PI;
 
+/** @brief Native float math backend, owning its flash-resident sine table. */
+class FloatMath {
+private:
 /// sin(2*pi*i/256) for i in [0, 256)
-inline constexpr float FOC_SIN_TABLE[FOC_SIN_TABLE_SIZE] = {
+inline static constexpr float FOC_SIN_TABLE[FOC_SIN_TABLE_SIZE] = {
      0.000000000f,  0.024541229f,  0.049067674f,  0.073564564f,
      0.098017140f,  0.122410675f,  0.146730474f,  0.170961889f,
      0.195090322f,  0.219101240f,  0.242980180f,  0.266712757f,
@@ -166,6 +169,8 @@ inline constexpr float FOC_SIN_TABLE[FOC_SIN_TABLE_SIZE] = {
 };
 ///@}
 
+public:
+
 /**
  * @brief sin and cos of the same angle, from the lookup table
  *
@@ -181,7 +186,7 @@ inline constexpr float FOC_SIN_TABLE[FOC_SIN_TABLE_SIZE] = {
  * @param sin_out Output: sin(angle)
  * @param cos_out Output: cos(angle)
  */
-inline void sinCos(float angle, float& sin_out, float& cos_out) noexcept
+static inline void sinCos(float angle, float& sin_out, float& cos_out) noexcept
 {
     const float pos = angle * FOC_SIN_TABLE_SCALE;
 
@@ -201,6 +206,24 @@ inline void sinCos(float angle, float& sin_out, float& cos_out) noexcept
     const float c0 = FOC_SIN_TABLE[ic0];
     sin_out = s0 + frac * (FOC_SIN_TABLE[is1] - s0);
     cos_out = c0 + frac * (FOC_SIN_TABLE[ic1] - c0);
+}
+
+    static float qVoltageLimit(float d, float limit) noexcept {
+        if (limit <= 0.0f) return 0.0f;
+        const float remaining = limit * limit - d * d;
+        return remaining > 0.0f ? __builtin_sqrtf(remaining) : 0.0f;
+    }
+    static float voltageMagnitude(float d, float q) noexcept { return __builtin_sqrtf(d * d + q * q); }
+    static bool voltageLimitExceeded(float d, float q, float limit) noexcept {
+        return d * d + q * q > limit * limit;
+    }
+    static float logRatio(uint64_t numerator, uint64_t denominator) noexcept {
+        return __builtin_logf(float(numerator) / float(denominator));
+    }
+};
+
+inline void sinCos(float angle, float& sin_out, float& cos_out) noexcept {
+    FloatMath::sinCos(angle, sin_out, cos_out);
 }
 
 /**

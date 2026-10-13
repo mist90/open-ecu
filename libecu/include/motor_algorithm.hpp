@@ -30,25 +30,9 @@
 
 #include <cstdint>
 
-#include "motor_pll.hpp"   // DriveMode
+#include "motor_types.hpp"
 
 namespace libecu {
-
-/**
- * @brief Electric drive mode (electrical control strategy)
- */
-enum class ElectricMode : uint8_t {
-    VOLTAGE_MODE = 0,  ///< Direct voltage/duty cycle control
-    CURRENT_MODE = 1   ///< Current control with an inner PI loop at PWM rate
-};
-
-/**
- * @brief Which electrical algorithm drives the bridge
- */
-enum class DriveAlgorithm : uint8_t {
-    SIX_STEP = 0,  ///< Trapezoidal six-step commutation (the long-standing mode)
-    FOC = 1        ///< Field-oriented control with space-vector modulation
-};
 
 /**
  * @brief Everything an algorithm is allowed to know, gathered once per ISR
@@ -103,7 +87,7 @@ struct MotorAlgorithmOutput {
     float duty_u;           ///< Phase U duty actually applied
     float duty_v;           ///< Phase V duty actually applied
     float duty_w;           ///< Phase W duty actually applied
-    float duty;             ///< Scalar modulation depth for telemetry (see note)
+    float duty;             ///< Six-step duty; FOC modulation magnitude is computed by the slow controller tick
     float measured_current; ///< Torque-relevant current (A) fed to the outer loop
     float i_d;              ///< Measured d-axis current (A), FOC only
     float i_q;              ///< Measured q-axis current (A), FOC only

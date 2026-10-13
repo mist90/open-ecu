@@ -24,6 +24,13 @@ constexpr int64_t roundedDivide(int64_t numerator, int64_t denominator) noexcept
     const bool negative = (numerator < 0) != (denominator < 0);
     const uint64_t n = magnitude(numerator);
     const uint64_t d = magnitude(denominator);
+    if (n <= UINT32_MAX && d <= UINT32_MAX) {
+        const uint32_t small_n = static_cast<uint32_t>(n);
+        const uint32_t small_d = static_cast<uint32_t>(d);
+        const uint32_t remainder = small_n % small_d;
+        const int64_t result = uint64_t(small_n / small_d) + (remainder >= small_d - remainder ? 1u : 0u);
+        return negative ? -result : result;
+    }
     const uint64_t remainder = n % d;
     const uint64_t result = n / d + (remainder >= d - remainder ? 1u : 0u);
     if (result > uint64_t(INT64_MAX)) return negative ? INT64_MIN : INT64_MAX;
@@ -55,7 +62,7 @@ public:
 
     /** @brief Explicit conversion, with one rounding operation at the destination. */
     template<unsigned OtherBits, typename OtherStorage>
-    explicit constexpr FixedPointType(FixedPointType<OtherBits, OtherStorage> other) noexcept {
+    [[gnu::always_inline]] explicit constexpr FixedPointType(FixedPointType<OtherBits, OtherStorage> other) noexcept {
         const bool negative = other.raw() < 0;
         uint64_t value = fixed_detail::magnitude(other.raw());
         if constexpr (FractionBits > OtherBits) {
@@ -68,7 +75,9 @@ public:
         } else if constexpr (FractionBits < OtherBits) {
             constexpr unsigned shift = OtherBits - FractionBits;
             constexpr uint64_t divisor = uint64_t(1) << shift;
-            value = value / divisor + ((value % divisor) >= divisor / 2u ? 1u : 0u);
+            // magnitude(signed int64) <= 2^63 and shift <= 62, so adding
+            // half a divisor cannot overflow uint64_t. One add/shift rounds.
+            value = (value + divisor / 2u) / divisor;
         }
         raw_ = signedMagnitude(value, negative);
     }
@@ -81,8 +90,34 @@ public:
     }
 
     /** @brief Saturate a widened raw result to this storage type. */
-    static constexpr FixedPointType fromWideRaw(int64_t raw) noexcept {
-        return fromRaw(signedMagnitude(fixed_detail::magnitude(raw), raw < 0));
+    [[gnu::always_inline]] static constexpr FixedPointType fromWideRaw(int64_t raw) noexcept {
+        if (raw > std::numeric_limits<Storage>::max()) return fromRaw(std::numeric_limits<Storage>::max());
+        if (raw < std::numeric_limits<Storage>::min()) return fromRaw(std::numeric_limits<Storage>::min());
+        return fromRaw(static_cast<Storage>(raw));
+    }
+
+    /** @brief Integer input without routing a sample through rational long division. */
+    static constexpr FixedPointType fromInteger(int64_t value) noexcept {
+        const bool negative = value < 0;
+        const uint64_t magnitude = fixed_detail::magnitude(value);
+        if (magnitude > (limit(negative) >> FractionBits))
+            return fromRaw(signedMagnitude(UINT64_MAX, negative));
+        return fromRaw(signedMagnitude(magnitude << FractionBits, negative));
+    }
+
+    /** @brief Convert a configuration literal in a constexpr initializer. */
+    static constexpr FixedPointType fromConstant(float value) noexcept {
+        const float scaled = value * static_cast<float>(SCALE);
+        if (scaled != scaled) return FixedPointType{};
+        if (scaled >= static_cast<float>(std::numeric_limits<Storage>::max()))
+            return fromRaw(std::numeric_limits<Storage>::max());
+        if (scaled <= static_cast<float>(std::numeric_limits<Storage>::min()))
+            return fromRaw(std::numeric_limits<Storage>::min());
+        int64_t integral = static_cast<int64_t>(scaled);
+        const float remainder = scaled - static_cast<float>(integral);
+        if (remainder >= 0.5f) ++integral;
+        else if (remainder <= -0.5f) --integral;
+        return fromWideRaw(integral);
     }
 
     /**
@@ -136,6 +171,10 @@ public:
         const bool negative = (numerator < 0) != (denominator < 0);
         const uint64_t n = fixed_detail::magnitude(numerator);
         const uint64_t d = fixed_detail::magnitude(denominator);
+        if (d == 1) {
+            if (n > (limit(negative) >> FractionBits)) return fromRaw(signedMagnitude(UINT64_MAX, negative));
+            return fromRaw(signedMagnitude(n << FractionBits, negative));
+        }
         const uint64_t whole = n / d;
         if (whole > limit(negative) / SCALE) {
             return fromRaw(signedMagnitude(UINT64_MAX, negative));
@@ -165,17 +204,17 @@ public:
     /** @return Explicit conversion for host models and float-facing diagnostics. */
     constexpr float toFloat() const noexcept { return float(raw_) / float(SCALE); }
 
-    constexpr FixedPointType operator-() const noexcept {
+    [[gnu::always_inline]] constexpr FixedPointType operator-() const noexcept {
         return fromRaw(signedMagnitude(fixed_detail::magnitude(raw_), raw_ >= 0));
     }
-    constexpr FixedPointType operator+(FixedPointType rhs) const noexcept {
+    [[gnu::always_inline]] constexpr FixedPointType operator+(FixedPointType rhs) const noexcept {
         if (rhs.raw_ > 0 && raw_ > std::numeric_limits<Storage>::max() - rhs.raw_)
             return fromRaw(std::numeric_limits<Storage>::max());
         if (rhs.raw_ < 0 && raw_ < std::numeric_limits<Storage>::min() - rhs.raw_)
             return fromRaw(std::numeric_limits<Storage>::min());
         return fromRaw(static_cast<Storage>(raw_ + rhs.raw_));
     }
-    constexpr FixedPointType operator-(FixedPointType rhs) const noexcept {
+    [[gnu::always_inline]] constexpr FixedPointType operator-(FixedPointType rhs) const noexcept {
         if (rhs.raw_ < 0 && raw_ > std::numeric_limits<Storage>::max() + rhs.raw_)
             return fromRaw(std::numeric_limits<Storage>::max());
         if (rhs.raw_ > 0 && raw_ < std::numeric_limits<Storage>::min() + rhs.raw_)
@@ -184,6 +223,18 @@ public:
     }
     constexpr FixedPointType& operator+=(FixedPointType rhs) noexcept { return *this = *this + rhs; }
     constexpr FixedPointType& operator-=(FixedPointType rhs) noexcept { return *this = *this - rhs; }
+    constexpr FixedPointType operator*(FixedPointType rhs) const noexcept {
+        static_assert(sizeof(Storage) <= 4, "Use an explicit widened product for accumulator operands");
+        return FixedPointType(FixedPointType<2 * FractionBits, int64_t>::fromRaw(int64_t(raw_) * rhs.raw_));
+    }
+    constexpr FixedPointType operator/(FixedPointType rhs) const noexcept {
+        static_assert(sizeof(Storage) <= 4, "Division operands must fit in 32 bits");
+        return fromWideRaw(fixed_detail::roundedDivide(int64_t(raw_) * int64_t(SCALE), rhs.raw_));
+    }
+    constexpr FixedPointType operator%(FixedPointType rhs) const noexcept {
+        if (rhs.raw_ == 0 || rhs.raw_ == -1) return FixedPointType{};
+        return fromRaw(static_cast<Storage>(raw_ % rhs.raw_));
+    }
     constexpr bool operator==(FixedPointType rhs) const noexcept { return raw_ == rhs.raw_; }
     constexpr bool operator!=(FixedPointType rhs) const noexcept { return raw_ != rhs.raw_; }
     constexpr bool operator<(FixedPointType rhs) const noexcept { return raw_ < rhs.raw_; }
@@ -195,7 +246,7 @@ private:
     static constexpr uint64_t limit(bool negative) noexcept {
         return uint64_t(std::numeric_limits<Storage>::max()) + (negative ? 1u : 0u);
     }
-    static constexpr Storage signedMagnitude(uint64_t value, bool negative) noexcept {
+    [[gnu::always_inline]] static constexpr Storage signedMagnitude(uint64_t value, bool negative) noexcept {
         if (value >= limit(negative)) {
             return negative ? std::numeric_limits<Storage>::min() : std::numeric_limits<Storage>::max();
         }
@@ -206,7 +257,7 @@ private:
 
 /** @brief Multiply 32-bit operands into an explicitly chosen result format. */
 template<class Out, unsigned A, typename SA, unsigned B, typename SB>
-constexpr Out multiplyTo(FixedPointType<A, SA> a, FixedPointType<B, SB> b) noexcept {
+[[gnu::always_inline]] constexpr Out multiplyTo(FixedPointType<A, SA> a, FixedPointType<B, SB> b) noexcept {
     static_assert(sizeof(SA) <= 4 && sizeof(SB) <= 4, "Multiply operands must fit in 32 bits");
     return Out(FixedPointType<A + B, int64_t>::fromRaw(int64_t(a.raw()) * b.raw()));
 }
@@ -226,6 +277,23 @@ constexpr Out divideByInteger(FixedPointType<Bits, Storage> value, uint32_t divi
     }
 }
 
+/** @brief Compile-time divisor, allowing shifts instead of a generic division call. */
+template<class Out, uint32_t Divisor, unsigned Bits, typename Storage>
+[[gnu::always_inline]] constexpr Out divideByConstant(FixedPointType<Bits, Storage> value) noexcept {
+    static_assert(Divisor > 0, "Constant divisor must be positive");
+    if constexpr ((Divisor & (Divisor - 1u)) == 0) {
+        constexpr unsigned log2 = [] {
+            unsigned count = 0;
+            for (uint32_t n = Divisor; n > 1; n >>= 1) ++count;
+            return count;
+        }();
+        // Extra fractional bits encode division without losing small remainders.
+        return Out(FixedPointType<Bits + log2, int64_t>::fromRaw(value.raw()));
+    } else {
+        return divideByInteger<Out>(value, Divisor);
+    }
+}
+
 /** @brief Float counterparts of the explicit-format arithmetic operations. */
 template<class Out>
 constexpr Out multiplyTo(float a, float b) noexcept { return static_cast<Out>(a * b); }
@@ -233,6 +301,8 @@ template<class Out>
 constexpr Out divideByInteger(float value, uint32_t divisor) noexcept {
     return static_cast<Out>(value / static_cast<float>(divisor));
 }
+template<class Out, uint32_t Divisor>
+constexpr Out divideByConstant(float value) noexcept { return Out(value / Divisor); }
 
 } // namespace libecu
 #endif // LIBECU_FIXED_POINT_HPP

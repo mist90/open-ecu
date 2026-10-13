@@ -130,6 +130,10 @@ public:
         (void)max_value;
         return 0.0f;
     }
+    /** @brief Normalized throttle in the selected numeric profile. */
+    virtual ActiveNumericProfile::Duty readNativeThrottle() noexcept {
+        return numberCast<ActiveNumericProfile::Duty>(readThrottle(1.0f));
+    }
 
     /**
      * @brief Manual brake input, if the board has one

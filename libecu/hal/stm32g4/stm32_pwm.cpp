@@ -4,6 +4,8 @@
  */
 
 #include "stm32_pwm.hpp"
+#include "ecu_config.hpp"
+#include "numeric_ops.hpp"
 #include "main.h"  // board pin map, supplied by the port's include path
 
 namespace libecu {
@@ -225,11 +227,6 @@ void setOcMode(TIM_TypeDef* tim, uint32_t channel_index, uint32_t mode) noexcept
     }
 }
 
-/// Clamp a duty request into the range the bridge can actually switch
-constexpr float clampDuty(float d) noexcept {
-    return d < 0.0f ? 0.0f : (d > 0.95f ? 0.95f : d);
-}
-
 } // namespace
 
 void Stm32Pwm::setChannelState(PwmChannel channel, PwmState state) {
@@ -280,12 +277,21 @@ void Stm32Pwm::setChannelState(PwmChannel channel, PwmState state) {
 
 void Stm32Pwm::updateDutyCycle(float duty_u, float duty_v, float duty_w)
 {
+    if (!std::isfinite(duty_u) || !std::isfinite(duty_v) || !std::isfinite(duty_w)) {
+        updateNativeDutyCycle(NativeDuty{}, NativeDuty{}, NativeDuty{});
+        return;
+    }
+    updateNativeDutyCycle(numberCast<NativeDuty>(duty_u), numberCast<NativeDuty>(duty_v),
+                          numberCast<NativeDuty>(duty_w));
+}
+
+void Stm32Pwm::updateNativeDutyCycle(NativeDuty duty_u, NativeDuty duty_v, NativeDuty duty_w) {
     TIM_HandleTypeDef* tim_handle = static_cast<TIM_HandleTypeDef*>(htim_);
     TIM_TypeDef* tim_instance = (TIM_TypeDef*)tim_handle->Instance;
 
-    uint32_t ccr_u = calculateCompareValue(clampDuty(duty_u));
-    uint32_t ccr_v = calculateCompareValue(clampDuty(duty_v));
-    uint32_t ccr_w = calculateCompareValue(clampDuty(duty_w));
+    uint32_t ccr_u = calculateCompareValue(duty_u);
+    uint32_t ccr_v = calculateCompareValue(duty_v);
+    uint32_t ccr_w = calculateCompareValue(duty_w);
 
     // UDIS blocks the update event for the duration of the write, so the three
     // compare registers reload as one set.  Without it an update event landing
@@ -345,11 +351,11 @@ uint32_t Stm32Pwm::getTimChannel(PwmChannel channel) noexcept {
     }
 }
 
-uint32_t Stm32Pwm::calculateCompareValue(float duty_cycle) noexcept {
-    uint32_t compare_value = static_cast<uint32_t>(duty_cycle * period_);
-    // Limit to 95% to ensure proper PWM operation
-    uint32_t max_value = static_cast<uint32_t>(period_ * 0.95f);
-    return (compare_value > max_value) ? max_value : compare_value;
+uint32_t Stm32Pwm::calculateCompareValue(NativeDuty duty_cycle) noexcept {
+    using Duty = ActiveNumericProfile::Duty;
+    constexpr Duty maximum = constant<Duty>(0.95f);
+    const Duty duty = numericClamp(duty_cycle, Duty{}, maximum);
+    return dutyToCompare(duty, period_);
 }
 
 void Stm32Pwm::apply() {

@@ -20,6 +20,7 @@
 #include "motor_algorithm.hpp"
 #include "pi_float_interface.hpp"
 #include "ecu_config.hpp"
+#include "motor_samples.hpp"
 
 namespace libecu {
 
@@ -64,6 +65,12 @@ struct SixStepParams {
  */
 class SixStepAlgorithm final : public MotorAlgorithm {
 public:
+    using Profile = ActiveNumericProfile;
+    using Current = Profile::Current;
+    using Duty = Profile::Duty;
+    using Input = MotorAlgorithmInputT<Profile>;
+    using Output = MotorAlgorithmOutputT<Profile>;
+    Output updateNative(const Input& input) noexcept;
     /**
      * @brief Constructor
      * @param pwm_interface PWM interface this algorithm drives
@@ -105,7 +112,7 @@ private:
      * See the preload note in Stm32Pwm::initialize(); getting this wrong cost
      * two measured regressions.
      */
-    void applyCommutationStep(const CommutationStep& step, float duty_cycle) noexcept;
+    void applyCommutationStep(const CommutationStep& step, Duty duty_cycle) noexcept;
 
     /**
      * @brief Phase current from the shunt that is actually carrying it
@@ -119,13 +126,14 @@ private:
      * that was just sampled, not the ones about to be applied - which is why
      * the cache is read before this cycle's commutation, never after.
      */
-    float currentFromActivePhase(const MotorAlgorithmInput& in) const noexcept;
+    Current currentFromActivePhase(const Input& in) const noexcept;
 
     static const CommutationStep COMMUTATION_TABLE[6];
 
     PwmInterface& pwm_interface_;
     PiFloatInterface<ActivePiProfile::CurrentPiTypes, ActiveTiming::CURRENT_HZ> current_pi_;
     SixStepParams params_;
+    Duty max_duty_ = number_v<Duty, 95, 100>;
 
     uint8_t current_step_;          ///< Step currently applied, 0xFF if none
     PwmState cached_phase_u_state_;
@@ -136,7 +144,7 @@ private:
     /// Saturates rather than wrapping, so a long sector cannot re-enter blanking.
     uint8_t cycles_since_commutation_;
 
-    float last_duty_;               ///< Duty held across the blanking window
+    Duty last_duty_;                ///< Duty held across the blanking window
     int8_t last_saturation_;        ///< Saturation flag held across the blanking window
 };
 

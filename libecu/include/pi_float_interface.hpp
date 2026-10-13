@@ -35,9 +35,9 @@ float toFloat(T value) noexcept {
 /**
  * @brief Adapt physical float I/O to a typed PI kernel during integration
  *
- * The kernel owns all PI arithmetic and accumulated state. ADC/PLL/PWM and
- * command interfaces currently use float, so their conversions are explicit
- * here. This adapter is also used for matched float/fixed bench comparisons.
+ * The kernel owns all PI arithmetic and accumulated state. Configuration and
+ * compatibility update() use checked float conversions; updateNative() is the
+ * typed path used by the firmware's periodic control loops.
  */
 template<class Types, uint32_t SampleRateHz>
 class PiFloatInterface {
@@ -81,6 +81,11 @@ public:
             return 0.0f;
         }
         return pi_interface_detail::toFloat(kernel_.update(target, measured, external_saturation));
+    }
+
+    /** @brief Typed data path; configuration remains at the checked float boundary. */
+    Output updateNative(Input setpoint, Input feedback, int external_saturation = 0) noexcept {
+        return kernel_.update(setpoint, feedback, external_saturation);
     }
 
     /** @brief Clear accumulated state. */

@@ -440,12 +440,14 @@ uint32_t Stm32Adc::readRegularChannel(uint32_t channel) noexcept {
 
 float Stm32Adc::readPotentiometer(float max_value)
 {
-    // PB12 = ADC1_IN11, same regular group as the NTC
-    uint32_t adc_value = readRegularChannel(ADC_CHANNEL_11);
+    using Speed = ActiveNumericProfile::Speed;
+    return numberCast<float>(multiplyTo<Speed>(convertNativeThrottle(readRawPotentiometer()),
+                                              numberCast<Speed>(max_value)));
+}
 
-    // Convert ADC value (0-4095) to (0-max_value)
-    // Linear mapping: output = (adc_value / 4095.0) * max_value
-    return (static_cast<float>(adc_value) / 4095.0f) * max_value;
+uint32_t Stm32Adc::readRawPotentiometer() {
+    // PB12 = ADC1_IN11, same regular group as the NTC.
+    return readRegularChannel(ADC_CHANNEL_11);
 }
 
 } // namespace libecu

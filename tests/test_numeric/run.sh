@@ -11,7 +11,7 @@ if command -v arm-none-eabi-g++ >/dev/null; then
     arm-none-eabi-g++ -std=c++17 -Os -mcpu=cortex-m0 -mthumb -mfloat-abi=soft \
         -fno-exceptions -fno-rtti -Wall -Wextra -Werror -c arm_pi.cpp -o "$tmp/pi.o"
     arm-none-eabi-nm -u "$tmp/pi.o" > "$tmp/undefined.txt"
-    if grep -E '__aeabi_([fd](add|sub|mul|div|neg|cmp|2)|[iu]l?2[fd])' "$tmp/undefined.txt"; then
+    if grep -E '__aeabi_([fd](add|sub|mul|div|neg|cmp|2)|(i|ui|l|ul)2[fd])' "$tmp/undefined.txt"; then
         echo "Unexpected floating-point helper in fixed PI" >&2
         exit 1
     fi
