@@ -9,6 +9,7 @@ tests/test_hall_monitor/test
 tests/test_foc/test
 tests/test_adc_scaling/test
 tests/test_motor_alignment/test
+tests/test_hall_handoff/test
 libecu/lib/
 __pycache__/
 

@@ -180,6 +180,7 @@ JK42BLS01 six-step tuning, bench data and motor selection are documented in
 
 Additional host regressions:
 - `tests/test_motor_alignment/run.sh` — both motors, both directions, PLL and discrete commutation
+- `tests/test_hall_handoff/run.sh` — physical Hall resynchronization after open-loop operation and parking
 - `tests/test_adc_scaling/run.sh` — injected ADC sums, zero calibration and regular-channel isolation
 
 **No automated unit tests** - the `libecu/tests/` directory does not exist.

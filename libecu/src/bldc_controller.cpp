@@ -358,7 +358,16 @@ void BldcController::setControlMode(ControlMode mode) noexcept
 {
     CriticalSection cs;
     if (status_.control_mode != mode) {
+        const bool from_open_loop = status_.control_mode == ControlMode::OPEN_LOOP;
         status_.control_mode = mode;
+        if (from_open_loop) {
+            // A stationary rotor produces no new Hall edge. Discard the last
+            // virtual sector now, before the closed loop can energise it.
+            synchronizeHallPosition(true);
+            algorithm().reset();
+        } else if (mode == ControlMode::OPEN_LOOP) {
+            hall_update_pending_ = false;
+        }
 
         // Reset PID when switching to velocity control
         if (mode == ControlMode::CLOSED_LOOP_VELOCITY) {
@@ -447,6 +456,7 @@ float BldcController::getFocAngleOffsetDeg() const noexcept
 void BldcController::setDriveMode(DriveMode mode) noexcept
 {
     CriticalSection cs;
+    const bool was_neutral = dmode_ == DriveMode::NEUTRAL;
     dmode_ = mode;
     if (dmode_ == DriveMode::NEUTRAL) {
         // High-Z the bridge *before* releasing the pins, so the switches are
@@ -461,6 +471,9 @@ void BldcController::setDriveMode(DriveMode mode) noexcept
         algorithm().reset();
         filtered_measured_current_ = 0.0f;
     } else {
+        if (was_neutral && status_.control_mode != ControlMode::OPEN_LOOP) {
+            synchronizeHallPosition();
+        }
         pwm_interface_.enable(true);
         // Must follow enable(): the PWM driver ignores channel-state writes
         // while the outputs are off, so FOC's all-phases-UP configuration
@@ -562,9 +575,7 @@ void BldcController::start() noexcept
 
     CriticalSection cs;
     open_loop_last_step_time_us_ = time_us();
-    uint8_t current_hall = hall_interface_.getPosition();
-    status_.measured_position = current_hall;
-    motor_pll_.updateHall(current_hall);
+    synchronizeHallPosition(true);
 
     // The inverter follows the *drive mode*, not the run flag.
     //
@@ -617,6 +628,19 @@ void BldcController::stop() noexcept
 MotorStatus BldcController::getStatus() const noexcept
 {
     return status_;
+}
+
+void BldcController::synchronizeHallPosition(bool discard_tracking) noexcept
+{
+    const uint8_t hall = hall_interface_.getPosition();
+    status_.measured_position = hall;
+    const bool changed = motor_pll_.getInfo().hall_state_raw != hall;
+    if (hall <= 5) motor_pll_.updateHall(hall);
+    // Preserve a real PLL that is already tracking a coasting rotor.
+    if (discard_tracking || changed || hall > 5) motor_pll_.reset();
+    // Also feed the Hall monitor through the normal debounced PWM path, and
+    // retry an invalid sample without requiring another physical edge.
+    hall_update_pending_ = status_.control_mode != ControlMode::OPEN_LOOP;
 }
 
 void BldcController::holdVelocityLoop() noexcept

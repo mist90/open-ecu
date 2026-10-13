@@ -488,6 +488,9 @@ private:
      */
     void holdVelocityLoop() noexcept;
 
+    /// @brief Reseed from physical Hall after virtual commutation/parking; caller holds CriticalSection.
+    void synchronizeHallPosition(bool discard_tracking = false) noexcept;
+
     /**
      * @brief Apply acceleration/deceleration limits to target speed
      *
