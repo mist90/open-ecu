@@ -2,7 +2,7 @@
 
 Open-source BLDC motor control firmware with platform-independent architecture. Initially developed for the b-g431b-esc1 board (STM32G431CBU), but designed to support multiple hardware platforms.
 
-The firmware implements FOC and 6-step trapezoidal commutation with Hall sensor feedback, closed-loop PID speed control, and comprehensive safety monitoring.
+The firmware implements FOC and 6-step trapezoidal commutation with Hall sensor feedback, closed-loop PI speed control, and comprehensive safety monitoring.
 
 ## Supported Platforms
 
@@ -42,7 +42,7 @@ Located in `libecu/src/` and `libecu/include/`:
 - **SixStepAlgorithm**: 6-step trapezoidal commutation with Hall sensor feedback and an inner current loop
 - **FocAlgorithm**: Field-oriented control with space-vector modulation (SVPWM)
 - **MotorAlgorithm**: Common interface selected at runtime with `AT+ALGO`; motor-specific startup algorithm
-- **PidController**: Digital PID controller with anti-windup and derivative filtering
+- **PiController**: Fixed-frequency PI with trapezoidal integration and anti-windup
 - **SafetyMonitor**: Real-time fault detection (overcurrent, overtemperature, undervoltage)
 - **BldcController**: High-level motor controller integrating all subsystems
 
@@ -75,7 +75,7 @@ port rather than a new main.
 ### Key Features
 - **FOC** with Hall sensor position feedback
 - **6-step trapezoidal control** with Hall sensor position feedback
-- **Closed-loop speed control** using PID algorithm
+- **Closed-loop speed control** using PI algorithm
 - **Safety monitoring** with overcurrent, overtemperature, and undervoltage protection
 - **Modular architecture** allowing easy porting to other MCUs
 - **Real-time performance** optimized for embedded systems
@@ -87,7 +87,7 @@ The firmware implements a dual-rate control architecture:
 **1kHz Speed Control Loop (TIM2 periodic timer):**
 1. Reads Hall sensor states (async GPIO interrupts)
 2. Calculates motor speed from position history
-3. Executes PID speed controller (setpoint → duty cycle)
+3. Executes PI speed controller (setpoint → current or duty cycle)
 4. Monitors safety parameters in real-time
 
 **40kHz Current Loop (PWM ISR):**
@@ -196,14 +196,14 @@ Manual hardware testing required:
 open-ecu/
 ├── libecu/                    # Platform-independent motor control library
 │   ├── include/
-│   │   ├── interfaces/        # Hardware abstraction interfaces
-│   │   ├── algorithms/        # Control algorithms (six-step, FOC, PID, PLL)
-│   │   └── safety/            # Safety monitoring
+│   │   ├── pi_controller.hpp  # Fixed-frequency, numerical-type-parametric PI
+│   │   ├── fixed_point.hpp    # Explicit binary fixed-point arithmetic
+│   │   └── *_interface.hpp   # Hardware abstraction interfaces (flat directory)
 │   ├── src/                   # Core algorithm implementations
 │   │   ├── bldc_controller.cpp
 │   │   ├── six_step_algorithm.cpp
 │   │   ├── foc_algorithm.cpp
-│   │   └── pid_controller.cpp
+│   │   └── motor_pll.cpp
 │   ├── hal/                   # Platform-specific HAL implementations
 │   │   └── stm32g4/           # STM32G4 drivers
 │   │       ├── stm32_pwm.cpp
@@ -211,7 +211,7 @@ open-ecu/
 │
 ├── STM32G431/                 # STM32G431 platform-specific files
 │   ├── Core/                  # Application code
-│   │   ├── Inc/               # Headers
+│   │   ├── Inc/               # Headers, including compile-time ecu_config.hpp
 │   │   ├── Src/               # main.cpp and initialization
 │   │   └── Startup/           # Startup assembly
 │   ├── Drivers/               # STM32 HAL and CMSIS

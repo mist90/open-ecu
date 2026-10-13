@@ -76,6 +76,7 @@
 #include "pwm_interface.hpp"
 #include "foc_math.hpp"
 #include "motor_algorithm.hpp"
+#include "ecu_config.hpp"
 
 namespace libecu {
 
@@ -139,8 +140,8 @@ struct FocParams {
      * whole excess in one sample and is the sensible default; 0 disables
      * back-calculation and leaves only the hard clamp at the voltage limit.
      *
-     * Note this is a different quantity from PidParameters::kb, which *is*
-     * scaled by dt. At a 50 us sample time the dt-scaled form produces a
+     * Note this is a different quantity from PiParameters::kb, which is
+     * divided by the sample frequency. At 20 kHz that form produces a
      * correction some three orders of magnitude too small to oppose the
      * integration it is meant to cancel.
      */
@@ -155,9 +156,8 @@ public:
     /**
      * @brief Constructor
      * @param pwm_interface PWM interface this algorithm drives
-     * @param pwm_frequency_hz Control frequency, used as the regulator sample rate
      */
-    FocAlgorithm(PwmInterface& pwm_interface, uint32_t pwm_frequency_hz) noexcept;
+    explicit FocAlgorithm(PwmInterface& pwm_interface) noexcept;
 
     /// @brief Set modulation limits, angle offset and feed-forward configuration
     void setParams(const FocParams& params) noexcept;
@@ -204,9 +204,9 @@ private:
     PwmInterface& pwm_interface_;
     FocParams params_;
 
-    float dt_;              ///< Regulator sample time (s)
     float kp_;              ///< d/q proportional gain (V/A)
     float ki_;              ///< d/q integral gain (V/A/s)
+    float ki_step_;         ///< d/q integral gain per PWM sample (V/A)
 
     float integral_d_;      ///< d-axis integrator (V)
     float integral_q_;      ///< q-axis integrator (V)

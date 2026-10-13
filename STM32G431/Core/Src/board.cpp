@@ -16,6 +16,7 @@
 #include "../../libecu/hal/stm32g4/stm32_hall_sensor.hpp"
 #include "../../libecu/hal/stm32g4/stm32_adc.hpp"
 #include "uart_at_bridge.hpp"
+#include "ecu_config.hpp"
 
 #include <stdint.h>
 #include <stddef.h>
@@ -23,8 +24,8 @@
 
 /* ---- Board hardware description ----------------------------------------- */
 
-#define PERIODIC_TIMER_FREQ 100
-#define PWM_TIMER_FREQ 20000
+constexpr uint32_t PERIODIC_TIMER_FREQ = libecu::ActiveTiming::SPEED_HZ;
+constexpr uint32_t PWM_TIMER_FREQ = libecu::ActiveTiming::CURRENT_HZ;
 /* Nominal DC link voltage. Used only to tune the current-loop PI gains; the
  * loops themselves run off the measured bus voltage. */
 #define BLDC_NOMINAL_VBUS 31.3f
@@ -66,6 +67,22 @@ static libecu::Stm32Adc adc_driver;
 static libecu::BldcController* motor_controller = nullptr;
 static libecu::AtCommandProcessor* g_at_processor = nullptr;
 static volatile bool control_tick = false;
+
+#ifdef BENCH_PROFILING
+// Arm a bounded capture through SWD by clearing the counters, then writing
+// remaining last. It freezes at zero so all fields can be read consistently
+// without halting a running motor. The measured body includes OSC capture.
+extern "C" {
+struct PwmBenchProfile {
+    uint32_t remaining;
+    uint32_t samples;
+    uint32_t total_cycles;
+    uint32_t max_cycles;
+    uint32_t overruns;
+};
+volatile PwmBenchProfile pwm_bench_profile = {};
+}
+#endif
 
 /* Throttle sampling.
  *
@@ -165,10 +182,23 @@ extern "C" void motor_controller_hall_interrupt_handler(void)
  */
 extern "C" void motor_controller_pwm_interrupt_handler(void)
 {
+#ifdef BENCH_PROFILING
+    const uint32_t started = DWT->CYCCNT;
+#endif
     if (motor_controller != nullptr) {
         motor_controller->pwmInterruptHandler();
         g_at_processor->captureOscSample(motor_controller->getStatus());
     }
+#ifdef BENCH_PROFILING
+    if (pwm_bench_profile.remaining != 0) {
+        const uint32_t cycles = DWT->CYCCNT - started;
+        pwm_bench_profile.total_cycles += cycles;
+        if (cycles > pwm_bench_profile.max_cycles) pwm_bench_profile.max_cycles = cycles;
+        if (cycles >= SystemCoreClock / PWM_TIMER_FREQ) ++pwm_bench_profile.overruns;
+        ++pwm_bench_profile.samples;
+        --pwm_bench_profile.remaining;
+    }
+#endif
 }
 
 /**
@@ -207,6 +237,12 @@ public:
 
         /* Configure the system clock */
         SystemClock_Config();
+
+#ifdef BENCH_PROFILING
+        CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+        DWT->CYCCNT = 0;
+        DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+#endif
 
         /* Initialize all configured peripherals */
         MX_GPIO_Init();

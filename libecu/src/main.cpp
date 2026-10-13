@@ -17,8 +17,6 @@
 
 #include <cstdio>
 
-//#define THROTTLE_BRAKE_CONTROL
-
 namespace {
 
 #ifdef THROTTLE_BRAKE_CONTROL
@@ -60,16 +58,15 @@ libecu::MotorControlParams makeMotorParams(const libecu::BoardInfo& board_info) 
     // about nine PWM cycles after a commutation on this motor. Six covers the
     // bulk of the transient without holding the duty for much of a short sector.
     motor_params.current_blanking_cycles = 6;
-    motor_params.control_frequency = board_info.control_frequency_hz;
-    motor_params.pid_voltage_mode = {BLDC_SPEED_VOLTAGE_KP, BLDC_SPEED_VOLTAGE_KI};
-    motor_params.pid_voltage_mode.integral_max = 0.8f;
-    motor_params.pid_voltage_mode.integral_min = 0.0f;
-    motor_params.pid_voltage_mode.kb = 2.0f;
+    motor_params.pi_voltage_mode = {BLDC_SPEED_VOLTAGE_KP, BLDC_SPEED_VOLTAGE_KI};
+    motor_params.pi_voltage_mode.integral_max = 0.8f;
+    motor_params.pi_voltage_mode.integral_min = 0.0f;
+    motor_params.pi_voltage_mode.kb = 2.0f;
 
-    motor_params.pid_current_mode = {BLDC_SPEED_CURRENT_KP, BLDC_SPEED_CURRENT_KI};
-    motor_params.pid_current_mode.integral_max = 12.0f;
-    motor_params.pid_current_mode.integral_min = -4.0f;
-    motor_params.pid_current_mode.kb = 2.0f;
+    motor_params.pi_current_mode = {BLDC_SPEED_CURRENT_KP, BLDC_SPEED_CURRENT_KI};
+    motor_params.pi_current_mode.integral_max = 12.0f;
+    motor_params.pi_current_mode.integral_min = -4.0f;
+    motor_params.pi_current_mode.kb = 2.0f;
 
     // Current-loop PI from the electrical model: kp = 2*L*w_c/Vbus,
     // ki = 2*R*w_c/Vbus, which places the PI zero on the plant pole (Ti = L/R)
@@ -81,18 +78,18 @@ libecu::MotorControlParams makeMotorParams(const libecu::BoardInfo& board_info) 
         iloop.r_phase_ohm  = BLDC_R_PHASE_OHM;
         iloop.bus_voltage  = board_info.nominal_bus_voltage;
         iloop.bandwidth_hz = BLDC_ILOOP_BW_HZ;
-        libecu::PidParameters ip = libecu::tuneCurrentPi(iloop);
+        libecu::PiParameters ip = libecu::tuneCurrentPi(iloop);
         if (ip.kp <= 0.0f) {
             ip.kp = BLDC_CURRENT_FALLBACK_KP;
             ip.ki = BLDC_CURRENT_FALLBACK_KI;
         }
-        motor_params.pid_current_regulator = ip;
+        motor_params.pi_current_regulator = ip;
     }
-    motor_params.pid_current_regulator.min_output = 0.0f;
-    motor_params.pid_current_regulator.max_output = 1.0f;
-    motor_params.pid_current_regulator.integral_max = 1.0f;
-    motor_params.pid_current_regulator.integral_min = 0.0f;
-    motor_params.pid_current_regulator.kb = 5.0f;
+    motor_params.pi_current_regulator.min_output = 0.0f;
+    motor_params.pi_current_regulator.max_output = 1.0f;
+    motor_params.pi_current_regulator.integral_max = 1.0f;
+    motor_params.pi_current_regulator.integral_min = 0.0f;
+    motor_params.pi_current_regulator.kb = 5.0f;
     motor_params.useInverseCommTable = BLDC_INVERTION;
 
     // ---- FOC ---------------------------------------------------------------
@@ -162,10 +159,10 @@ libecu::MotorControlParams makeMotorParams(const libecu::BoardInfo& board_info) 
 libecu::HallMonitorParams makeHallMonitorParams() noexcept
 {
     libecu::HallMonitorParams hall_params;
-    hall_params.decay_time_s           = 0.5f;
+    hall_params.decay_time_us          = 500000;
     hall_params.invalid_threshold      = 0.0f;    // counting is useless here
     hall_params.invalid_debounce       = 1;
-    hall_params.invalid_persist_time_s = 0.0003f; // 6x the benign max, 3x below the fault
+    hall_params.invalid_persist_time_us = 300; // 6x the benign max, 3x below the fault
     // Fraction, not a count: the count scales with edge rate. A loaded run at
     // 6 RPS / 2 A measured a healthy fraction of ~0.06 while an absolute
     // threshold of 20 tripped on it (surplus 21 of 351 edges).

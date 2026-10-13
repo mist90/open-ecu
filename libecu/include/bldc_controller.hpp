@@ -16,7 +16,8 @@
 #include "motor_algorithm.hpp"
 #include "six_step_algorithm.hpp"
 #include "foc_algorithm.hpp"
-#include "pid_controller.hpp"
+#include "pi_controller.hpp"
+#include "ecu_config.hpp"
 #include "motor_pll.hpp"
 #include "current_loop_tuning.hpp"
 #include "hall_monitor.hpp"
@@ -28,7 +29,7 @@ namespace libecu {
  */
 enum class ControlMode : uint8_t {
     OPEN_LOOP = 0,              ///< Open loop control (timing-based, no sensors)
-    CLOSED_LOOP_VELOCITY = 1,   ///< Closed loop velocity control with PID + Hall sensors
+    CLOSED_LOOP_VELOCITY = 1,   ///< Closed loop velocity control with PI + Hall sensors
     CLOSED_LOOP_TORQUE = 2      ///< Closed loop torque control (fixed duty/current + Hall sensors)
 };
 
@@ -104,11 +105,10 @@ struct MotorControlParams {
      * 0 disables blanking.
      */
     uint8_t current_blanking_cycles;
-    uint32_t control_frequency; ///< Control loop frequency (Hz)
     bool useInverseCommTable; ///< Use inverse six-step commutation table
-    PidParameters pid_voltage_mode; ///< Velocity PID parameters for voltage mode (outputs duty cycle)
-    PidParameters pid_current_mode; ///< Velocity PID parameters for current mode (outputs current)
-    PidParameters pid_current_regulator; ///< Current PID parameters for current mode (outputs duty cycle)
+    PiParameters pi_voltage_mode; ///< Velocity PI parameters for voltage mode (outputs duty cycle)
+    PiParameters pi_current_mode; ///< Velocity PI parameters for current mode (outputs current)
+    PiParameters pi_current_regulator; ///< Current PI parameters for current mode (outputs duty cycle)
 
     /**
      * @brief Which electrical algorithm the drive starts in
@@ -126,10 +126,10 @@ struct MotorControlParams {
      * @brief d/q current regulator gains for FOC (output in volts)
      *
      * Only kp and ki are used. These are NOT the same numbers as
-     * pid_current_regulator: that one outputs duty and sees two phases in
+     * pi_current_regulator: that one outputs duty and sees two phases in
      * series, this one outputs volts and sees one. Use tuneFocCurrentPi().
      */
-    PidParameters foc_current_regulator;
+    PiParameters foc_current_regulator;
 };
 
 /**
@@ -161,7 +161,7 @@ struct MotorStatus {
      */
     float temperature_c;
     float pll_angle;          ///< Rotor angle from PLL (degrees, 0-360)
-    int8_t current_pid_saturation; ///< +1/-1 if duty is clamped high/low, else 0 (for speed PID anti-windup)
+    int8_t current_pi_saturation; ///< +1/-1 if duty is clamped high/low, else 0 (for speed PI anti-windup)
     uint8_t target_position;   ///< Driven motor position
     uint8_t measured_position;   ///< Measured motor position
     bool is_running;          ///< Motor running status
@@ -191,7 +191,7 @@ public:
      * @brief Constructor
      * @param pwm_interface PWM interface
      * @param hall_interface Hall sensor interface
-     * @param params Motor control parameters (includes PID parameters for both modes)
+     * @param params Motor control parameters (includes PI parameters for both modes)
      * @param adc_interface ADC interface for current sensing (optional, nullptr for voltage mode only)
      */
     BldcController(
@@ -311,24 +311,22 @@ public:
     float getAccelerationRate() const noexcept;
 
     /**
-     * @brief Set speed PID controller gains (kp, ki, kd)
+     * @brief Set speed PI controller gains (kp, ki)
      * @param kp Proportional gain
      * @param ki Integral gain
-     * @param kd Derivative gain
      *
-     * Preserves existing output limits and sample time.
+     * Preserves existing output limits.
      */
-    void setSpeedPid(float kp, float ki, float kd) noexcept;
+    void setSpeedPi(float kp, float ki) noexcept;
 
     /**
-     * @brief Set current PID controller gains (kp, ki, kd)
+     * @brief Set current PI controller gains (kp, ki)
      * @param kp Proportional gain
      * @param ki Integral gain
-     * @param kd Derivative gain
      *
-     * Preserves existing output limits and sample time.
+     * Preserves existing output limits.
      */
-    void setCurrentPid(float kp, float ki, float kd) noexcept;
+    void setCurrentPi(float kp, float ki) noexcept;
 
     /**
      * @brief Get PLL internal state snapshot (for telemetry)
@@ -364,20 +362,18 @@ public:
     DriveMode getDriveMode() const noexcept;
 
     /**
-     * @brief Get speed PID controller gains
+     * @brief Get speed PI controller gains
      * @param kp Output: proportional gain
      * @param ki Output: integral gain
-     * @param kd Output: derivative gain
      */
-    void getSpeedPidGains(float& kp, float& ki, float& kd) const noexcept;
+    void getSpeedPiGains(float& kp, float& ki) const noexcept;
 
     /**
-     * @brief Get current PID controller gains
+     * @brief Get current PI controller gains
      * @param kp Output: proportional gain
      * @param ki Output: integral gain
-     * @param kd Output: derivative gain
      */
-    void getCurrentPidGains(float& kp, float& ki, float& kd) const noexcept;
+    void getCurrentPiGains(float& kp, float& ki) const noexcept;
 
     /**
      * @brief Get PLL base PI gains
@@ -432,7 +428,7 @@ private:
     // Owned components
     HallMonitor hall_monitor_;
     MotorPLL motor_pll_;
-    PidController pid_speed_controller_;     // Speed controller (outer loop)
+    PiController<FloatProfile::SpeedPiTypes, ActiveTiming::SPEED_HZ> pi_speed_controller_;
 
     // Electrical algorithms. Both are constructed and kept alive; only the one
     // selected by algorithm_ is ticked. Keeping the unselected one around
@@ -458,9 +454,6 @@ private:
     uint8_t open_loop_step_;                 ///< Current step in open-loop mode (0-5)
     uint32_t open_loop_last_step_time_us_;   ///< Timestamp of last step change
 
-    // Control loop timing
-    uint32_t last_pid_update_time_us_;       ///< Timestamp of last successful PID update
-
     /**
      * @brief Voltage-mode duty request, 0.0 to 1.0
      *
@@ -476,13 +469,14 @@ private:
     float filtered_measured_speed_;
     float filtered_measured_current_;           ///< LPF-filtered measured current, telemetry only
     float limited_target_speed_;             ///< Rate-limited target speed (after LPF)
+    float acceleration_step_;                ///< Maximum target-speed change per control tick
 
 
 
     /**
      * @brief Hold the velocity loop while the drive is parked in NEUTRAL
      *
-     * Keeps the speed PID and the slew limiter from integrating against a
+     * Keeps the speed PI and the slew limiter from integrating against a
      * setpoint the disabled bridge cannot follow, and leaves both in the state
      * a bumpless re-engagement needs. See the note at the call site.
      */
@@ -498,10 +492,9 @@ private:
      * Stores previous limited value internally - does NOT use measured speed.
      *
      * @param target_speed Desired target speed
-     * @param dt Time step in seconds
      * @return Rate-limited target speed
      */
-    float applyAccelerationLimit(float target_speed, float dt) noexcept;
+    float applyAccelerationLimit(float target_speed) noexcept;
 
     /**
      * @brief Calculate step interval from target speed for open-loop control

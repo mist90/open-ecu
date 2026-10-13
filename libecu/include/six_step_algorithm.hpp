@@ -18,7 +18,8 @@
 
 #include "pwm_interface.hpp"
 #include "motor_algorithm.hpp"
-#include "pid_controller.hpp"
+#include "pi_controller.hpp"
+#include "ecu_config.hpp"
 
 namespace libecu {
 
@@ -73,10 +74,10 @@ public:
     void setParams(const SixStepParams& params) noexcept;
 
     /// @brief Set the inner current-loop PI parameters (output is duty, 0 to 1)
-    void setCurrentPi(const PidParameters& params) noexcept;
+    void setCurrentPi(const PiParameters& params) noexcept;
 
     /// @brief Get the inner current-loop PI parameters
-    const PidParameters& getCurrentPi() const noexcept;
+    const PiParameters& getCurrentPi() const noexcept;
 
     void reset() noexcept override;
     void onEnter() noexcept override;
@@ -119,7 +120,7 @@ private:
     static const CommutationStep COMMUTATION_TABLE[6];
 
     PwmInterface& pwm_interface_;
-    PidController current_pi_;
+    PiController<FloatProfile::CurrentPiTypes, ActiveTiming::CURRENT_HZ> current_pi_;
     SixStepParams params_;
 
     uint8_t current_step_;          ///< Step currently applied, 0xFF if none

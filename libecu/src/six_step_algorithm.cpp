@@ -41,13 +41,13 @@ void SixStepAlgorithm::setParams(const SixStepParams& params) noexcept
     params_ = params;
 }
 
-void SixStepAlgorithm::setCurrentPi(const PidParameters& params) noexcept
+void SixStepAlgorithm::setCurrentPi(const PiParameters& params) noexcept
 {
     current_pi_.setParameters(params);
     current_pi_.reset();
 }
 
-const PidParameters& SixStepAlgorithm::getCurrentPi() const noexcept
+const PiParameters& SixStepAlgorithm::getCurrentPi() const noexcept
 {
     return current_pi_.getParameters();
 }
@@ -104,7 +104,7 @@ MotorAlgorithmOutput SixStepAlgorithm::update(const MotorAlgorithmInput& in) noe
             // regulator's own limits: max_duty_cycle is applied here, outside
             // the PI, so the PI reports itself unsaturated while the bridge is
             // in fact wide open. The sign tells the speed loop which way it is
-            // stuck; see PidController.
+            // stuck; see PiController.
             saturation = static_cast<int8_t>(current_pi_.saturationSign());
             if (saturation == 0) {
                 saturation = (duty_raw > params_.max_duty_cycle) ? 1

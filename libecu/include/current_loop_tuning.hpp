@@ -33,7 +33,7 @@
 #ifndef LIBECU_CURRENT_LOOP_TUNING_HPP
 #define LIBECU_CURRENT_LOOP_TUNING_HPP
 
-#include "pid_controller.hpp"
+#include "pi_controller.hpp"
 
 namespace libecu {
 
@@ -50,13 +50,12 @@ struct CurrentLoopModel {
 /**
  * @brief Compute current-loop PI gains from the model
  *
- * Fills `kp`, `ki` and clears `kd`. Output and integral limits, and the sample
- * time, are left to the caller.
+ * Fills `kp` and `ki`. Output and integral limits are left to the caller.
  *
- * @return PidParameters with kp/ki set; zeroed if the model is not usable.
+ * @return PiParameters with kp/ki set; zeroed if the model is not usable.
  */
-inline PidParameters tuneCurrentPi(const CurrentLoopModel& m) noexcept {
-    PidParameters p{};
+inline PiParameters tuneCurrentPi(const CurrentLoopModel& m) noexcept {
+    PiParameters p{};
     if (m.l_phase_h <= 0.0f || m.r_phase_ohm <= 0.0f ||
         m.bus_voltage <= 0.0f || m.bandwidth_hz <= 0.0f) {
         return p;
@@ -64,7 +63,6 @@ inline PidParameters tuneCurrentPi(const CurrentLoopModel& m) noexcept {
     const float w_c = 6.28318531f * m.bandwidth_hz;
     p.kp = 2.0f * m.l_phase_h   * w_c / m.bus_voltage;
     p.ki = 2.0f * m.r_phase_ohm * w_c / m.bus_voltage;
-    p.kd = 0.0f;
     return p;
 }
 
@@ -90,22 +88,21 @@ inline PidParameters tuneCurrentPi(const CurrentLoopModel& m) noexcept {
  * `bus_voltage` in the model is ignored here; it is kept in the struct so one
  * CurrentLoopModel can feed both tuners.
  *
- * @return PidParameters with kp/ki set; zeroed if the model is not usable.
+ * @return PiParameters with kp/ki set; zeroed if the model is not usable.
  */
-inline PidParameters tuneFocCurrentPi(const CurrentLoopModel& m) noexcept {
-    PidParameters p{};
+inline PiParameters tuneFocCurrentPi(const CurrentLoopModel& m) noexcept {
+    PiParameters p{};
     if (m.l_phase_h <= 0.0f || m.r_phase_ohm <= 0.0f || m.bandwidth_hz <= 0.0f) {
         return p;
     }
     const float w_c = 6.28318531f * m.bandwidth_hz;
     p.kp = m.l_phase_h   * w_c;
     p.ki = m.r_phase_ohm * w_c;
-    p.kd = 0.0f;
     return p;
 }
 
 /// @return Integral time constant implied by the gains (s); should equal L/R
-inline float currentPiTi(const PidParameters& p) noexcept {
+inline float currentPiTi(const PiParameters& p) noexcept {
     return (p.ki > 0.0f) ? (p.kp / p.ki) : 0.0f;
 }
 

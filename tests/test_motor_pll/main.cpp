@@ -24,7 +24,7 @@ int main() {
     const uint32_t TOTAL_STEPS = static_cast<uint32_t>(TOTAL_TIME / SIM_DT);
 
     // Экземпляр тестируемого класса
-    libecu::MotorPLL pll(PWM_FREQ, MAX_SPEED, false);
+    libecu::MotorPLL pll(MAX_SPEED, false);
     pll.setUsePLL(true);
 
     // Открываем CSV файл для записи результатов

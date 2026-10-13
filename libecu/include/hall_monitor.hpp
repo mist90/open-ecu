@@ -45,7 +45,7 @@
  *
  * For the erratic detector, where counting does work, each accumulator leaks:
  * a burst adds a fixed amount and decays, while a sustained fault settles at
- * `rate * decay_time_s`.
+ * `rate * decay_time_us / 1000000`.
  *
  * Bounce is detected as **direction reversals per edge**, and still without
  * needing to know the commanded direction: healthy rotation keeps turning the
@@ -95,13 +95,13 @@ enum class HallFault : uint8_t {
  * @brief Configuration for HallMonitor
  *
  * Both thresholds are in "events", and each accumulator decays with
- * `decay_time_s`.  A steady fault at `r` events/sec settles the accumulator at
- * `r * decay_time_s`, while an isolated burst of `n` events peaks at about `n`.
+ * `decay_time_us`. A steady fault at `r` events/sec settles the accumulator at
+ * `r * decay_time_us / 1000000`, while an isolated burst of `n` events peaks at about `n`.
  * So a threshold `T` means: trip on a burst larger than `T` events, or on a
- * sustained rate above `T / decay_time_s`.
+ * sustained rate above `T * 1000000 / decay_time_us`.
  */
 struct HallMonitorParams {
-    float   decay_time_s;        ///< Leak time constant for every accumulator (s)
+    uint32_t decay_time_us;      ///< Leak time constant for every accumulator (microseconds)
 
     /**
      * Accumulated illegal-code events that latch a fault; 0 disables.
@@ -112,7 +112,7 @@ struct HallMonitorParams {
      * accumulator near 1766. A genuinely stuck line puts only one illegal code
      * per electrical revolution, about 180/s at that speed, settling near 90.
      * The benign rate is twenty times the fault signature, so no threshold
-     * separates them. Duration does; see invalid_persist_time_s.
+     * separates them. Duration does; see invalid_persist_time_us.
      *
      * Worth enabling only on hardware where illegal codes are genuinely rare.
      */
@@ -130,7 +130,7 @@ struct HallMonitorParams {
     uint8_t invalid_debounce;
 
     /**
-     * Seconds the latest reading may stay illegal before faulting on its own.
+     * Microseconds the latest reading may stay illegal before faulting on its own.
      *
      * Recurrence and persistence are different failures and the accumulator
      * only catches the first: a disconnected loom produces one edge as the
@@ -139,7 +139,7 @@ struct HallMonitorParams {
      * catches it without needing any further edges. A healthy transition
      * cannot leave an illegal code standing for a millisecond.
      */
-    float invalid_persist_time_s;
+    uint32_t invalid_persist_time_us;
     /**
      * Measured basis for the 300 us default, on MOTOR_1 at 31 V:
      *
@@ -206,9 +206,8 @@ class HallMonitor {
 public:
     /**
      * @brief Constructor
-     * @param pwm_frequency Rate at which update() will be called (Hz)
      */
-    explicit HallMonitor(float pwm_frequency) noexcept;
+    HallMonitor() noexcept;
 
     void setParameters(const HallMonitorParams& params) noexcept;
     const HallMonitorParams& getParameters() const noexcept { return params_; }
@@ -254,7 +253,7 @@ public:
         float     reversal_accum;  ///< Leaky count of edges that reversed direction
         uint32_t  invalid_events;  ///< Illegal-code runs counted since reset
         uint8_t   invalid_run;     ///< Consecutive illegal readings
-        float     invalid_time_s;  ///< How long the latest reading has been illegal
+        uint32_t  invalid_time_us; ///< How long the latest reading has been illegal
         uint32_t  edges;           ///< Transitions counted since reset
         uint8_t   last_position;   ///< Last valid position seen
         HallFault fault;
@@ -266,8 +265,9 @@ private:
     /// Recompute the erratic score and latch any threshold crossing
     void evaluate() noexcept;
 
-    float              dt_;
     HallMonitorParams  params_;
+    float decay_;               ///< Retained fraction, precomputed at configuration time
+    uint32_t invalid_limit_ticks_;
 
     float    invalid_score_;
     float    erratic_score_;
@@ -282,7 +282,7 @@ private:
     uint8_t  last_position_;
     bool     have_last_;
     uint8_t  invalid_run_;      ///< Consecutive illegal readings
-    float    invalid_time_;     ///< Seconds the latest reading has been illegal
+    uint32_t invalid_ticks_;    ///< Samples for which the latest reading has been illegal
     bool     last_invalid_;     ///< Latest reading was an illegal code
     bool     invalid_counted_;  ///< This run of illegal samples already scored
 

@@ -298,10 +298,10 @@ class AccelerationController(QWidget):
         self._write(cmd.encode("ascii"))
 
 
-class PidTuningWidget(QWidget):
+class PiTuningWidget(QWidget):
 
     def __init__(self, label: str, at_command: str, write_callback,
-                 fields: tuple = ("Kp", "Ki", "Kd"), max_value: float = 100.0):
+                 fields: tuple = ("Kp", "Ki"), max_value: float = 100.0):
         super().__init__()
         self._write = write_callback
         self._at_command = at_command
@@ -335,11 +335,9 @@ class PidTuningWidget(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(group)
 
-    def set_values(self, kp: float, ki: float, kd: float = 0.0):
+    def set_values(self, kp: float, ki: float):
         self.spin_kp.setValue(kp)
         self.spin_ki.setValue(ki)
-        if hasattr(self, "spin_kd"):
-            self.spin_kd.setValue(kd)
 
     def _on_apply(self):
         vals = [getattr(self, f"spin_{n.lower()}").value() for n in self._fields]
@@ -405,7 +403,7 @@ class ControlPanel(QWidget):
         drive_mode_layout.addWidget(self.drive_mode_combo)
         layout.addLayout(drive_mode_layout)
 
-        self.spid_widget = PidTuningWidget("Speed PID (AT+SPID)", "AT+SPID", self._write)
+        self.spid_widget = PiTuningWidget("Speed PI (AT+SPID)", "AT+SPID", self._write)
         layout.addWidget(self.spid_widget)
 
         # One current-loop box per algorithm, and only the active one is shown.
@@ -413,11 +411,11 @@ class ControlPanel(QWidget):
         # series, FPID outputs volts and sees one, so on MOTOR_1 the gains are
         # 0.141/132 and 2.20/2067 respectively. Showing both at once invites
         # someone to type one set into the other.
-        self.cpid_widget = PidTuningWidget("Current PID (AT+CPID, 6-step)", "AT+CPID",
-                                          self._write, max_value=1000.0)
+        self.cpid_widget = PiTuningWidget("Current PI (AT+CPID, 6-step)", "AT+CPID",
+                                         self._write, max_value=1000.0)
         layout.addWidget(self.cpid_widget)
 
-        self.fpid_widget = PidTuningWidget("FOC d/q Current PI (AT+FPID, V/A)", "AT+FPID",
+        self.fpid_widget = PiTuningWidget("FOC d/q Current PI (AT+FPID, V/A)", "AT+FPID",
                                            self._write, fields=("Kp", "Ki"),
                                            max_value=1_000_000.0)
         layout.addWidget(self.fpid_widget)
@@ -519,11 +517,11 @@ class ControlPanel(QWidget):
     def _set_acceleration_from_firmware(self, value: float):
         self.accel_ctrl.set_value_from_firmware(value)
 
-    def _set_spid_from_firmware(self, kp: float, ki: float, kd: float):
-        self.spid_widget.set_values(kp, ki, kd)
+    def _set_spid_from_firmware(self, kp: float, ki: float):
+        self.spid_widget.set_values(kp, ki)
 
-    def _set_cpid_from_firmware(self, kp: float, ki: float, kd: float):
-        self.cpid_widget.set_values(kp, ki, kd)
+    def _set_cpid_from_firmware(self, kp: float, ki: float):
+        self.cpid_widget.set_values(kp, ki)
 
 
 class ContinuousTab(QWidget):
@@ -1338,22 +1336,21 @@ class MonitorWindow(QMainWindow):
     def _parse_pid_response(self, line: str, prefix: str, apply) -> None:
         try:
             parts = line[len(prefix):].split(",")
-            if len(parts) >= 3:
-                apply(float(parts[0]), float(parts[1]), float(parts[2]))
-            elif len(parts) == 2:
-                apply(float(parts[0]), float(parts[1]), 0.0)
+            # Legacy PID firmware also reports a third, zero derivative gain.
+            if len(parts) == 2 or (len(parts) == 3 and float(parts[2]) == 0.0):
+                apply(float(parts[0]), float(parts[1]))
         except ValueError:
             pass
 
-    def _apply_spid(self, kp: float, ki: float, kd: float) -> None:
+    def _apply_spid(self, kp: float, ki: float) -> None:
         if self.control_panel is not None:
-            self.control_panel._set_spid_from_firmware(kp, ki, kd)
+            self.control_panel._set_spid_from_firmware(kp, ki)
 
-    def _apply_cpid(self, kp: float, ki: float, kd: float) -> None:
+    def _apply_cpid(self, kp: float, ki: float) -> None:
         if self.control_panel is not None:
-            self.control_panel._set_cpid_from_firmware(kp, ki, kd)
+            self.control_panel._set_cpid_from_firmware(kp, ki)
 
-    def _apply_fpid(self, kp: float, ki: float, kd: float) -> None:
+    def _apply_fpid(self, kp: float, ki: float) -> None:
         if self.control_panel is not None:
             self.control_panel._set_fpid_from_firmware(kp, ki)
 

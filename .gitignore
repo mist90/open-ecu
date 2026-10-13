@@ -1,12 +1,15 @@
 .vscode/
 build/
 build-release/
+build-bench-float/
 STM32G431/Core/Src/main.cpp.bak
 tests/test_motor_pll/*.csv
 tests/test_motor_pll/test
 tests/test_motor_pll/*.png
 tests/test_hall_monitor/test
 tests/test_foc/test
+tests/test_numeric/test
+tests/test_control/test
 tests/test_adc_scaling/test
 tests/test_motor_alignment/test
 tests/test_hall_handoff/test

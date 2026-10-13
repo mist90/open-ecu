@@ -348,7 +348,7 @@ static LoopResult runLoop(float iq_command, DriveMode drive_mode, float speed_hz
                           float seconds, bool corrupt_worst_shunt = false)
 {
     FakePwm pwm;
-    FocAlgorithm foc(pwm, static_cast<uint32_t>(F_PWM));
+    FocAlgorithm foc(pwm);
 
     FocParams p;
     p.max_modulation = 0.95f;
@@ -451,7 +451,7 @@ static void testCurrentSignConvention()
     std::printf("Current sign convention\n");
 
     FakePwm pwm;
-    FocAlgorithm foc(pwm, static_cast<uint32_t>(F_PWM));
+    FocAlgorithm foc(pwm);
 
     FocParams p;
     p.max_modulation = 0.95f;
@@ -568,7 +568,7 @@ static void testWindupRecovery()
     std::printf("Anti-windup recovery\n");
 
     FakePwm pwm;
-    FocAlgorithm foc(pwm, static_cast<uint32_t>(F_PWM));
+    FocAlgorithm foc(pwm);
 
     FocParams p;
     p.max_modulation = 0.95f;

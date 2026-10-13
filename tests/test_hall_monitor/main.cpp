@@ -108,7 +108,7 @@ int main() {
 
     // ---- 1. healthy running must never fault ------------------------------
     {
-        HallMonitor m(PWM_FREQ);
+        HallMonitor m;
         Rotor r;
         for (float spd : {60.0f, 600.0f, 1200.0f, 2400.0f}) {
             spin(m, r, spd, 2.0f);
@@ -119,7 +119,7 @@ int main() {
     // ---- 2. benign bounce must not fault ----------------------------------
     // Several separated bursts, each of a size a real rough commutation makes.
     {
-        HallMonitor m(PWM_FREQ);
+        HallMonitor m;
         Rotor r;
         spin(m, r, 600.0f, 0.5f);
         float peak = 0.0f;
@@ -135,7 +135,7 @@ int main() {
 
     // ---- 3. sustained chatter must fault ----------------------------------
     {
-        HallMonitor m(PWM_FREQ);
+        HallMonitor m;
         Rotor r;
         spin(m, r, 600.0f, 0.3f);
         bounce(m, r, 400, 0.002f);             // 500 Hz chatter, sustained
@@ -148,7 +148,7 @@ int main() {
     for (int bit = 0; bit < 3; ++bit) {
         for (int high = 0; high < 2; ++high) {
             for (float spd : {120.0f, 600.0f, 1200.0f}) {
-                HallMonitor m(PWM_FREQ);
+                HallMonitor m;
                 Rotor r;
                 spin(m, r, spd, 0.3f);         // healthy first
                 if (m.isFaulted()) { check(false, "faulted before the break"); continue; }
@@ -181,7 +181,7 @@ int main() {
     // each standing for at most one PWM period before a valid reading
     // followed. That must not fault.
     {
-        HallMonitor m(PWM_FREQ);
+        HallMonitor m;
         Rotor r;
         spin(m, r, 1080.0f, 0.3f);
         const uint32_t glitches = 3532;
@@ -206,7 +206,7 @@ int main() {
     // transitions failed to advance - genuine dither at the sector boundary.
     // The absolute-count threshold of 20 tripped on this; the fraction must not.
     {
-        HallMonitor m(PWM_FREQ);
+        HallMonitor m;
         Rotor r;
         std::mt19937 rng(7);
         std::uniform_real_distribution<float> u(0.0f, 1.0f);
@@ -237,7 +237,7 @@ int main() {
     // change of direction read as 100 % chatter and dropped the drive to
     // NEUTRAL. Reproduces the bench capture: ~15 edges one way, then the other.
     {
-        HallMonitor m(PWM_FREQ);
+        HallMonitor m;
         Rotor r;
         float peak = 0.0f;
         for (int sweep = 0; sweep < 6; ++sweep) {
@@ -257,7 +257,7 @@ int main() {
     // thick and fast - what separates them from chatter is that each one is
     // followed by sustained travel, not by an immediate undo.
     {
-        HallMonitor m(PWM_FREQ);
+        HallMonitor m;
         Rotor r;
         float peak = 0.0f;
         for (int sweep = 0; sweep < 20; ++sweep) {
@@ -272,7 +272,7 @@ int main() {
 
     // ---- 5. disconnected loom (all lines at the pull level) ---------------
     for (int high = 0; high < 2; ++high) {
-        HallMonitor m(PWM_FREQ);
+        HallMonitor m;
         Rotor r;
         spin(m, r, 600.0f, 0.3f);
         // The loom going open produces one settling edge and then silence -
@@ -292,7 +292,7 @@ int main() {
 
     // ---- 6. parked motor must not fault, however long ---------------------
     {
-        HallMonitor m(PWM_FREQ);
+        HallMonitor m;
         Rotor r;
         spin(m, r, 600.0f, 1.0f);
         spin(m, r, 0.0f, 60.0f, /*drive_active=*/true);   // held still, bridge on
@@ -301,7 +301,7 @@ int main() {
 
     // ---- 7. the fault latches until cleared -------------------------------
     {
-        HallMonitor m(PWM_FREQ);
+        HallMonitor m;
         Rotor r;
         spin(m, r, 600.0f, 0.3f);
         r.stuck_bit = 0;

@@ -3,7 +3,7 @@
  * @brief Phase-Locked Loop (PLL) for motor rotor angle estimation and virtual commutation
  *
  * Implements a PLL that tracks the motor rotor angle from Hall sensor interrupts,
- * providing smooth angle estimation at PWM frequency (40 kHz) and generating
+ * providing smooth angle estimation at the board's current-loop frequency and generating
  * virtual commutation steps with optional 90-degree field offset for maximum torque.
  *
  * The angle is measured in "steps" where one electrical period = 6.0 steps.
@@ -15,6 +15,7 @@
 #define LIBECU_MOTOR_PLL_HPP
 
 #include <cstdint>
+#include "ecu_config.hpp"
 
 namespace libecu {
 
@@ -32,12 +33,12 @@ enum class DriveMode : uint8_t {
  * @brief Motor rotor angle PLL (Phase-Locked Loop)
  *
  * Tracks rotor angle from discrete Hall sensor events using a PI controller.
- * The virtual angle is integrated at PWM frequency (40 kHz) and can generate
+ * The virtual angle is integrated at the current-loop frequency and can generate
  * commutation steps with a 90-degree stator field offset for maximum torque.
  *
  * Usage:
  *  - Call updateHall() from Hall sensor EXTI interrupt
- *  - Call updateTick() from TIM1 Update interrupt (40 kHz PWM)
+ *  - Call updateTick() from TIM1 Update interrupt (20 kHz on STM32G431)
  *  - Call getNextHall() to get the next commutation step
  */
 class MotorPLL {
@@ -71,10 +72,10 @@ public:
 
     /**
      * @brief Constructor
-     * @param freq_pwm PWM frequency in Hz (e.g., 40000.0f for 40 kHz)
+     * @param max_electrical_speed Maximum signed speed magnitude, steps/sec
      * @param is_inverse_commutation_table Use inverse six-step commutation table
      */
-    explicit MotorPLL(float freq_pwm, float max_electrical_speed, bool is_inverse_commutation_table = false) noexcept;
+    explicit MotorPLL(float max_electrical_speed, bool is_inverse_commutation_table = false) noexcept;
 
     /**
      * @brief Hall sensor interrupt handler (EXTI)
@@ -89,7 +90,7 @@ public:
     /**
      * @brief Angle integrator
      *
-     * Must be called from TIM1 Update interrupt (every PWM tick, 40 kHz)
+     * Must be called from TIM1 Update interrupt (every PWM tick)
      * when PLL is enabled. Integrates the virtual rotor angle.
      */
     void updateTick() noexcept;
@@ -183,10 +184,10 @@ private:
     bool is_sync = false;
     bool use_pll_ = false;
     float pll_integral_ = 0.0f;
-    float DT_;
     float max_electrical_speed_;
     float pll_kp_ = 100.0f;   ///< Base proportional gain (tunable via AT+PLLID)
     float pll_ki_ = 5000.0f;  ///< Base integral gain (tunable via AT+PLLID)
+    float pll_ki_step_ = 5000.0f / ActiveTiming::CURRENT_HZ;
 };
 
 } // namespace libecu

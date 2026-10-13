@@ -26,11 +26,11 @@ BldcController::BldcController(
     : pwm_interface_(pwm_interface)
     , hall_interface_(hall_interface)
     , adc_interface_(adc_interface)
-    , hall_monitor_(pwm_interface_.getFrequency())
-    , motor_pll_(pwm_interface_.getFrequency(), params.max_speed_rps * params.num_poles * BLDC_NUM_PHASES, params.useInverseCommTable)
-    , pid_speed_controller_()
+    , hall_monitor_()
+    , motor_pll_(params.max_speed_rps * params.num_poles * BLDC_NUM_PHASES, params.useInverseCommTable)
+    , pi_speed_controller_()
     , six_step_(pwm_interface)
-    , foc_(pwm_interface, pwm_interface.getFrequency())
+    , foc_(pwm_interface)
     , algorithm_(params.algorithm)
     , params_(params)
     , dmode_(DriveMode::NEUTRAL)
@@ -38,12 +38,12 @@ BldcController::BldcController(
     , hall_update_pending_(false)
     , open_loop_step_(0)
     , open_loop_last_step_time_us_(0)
-    , last_pid_update_time_us_(0)
     , duty_command_(0.0f)
     , filtered_target_speed_(0.0f)
     , filtered_measured_speed_(0.0f)
     , filtered_measured_current_(0.0f)
     , limited_target_speed_(0.0f)
+    , acceleration_step_(params.acceleration_rate / ActiveTiming::SPEED_HZ)
 
 {
     // Initialize status
@@ -56,7 +56,7 @@ BldcController::BldcController(
     status_.bus_voltage = 0.0f;
     status_.temperature_c = TEMPERATURE_INVALID_C;  // nothing sampled yet
     status_.pll_angle = 0.0f;
-    status_.current_pid_saturation = 0;
+    status_.current_pi_saturation = 0;
     status_.target_position = 0xFF;
     status_.measured_position = 0xFF;
     status_.is_running = false;
@@ -76,25 +76,21 @@ BldcController::BldcController(
     }
     status_.algorithm = algorithm_;
 
-    // PID controller settings
-    params_.pid_voltage_mode.sample_time_s = 1.0f / float(pwm_interface_.getFrequency());
-    params_.pid_voltage_mode.min_output = 0.0f;
-    params_.pid_voltage_mode.max_output = 1.0f;
+    // Outer PI uses ActiveTiming::SPEED_HZ; the inner PI uses CURRENT_HZ.
+    params_.pi_voltage_mode.min_output = 0.0f;
+    params_.pi_voltage_mode.max_output = 1.0f;
 
-    params_.pid_current_mode.sample_time_s = 1.0f / float(pwm_interface_.getFrequency());
-    params_.pid_current_mode.min_output = params_.min_current;
-    params_.pid_current_mode.max_output = params_.max_current;
-
-    params_.pid_current_regulator.sample_time_s = 1.0f / float(pwm_interface_.getFrequency());
+    params_.pi_current_mode.min_output = params_.min_current;
+    params_.pi_current_mode.max_output = params_.max_current;
     // Output limits come from the caller. With a feed-forward attached the PI
     // has to be able to trim *downwards*, so min_output must be allowed to go
     // negative; fall back to [0,1] when the caller left them unset.
-    if (params_.pid_current_regulator.max_output <= params_.pid_current_regulator.min_output) {
-        params_.pid_current_regulator.min_output = 0.0f;
-        params_.pid_current_regulator.max_output = 1.0f;
+    if (params_.pi_current_regulator.max_output <= params_.pi_current_regulator.min_output) {
+        params_.pi_current_regulator.min_output = 0.0f;
+        params_.pi_current_regulator.max_output = 1.0f;
     }
 
-    pid_speed_controller_.setParameters(params_.pid_current_mode);
+    pi_speed_controller_.setParameters(params_.pi_current_mode);
 
     // Hand each algorithm its own configuration. Both are configured whether
     // or not they are selected, so switching with AT+ALGO never lands on an
@@ -103,7 +99,7 @@ BldcController::BldcController(
     six_step_params.max_duty_cycle = params_.max_duty_cycle;
     six_step_params.blanking_cycles = params_.current_blanking_cycles;
     six_step_.setParams(six_step_params);
-    six_step_.setCurrentPi(params_.pid_current_regulator);
+    six_step_.setCurrentPi(params_.pi_current_regulator);
 
     // MotorControlParams is a plain struct the caller fills field by field, so
     // a field added later can easily arrive uninitialised from an older call
@@ -148,8 +144,8 @@ bool BldcController::initialize() noexcept
 {
     pwm_interface_.setNeutral();
 
-    // Reset PID controller
-    pid_speed_controller_.reset();
+    // Reset PI controller
+    pi_speed_controller_.reset();
     six_step_.reset();
     foc_.reset();
 
@@ -169,7 +165,7 @@ void BldcController::update() noexcept
     // value cannot reach a magnitude setpoint in REVERSE, which pinned the loop
     // at max_current) but replaced it with a worse one: a magnitude is blind to
     // direction. At SPD=0 *any* rotation then gives error = 0 - |v| < 0, the
-    // PID winds its output down to min_current, and FOC turns that into
+    // PI winds its output down to min_current, and FOC turns that into
     // negative Iq - which brakes a forward-turning rotor but *accelerates* a
     // backward-turning one. Nudge the shaft the wrong way by hand and the motor
     // ran away to its no-load ceiling: measured 8.61 RPS, duty 0.95, demand
@@ -238,7 +234,7 @@ void BldcController::update() noexcept
     // the loop sees seconds of large positive error that no amount of output
     // can answer with the bridge off. It integrates to its ceiling and then
     // *stays* there, because once the ramp and the rotor both reach zero the
-    // error is zero and nothing unwinds it. setDriveMode() resets the PID on
+    // error is zero and nothing unwinds it. setDriveMode() resets the PI on
     // the way into NEUTRAL, but that reset happens once and the following
     // ticks simply wound it up again. Measured on MOTOR_1 releasing from
     // 5 RPS: parked target current settled at 3.2 A and held, and the next
@@ -260,50 +256,26 @@ void BldcController::update() noexcept
             }
 
             case ControlMode::CLOSED_LOOP_VELOCITY: {
-                // Velocity control with speed PID
-                // Calculate real time difference since last PID update
-                uint32_t current_time_us = time_us();
-                float dt;
-
-                if (last_pid_update_time_us_ == 0) {
-                    // First PID update - use nominal period
-                    dt = 1.0f / params_.control_frequency;
-                } else {
-                    // Calculate actual time difference in seconds
-                    uint32_t dt_us = current_time_us - last_pid_update_time_us_;
-                    dt = static_cast<float>(dt_us) / 1000000.0f;
-                }
-
-                // Update timestamp for next iteration
-                last_pid_update_time_us_ = current_time_us;
-
-                // Apply acceleration limiting (slew rate limiter on target_speed)
-                float limited_target = applyAccelerationLimit(
-                    status.target_speed_rps,
-                    dt
-                );
-
-                // Run speed PID (already configured for correct mode)
-                float pid_output = pid_speed_controller_.update(
+                const float limited_target = applyAccelerationLimit(status.target_speed_rps);
+                const float pi_output = pi_speed_controller_.update(
                     limited_target,
                     status.current_speed_rps,
-                    dt,
-                    status.current_pid_saturation
+                    status.current_pi_saturation
                 );
 
-                // Electric mode determines how to use PID output
+                // Electric mode determines how to use PI output
                 if (status.electric_mode == ElectricMode::VOLTAGE_MODE) {
-                    // VOLTAGE_MODE: PID outputs the duty command directly
+                    // VOLTAGE_MODE: PI outputs the duty command directly
                     {
                         CriticalSection cs;
-                        duty_command_ = pid_output;
+                        duty_command_ = pi_output;
                     }
                 } else {
-                    // CURRENT_MODE: PID outputs target current
+                    // CURRENT_MODE: PI outputs target current
                     // Store for inner current loop (runs in pwmInterruptHandler)
                     {
                         CriticalSection cs;
-                        status_.target_current = pid_output;
+                        status_.target_current = pi_output;
                     }
 
                     // duty_cycle is calculated by pwmInterruptHandler() (atomic read)
@@ -313,7 +285,7 @@ void BldcController::update() noexcept
 
             case ControlMode::CLOSED_LOOP_TORQUE:
                 // Torque control: fixed duty cycle or current + Hall sensor commutation
-                // No speed PID - user sets fixed torque/current command
+                // User sets a fixed torque/current command
                 break;
         }
     }
@@ -369,10 +341,9 @@ void BldcController::setControlMode(ControlMode mode) noexcept
             hall_update_pending_ = false;
         }
 
-        // Reset PID when switching to velocity control
+        // Reset PI when switching to velocity control
         if (mode == ControlMode::CLOSED_LOOP_VELOCITY) {
-            pid_speed_controller_.reset();
-            last_pid_update_time_us_ = 0;  // Reset timing for fresh start
+            pi_speed_controller_.reset();
         }
     }
 }
@@ -382,15 +353,15 @@ void BldcController::setElectricMode(ElectricMode mode) noexcept
     CriticalSection cs;
     status_.electric_mode = mode;
 
-    // Reconfigure PID controller with appropriate parameters for the mode
+    // Reconfigure PI controller with appropriate parameters for the mode
     if (mode == ElectricMode::VOLTAGE_MODE) {
-        // VOLTAGE_MODE: PID outputs duty cycle (0.0-1.0)
-        pid_speed_controller_.setParameters(params_.pid_voltage_mode);
+        // VOLTAGE_MODE: PI outputs duty cycle (0.0-1.0)
+        pi_speed_controller_.setParameters(params_.pi_voltage_mode);
     } else {
-        // CURRENT_MODE: PID outputs current (Amperes)
-        pid_speed_controller_.setParameters(params_.pid_current_mode);
+        // CURRENT_MODE: PI outputs current (Amperes)
+        pi_speed_controller_.setParameters(params_.pi_current_mode);
     }
-    pid_speed_controller_.reset();
+    pi_speed_controller_.reset();
 
     // The inner loop changes shape underneath the outer one; a stale
     // integrator from the other mode is meaningless.
@@ -415,8 +386,8 @@ void BldcController::setAlgorithm(DriveAlgorithm new_algorithm) noexcept
     algorithm().onEnter();
 
     // The speed loop's anti-windup input came from the old inner loop.
-    status_.current_pid_saturation = 0;
-    pid_speed_controller_.reset();
+    status_.current_pi_saturation = 0;
+    pi_speed_controller_.reset();
 }
 
 DriveAlgorithm BldcController::getAlgorithm() const noexcept
@@ -467,7 +438,7 @@ void BldcController::setDriveMode(DriveMode mode) noexcept
         status_.duty_cycle = 0.0f;
         duty_command_ = 0.0f;
         status_.target_current = 0.0f;
-        pid_speed_controller_.reset();
+        pi_speed_controller_.reset();
         algorithm().reset();
         filtered_measured_current_ = 0.0f;
     } else {
@@ -486,6 +457,7 @@ void BldcController::setAccelerationRate(float rate_rps2) noexcept
 {
     CriticalSection cs;
     params_.acceleration_rate = rate_rps2;
+    acceleration_step_ = rate_rps2 / ActiveTiming::SPEED_HZ;
     // limited_target_speed_ is deliberately left alone: it is where the ramp
     // has got to so far, and resetting it to the raw target would turn a change
     // of rate limit into the very step the limiter exists to prevent.
@@ -497,24 +469,25 @@ float BldcController::getAccelerationRate() const noexcept
     return params_.acceleration_rate;
 }
 
-void BldcController::setSpeedPid(float kp, float ki, float kd) noexcept
-{
-    PidParameters p = pid_speed_controller_.getParameters();
-    p.kp = kp;
-    p.ki = ki;
-    p.kd = kd;
-    pid_speed_controller_.setParameters(p);
-    pid_speed_controller_.reset();
-}
-
-void BldcController::setCurrentPid(float kp, float ki, float kd) noexcept
+void BldcController::setSpeedPi(float kp, float ki) noexcept
 {
     CriticalSection cs;
-    PidParameters p = params_.pid_current_regulator;
+    PiParameters p = pi_speed_controller_.getParameters();
     p.kp = kp;
     p.ki = ki;
-    p.kd = kd;
-    params_.pid_current_regulator = p;
+    pi_speed_controller_.setParameters(p);
+    pi_speed_controller_.reset();
+    if (status_.electric_mode == ElectricMode::VOLTAGE_MODE) params_.pi_voltage_mode = p;
+    else params_.pi_current_mode = p;
+}
+
+void BldcController::setCurrentPi(float kp, float ki) noexcept
+{
+    CriticalSection cs;
+    PiParameters p = params_.pi_current_regulator;
+    p.kp = kp;
+    p.ki = ki;
+    params_.pi_current_regulator = p;
     six_step_.setCurrentPi(p);
 }
 
@@ -548,20 +521,18 @@ DriveMode BldcController::getDriveMode() const noexcept {
     return dmode_;
 }
 
-void BldcController::getSpeedPidGains(float& kp, float& ki, float& kd) const noexcept {
+void BldcController::getSpeedPiGains(float& kp, float& ki) const noexcept {
     CriticalSection cs;
-    const PidParameters& p = pid_speed_controller_.getParameters();
+    const PiParameters& p = pi_speed_controller_.getParameters();
     kp = p.kp;
     ki = p.ki;
-    kd = p.kd;
 }
 
-void BldcController::getCurrentPidGains(float& kp, float& ki, float& kd) const noexcept {
+void BldcController::getCurrentPiGains(float& kp, float& ki) const noexcept {
     CriticalSection cs;
-    const PidParameters& p = six_step_.getCurrentPi();
+    const PiParameters& p = six_step_.getCurrentPi();
     kp = p.kp;
     ki = p.ki;
-    kd = p.kd;
 }
 
 void BldcController::getPllBaseGains(float& kp, float& ki) const noexcept {
@@ -598,8 +569,7 @@ void BldcController::start() noexcept
         algorithm().onEnter();
     }
 
-    // Reset PID timing and target speed filters
-    last_pid_update_time_us_ = 0;
+    // Reset target speed filters
     filtered_target_speed_ = 0.0f;
     filtered_measured_speed_ = 0.0f;
     limited_target_speed_ = 0.0f;
@@ -620,9 +590,6 @@ void BldcController::stop() noexcept
     pwm_interface_.updateDutyCycle(0.0f);
 
     status_.current_speed_rps = 0.0f;
-
-    // Reset PID timing
-    last_pid_update_time_us_ = 0;
 }
 
 MotorStatus BldcController::getStatus() const noexcept
@@ -645,20 +612,15 @@ void BldcController::synchronizeHallPosition(bool discard_tracking) noexcept
 
 void BldcController::holdVelocityLoop() noexcept
 {
-    pid_speed_controller_.reset();
+    pi_speed_controller_.reset();
     filtered_target_speed_ = 0.0f;
     // Park the ramp at the *measured* speed rather than at zero, so that
     // re-engaging starts from where the rotor actually is - bumpless whether
     // it is standing still or still coasting.
     limited_target_speed_ = filtered_measured_speed_;
-    // Nominal dt on the first tick after re-engagement. Left alone, the whole
-    // parked interval would arrive as a single dt, and max_change with it -
-    // which would let the limited setpoint step straight to the demand and
-    // defeat the ramp exactly when it matters most.
-    last_pid_update_time_us_ = 0;
 }
 
-float BldcController::applyAccelerationLimit(float target_speed, float dt) noexcept
+float BldcController::applyAccelerationLimit(float target_speed) noexcept
 {
     // Stage 1: LPF to smooth noisy analog input
     float alpha = params_.target_speed_lpf_alpha;
@@ -675,7 +637,7 @@ float BldcController::applyAccelerationLimit(float target_speed, float dt) noexc
     }
 
     float speed_diff = filtered_target_speed_ - limited_target_speed_;
-    float max_change = params_.acceleration_rate * dt;
+    const float max_change = acceleration_step_;
 
     if (std::abs(speed_diff) <= max_change) {
         limited_target_speed_ = filtered_target_speed_;
@@ -825,7 +787,7 @@ void BldcController::pwmInterruptHandler() noexcept {
         status_.duty_w = out.duty_w;
         status_.bus_voltage = in.bus_voltage;
         status_.pll_angle = in.angle_steps;
-        status_.current_pid_saturation = out.saturation;
+        status_.current_pi_saturation = out.saturation;
         status_.target_position = in.step;
         status_.i_d = out.i_d;
         status_.i_q = out.i_q;

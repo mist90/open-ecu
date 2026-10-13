@@ -4,13 +4,13 @@
 - 4 связанных ОДУ: 3 фазных тока + потенциал точки звезды Vc
 - 6-шаговая коммутация из commutation_controller.cpp
 - Метод Эйлера (без scipy)
-- Те же ПИД-параметры, что в sim_current.py
+- Те же ПИ-параметры, что в sim_current.py
 """
 import numpy as np
 import matplotlib.pyplot as plt
 
-# --- ПИД-параметры (идентично sim_current.py) ---
-Kp, Ki, Kd = 0.1, 50.0, 0.0
+# --- ПИ-параметры (идентично sim_current.py) ---
+Kp, Ki = 0.1, 50.0
 
 # --- Параметры железа (идентично sim_current.py) ---
 R_motor = 0.3        # Сопротивление фазы мотора, Ом
@@ -21,6 +21,7 @@ V_diode = 1.0        # Прямое падение на теле диода, В
 
 # --- Параметры управления ---
 f_pwm = 40000        # Частота ШИМ, Гц
+ki_step = Ki / (2 * f_pwm)
 dt = 0.1e-6          # Шаг 0.1 мкс для лучшего разрешения фронтов
 T_total = 0.15       # Время симуляции (6 шагов при 20 Гц = 0.3 с/цикл)
 
@@ -84,15 +85,12 @@ for i, t in enumerate(time):
     target = I_target
     target_history[i] = target
 
-    # 3. ПИД-регулятор (вызов раз в период ШИМ) - ИДЕНТИЧНО sim_current.py
+    # 3. ПИ-регулятор (вызов раз в период ШИМ) - ИДЕНТИЧНО sim_current.py
     if i % int(1 / (f_pwm * dt)) == 0:
         error = target - current_down
 
-        potential_integral = i_integral + Ki * (error + prev_error) * 0.5 * (1.0 / f_pwm)
-
-        derivative = Kd * (error - prev_error) * f_pwm
-
-        duty_cycle = Kp * error + i_integral + derivative
+        potential_integral = i_integral + ki_step * (error + prev_error)
+        duty_cycle = Kp * error + i_integral
         if duty_cycle > 1.0:
             duty_cycle = 1.0
             if error < 0.0:

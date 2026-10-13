@@ -3,8 +3,9 @@
 
 # Compiler settings
 CXX = g++
-CXXFLAGS = -std=c++17 -Wall -Wextra -O2 -fPIC
-INCLUDES = -Iinclude
+CXXFLAGS = -std=c++17 -Wall -Wextra -O2 -fPIC -MMD -MP
+PLATFORM ?= STM32G431
+INCLUDES = -Iinclude -I../$(PLATFORM)/Core/Inc
 
 # Directories
 SRC_DIR = src
@@ -25,6 +26,8 @@ LIBRARY = $(LIB_DIR)/liblibecu.a
 # Default target
 all: $(LIBRARY)
 
+-include $(OBJECTS:.o=.d)
+
 # Create build directories
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
@@ -42,6 +45,7 @@ $(BUILD_DIR)/%.o: $(SRC_DIR)/%.cpp | $(BUILD_DIR)
 
 # Create static library
 $(LIBRARY): $(OBJECTS) | $(LIB_DIR)
+	rm -f $@
 	ar rcs $@ $^
 
 # Clean build files
@@ -72,7 +76,7 @@ info:
 	@echo "Version: 1.0.0"
 	@echo "Features:"
 	@echo "  - 6-step commutation algorithm"
-	@echo "  - PID speed control with anti-windup"
+	@echo "  - PI speed control with anti-windup"
 	@echo "  - Comprehensive safety monitoring"
 	@echo "  - Platform-independent interfaces"
 	@echo ""

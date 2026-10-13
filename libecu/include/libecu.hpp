@@ -15,7 +15,7 @@
 #include "six_step_algorithm.hpp"
 #include "foc_algorithm.hpp"
 #include "foc_math.hpp"
-#include "pid_controller.hpp"
+#include "pi_controller.hpp"
 
 // AT command processor
 #include "at_command_processor.hpp"
@@ -30,7 +30,7 @@
  *
  * Key features:
  * - 6-step commutation algorithm with Hall sensor feedback
- * - PID speed controller with anti-windup
+ * - PI speed controller with anti-windup
  * - Comprehensive safety monitoring
  * - Real-time performance optimized for embedded systems
  * - Clean separation between algorithms and hardware

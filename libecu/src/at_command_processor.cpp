@@ -5,8 +5,21 @@
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
+#include <cmath>
 
 namespace libecu {
+
+namespace {
+bool parsePiGains(const char* text, float& kp, float& ki) noexcept {
+    if (!text) return false;
+    char* end = nullptr;
+    kp = std::strtof(text, &end);
+    if (end == text || *end != ',' || !std::isfinite(kp)) return false;
+    const char* second = end + 1;
+    ki = std::strtof(second, &end);
+    return end != second && *end == '\0' && std::isfinite(ki);
+}
+} // namespace
 
 AtCommandProcessor::AtCommandProcessor(BldcController* controller) noexcept
     : controller_(controller),
@@ -389,11 +402,8 @@ void AtCommandProcessor::processCommand() noexcept {
             if (len > 0) write(buf, static_cast<std::size_t>(len));
             sendOk();
         } else {
-            if (!valuePtr) { sendError(); return; }
-            float kp = std::strtof(valuePtr, nullptr);
-            float ki = 0.0f;
-            const char* comma = std::strchr(valuePtr, ',');
-            if (comma) ki = std::strtof(comma + 1, nullptr);
+            float kp, ki;
+            if (!parsePiGains(valuePtr, kp, ki)) { sendError(); return; }
             controller_->setFocCurrentPi(kp, ki);
             sendOk();
         }
@@ -435,24 +445,16 @@ void AtCommandProcessor::processCommand() noexcept {
 
     case CommandId::Spid: {
         if (query) {
-            float kp, ki, kd;
-            controller_->getSpeedPidGains(kp, ki, kd);
+            float kp, ki;
+            controller_->getSpeedPiGains(kp, ki);
             char buf[64];
-            int len = std::snprintf(buf, sizeof(buf), "+SPID:%.3f,%.3f,%.3f\r\n",
-                kp, ki, kd);
+            int len = std::snprintf(buf, sizeof(buf), "+SPID:%.3f,%.3f\r\n", kp, ki);
             if (len > 0) write(buf, static_cast<std::size_t>(len));
             sendOk();
         } else {
-            if (!valuePtr) { sendError(); return; }
-            float kp = std::strtof(valuePtr, nullptr);
-            float ki = 0.0f, kd = 0.0f;
-            const char* comma = std::strchr(valuePtr, ',');
-            if (comma) {
-                ki = std::strtof(comma + 1, nullptr);
-                const char* comma2 = std::strchr(comma + 1, ',');
-                if (comma2) kd = std::strtof(comma2 + 1, nullptr);
-            }
-            controller_->setSpeedPid(kp, ki, kd);
+            float kp, ki;
+            if (!parsePiGains(valuePtr, kp, ki)) { sendError(); return; }
+            controller_->setSpeedPi(kp, ki);
             sendOk();
         }
         break;
@@ -460,24 +462,16 @@ void AtCommandProcessor::processCommand() noexcept {
 
     case CommandId::Cpid: {
         if (query) {
-            float kp, ki, kd;
-            controller_->getCurrentPidGains(kp, ki, kd);
+            float kp, ki;
+            controller_->getCurrentPiGains(kp, ki);
             char buf[64];
-            int len = std::snprintf(buf, sizeof(buf), "+CPID:%.3f,%.3f,%.3f\r\n",
-                kp, ki, kd);
+            int len = std::snprintf(buf, sizeof(buf), "+CPID:%.3f,%.3f\r\n", kp, ki);
             if (len > 0) write(buf, static_cast<std::size_t>(len));
             sendOk();
         } else {
-            if (!valuePtr) { sendError(); return; }
-            float kp = std::strtof(valuePtr, nullptr);
-            float ki = 0.0f, kd = 0.0f;
-            const char* comma = std::strchr(valuePtr, ',');
-            if (comma) {
-                ki = std::strtof(comma + 1, nullptr);
-                const char* comma2 = std::strchr(comma + 1, ',');
-                if (comma2) kd = std::strtof(comma2 + 1, nullptr);
-            }
-            controller_->setCurrentPid(kp, ki, kd);
+            float kp, ki;
+            if (!parsePiGains(valuePtr, kp, ki)) { sendError(); return; }
+            controller_->setCurrentPi(kp, ki);
             sendOk();
         }
         break;
@@ -493,13 +487,8 @@ void AtCommandProcessor::processCommand() noexcept {
             if (len > 0) write(buf, static_cast<std::size_t>(len));
             sendOk();
         } else {
-            if (!valuePtr) { sendError(); return; }
-            float kp = std::strtof(valuePtr, nullptr);
-            float ki = 0.0f;
-            const char* comma = std::strchr(valuePtr, ',');
-            if (comma) {
-                ki = std::strtof(comma + 1, nullptr);
-            }
+            float kp, ki;
+            if (!parsePiGains(valuePtr, kp, ki)) { sendError(); return; }
             controller_->setPllGains(kp, ki);
             sendOk();
         }
@@ -659,7 +648,7 @@ void AtCommandProcessor::sendHallTelemetry(const HallMonitor::Info& info) noexce
     }
 
     char buf[96];
-    int len = std::snprintf(buf, sizeof(buf), "+HSTATUS:%d;%.2f;%.2f;%.2f;%lu;%lu;%u;%.0f\n",
+    int len = std::snprintf(buf, sizeof(buf), "+HSTATUS:%d;%.2f;%.2f;%.2f;%lu;%lu;%u;%lu\n",
             static_cast<int>(info.fault),
             info.invalid_score,
             info.erratic_score,
@@ -667,7 +656,7 @@ void AtCommandProcessor::sendHallTelemetry(const HallMonitor::Info& info) noexce
             static_cast<unsigned long>(info.invalid_events),
             static_cast<unsigned long>(info.edges),
             static_cast<unsigned>(info.last_position),
-            info.invalid_time_s * 1e6f);
+            static_cast<unsigned long>(info.invalid_time_us));
 
     if (len > 0 && static_cast<std::size_t>(len) < sizeof(buf)) {
         write(buf, static_cast<std::size_t>(len));

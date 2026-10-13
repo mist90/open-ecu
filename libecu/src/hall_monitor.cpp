@@ -4,6 +4,7 @@
  */
 
 #include "../include/hall_monitor.hpp"
+#include "ecu_config.hpp"
 #include <cmath>
 
 namespace libecu {
@@ -20,9 +21,10 @@ inline int stepDelta(uint8_t from, uint8_t to) noexcept {
 
 } // namespace
 
-HallMonitor::HallMonitor(float pwm_frequency) noexcept
-    : dt_(1.0f / (pwm_frequency > 1.0f ? pwm_frequency : 1.0f))
-    , params_{}
+HallMonitor::HallMonitor() noexcept
+    : params_{}
+    , decay_(0.0f)
+    , invalid_limit_ticks_(0)
     , invalid_score_(0.0f)
     , erratic_score_(0.0f)
     , edge_accum_(0.0f)
@@ -31,30 +33,35 @@ HallMonitor::HallMonitor(float pwm_frequency) noexcept
     , last_position_(0)
     , have_last_(false)
     , invalid_run_(0)
-    , invalid_time_(0.0f)
+    , invalid_ticks_(0)
     , last_invalid_(false)
     , invalid_counted_(false)
     , invalid_events_(0)
     , edges_(0)
     , fault_(HallFault::NONE)
 {
-    // Sized for a 40-pole motor at 20 kHz.  With decay_time_s = 0.5:
+    // Sized for a 40-pole motor at 20 kHz. With decay_time_us = 500000:
     //  - a stuck line at 600 steps/s puts one illegal code per electrical
     //    revolution, i.e. ~100/s, settling the accumulator near 50
     //  - an isolated glitch or two peaks at 2 and fades
     //  - sustained chatter above 40 reversing edges/s trips the erratic
     //    detector, while a burst of fewer than 20 does not
-    params_.decay_time_s           = 0.5f;
+    params_.decay_time_us          = 500000;
     params_.invalid_threshold      = 0.0f;    // disabled - see the header
     params_.invalid_debounce       = 1;       // readings are already deferred
-    params_.invalid_persist_time_s = 0.0003f; // 300 us standing illegal code
+    params_.invalid_persist_time_us = 300;
     params_.erratic_fraction       = 0.35f;   // healthy under load measures ~0.06
     params_.erratic_min_edges      = 10.0f;
     params_.require_drive_active   = true;
+    setParameters(params_);
 }
 
 void HallMonitor::setParameters(const HallMonitorParams& params) noexcept {
     params_ = params;
+    const uint32_t tau_us = params.decay_time_us > 0 ? params.decay_time_us : 1000u;
+    const float keep = 1.0f - 1000000.0f / (float(ActiveTiming::CURRENT_HZ) * tau_us);
+    decay_ = keep > 0.0f ? keep : 0.0f;
+    invalid_limit_ticks_ = ActiveTiming::CurrentClock::ticksFromUs(params.invalid_persist_time_us);
 }
 
 void HallMonitor::clearFault() noexcept {
@@ -65,7 +72,7 @@ void HallMonitor::clearFault() noexcept {
     reversal_accum_  = 0.0f;
     last_delta_sign_ = 0;
     invalid_run_     = 0;
-    invalid_time_    = 0.0f;
+    invalid_ticks_   = 0;
     invalid_counted_ = false;
 }
 
@@ -83,21 +90,18 @@ void HallMonitor::tick(bool drive_active) noexcept {
     // the PWM time base rather than on Hall events - those arrive at the
     // commutation rate, which is exactly what is unreliable when something is
     // broken.
-    const float tau  = (params_.decay_time_s > 0.0f) ? params_.decay_time_s : 1e-3f;
-    const float keep = 1.0f - (dt_ / tau);
-    const float decay = (keep > 0.0f) ? keep : 0.0f;
-    invalid_score_  *= decay;
-    edge_accum_     *= decay;
-    reversal_accum_ *= decay;
+    invalid_score_  *= decay_;
+    edge_accum_     *= decay_;
+    reversal_accum_ *= decay_;
 
     const bool accumulate = drive_active || !params_.require_drive_active;
 
     // Age a standing illegal code.  A disconnected loom yields one edge as the
     // lines settle and then silence, so without this it would never be caught.
     if (last_invalid_ && accumulate) {
-        invalid_time_ += dt_;
-        if (params_.invalid_persist_time_s > 0.0f &&
-            invalid_time_ >= params_.invalid_persist_time_s &&
+        if (invalid_ticks_ < UINT32_MAX) ++invalid_ticks_;
+        if (invalid_limit_ticks_ > 0 &&
+            invalid_ticks_ >= invalid_limit_ticks_ &&
             fault_ == HallFault::NONE) {
             fault_ = HallFault::INVALID_CODE;
         }
@@ -123,7 +127,7 @@ void HallMonitor::onPosition(uint8_t position, bool drive_active) noexcept {
     } else {
         last_invalid_    = false;
         invalid_run_     = 0;
-        invalid_time_    = 0.0f;
+        invalid_ticks_   = 0;
         invalid_counted_ = false;
 
         if (!have_last_) {
@@ -185,7 +189,7 @@ HallMonitor::Info HallMonitor::getInfo() const noexcept {
     info.reversal_accum = reversal_accum_;
     info.invalid_events = invalid_events_;
     info.invalid_run    = invalid_run_;
-    info.invalid_time_s = invalid_time_;
+    info.invalid_time_us = ActiveTiming::CurrentClock::ticksToUs(invalid_ticks_);
     info.edges          = edges_;
     info.last_position  = last_position_;
     info.fault          = fault_;

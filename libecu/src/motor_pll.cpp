@@ -7,15 +7,13 @@
  */
 
 #include "../include/motor_pll.hpp"
-#include "../include/bldc_controller.hpp"
 #include <cmath>
 
 namespace libecu {
 
-MotorPLL::MotorPLL(float freq_pwm, float max_electrical_speed, bool is_inverse_commutation_table) noexcept
+MotorPLL::MotorPLL(float max_electrical_speed, bool is_inverse_commutation_table) noexcept
     : is_inverse_commutation_table_(is_inverse_commutation_table)
 {
-    DT_ = 1.0f / freq_pwm;
     max_electrical_speed_ = max_electrical_speed;
 }
 
@@ -47,7 +45,8 @@ void MotorPLL::updateTick() noexcept {
     // slice of time - a fixed factor averages the Hall quantisation sawtooth
     // only while the sector is short, and below roughly 3 RPS it starts
     // tracking the sawtooth peaks and trips the detector every single sector.
-    float lock_alpha = std::abs(angle_per_second_) * DT_ / (ANGLE_MAX * LOCK_WINDOW_EREV);
+    float lock_alpha = std::abs(angle_per_second_)
+                     / (ActiveTiming::CURRENT_HZ * ANGLE_MAX * LOCK_WINDOW_EREV);
     if (lock_alpha < LOCK_ALPHA_MIN)
         lock_alpha = LOCK_ALPHA_MIN;
     else if (lock_alpha > LOCK_ALPHA_MAX)
@@ -67,7 +66,7 @@ void MotorPLL::updateTick() noexcept {
             is_sync = true;
     }
 
-    pll_integral_ += angle_error * pll_ki_ * DT_;
+    pll_integral_ += angle_error * pll_ki_step_;
 
     if (pll_integral_ > max_electrical_speed_)
         pll_integral_ = max_electrical_speed_;
@@ -77,7 +76,7 @@ void MotorPLL::updateTick() noexcept {
     angle_per_second_ = (angle_error * pll_kp_) + pll_integral_;
 
     if (!reset_angle) {
-        angle_ += angle_per_second_ * DT_;
+        angle_ += angle_per_second_ / ActiveTiming::CURRENT_HZ;
 
         angle_ = fmodf(angle_, ANGLE_MAX);
         if (angle_ < 0.0f) {
@@ -171,6 +170,7 @@ MotorPLL::PllInfo MotorPLL::getInfo() const noexcept {
 void MotorPLL::setGains(float kp_base, float ki_base) noexcept {
     pll_kp_ = kp_base;
     pll_ki_ = ki_base;
+    pll_ki_step_ = ki_base / ActiveTiming::CURRENT_HZ;
 }
 
 void MotorPLL::getBaseGains(float& kp_base, float& ki_base) const noexcept {

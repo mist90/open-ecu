@@ -319,7 +319,7 @@ find a wrong `AT+FANG` offset.
 > in the applied voltage — the outgoing algorithm's integrators are cleared and
 > the incoming one reconfigures the bridge.
 
-### FOC Current PID Parameters (AT+FPID)
+### FOC Current PI Parameters (AT+FPID)
 
 Set or read the FOC d/q current regulator gains. Both axes share one set of
 gains, which is correct for a motor with Ld == Lq.
@@ -382,18 +382,20 @@ Set or read the motor rotation direction.
 | 1 | REVERSE | Reverse rotation |
 | 2 | NEUTRAL | Coast, no drive |
 
-### Speed PID Parameters (AT+SPID)
+### Speed PI Parameters (AT+SPID)
 
-Set or read the speed (outer-loop) PID controller gains. Changes take effect immediately and reset the integrator.
+Set or read the speed (outer-loop) PI controller gains. Changes take effect immediately and reset the integrator.
 
 | | |
 |---|---|
-| **Set** | `AT+SPID=<kp>,<ki>[,<kd>]*<CRC>\r\n` |
+| **Set** | `AT+SPID=<kp>,<ki>*<CRC>\r\n` |
 | **Query** | `AT+SPID?*<CRC>\r\n` |
 | **Set response** | `OK\r\n` |
-| **Query response** | `+SPID:0.010,0.100,0.000\r\nOK\r\n` |
+| **Query response** | `+SPID:0.010,0.100\r\nOK\r\n` |
 
-The `kd` parameter is optional. If omitted, it defaults to 0.0. Output limits and sample time are preserved.
+Exactly two finite coefficients are required. A third coefficient, including zero,
+returns `ERROR`. Output limits are preserved. The sampling frequency is configured
+at compile time in the board's `ecu_config.hpp` (100 Hz on STM32G431).
 
 **Examples:**
 
@@ -402,29 +404,32 @@ The `kd` parameter is optional. If omitted, it defaults to 0.0. Output limits an
 < OK\r\n
 
 > AT+SPID?*XXXX\r\n
-< +SPID:0.050,1.000,0.000\r\n
+< +SPID:0.050,1.000\r\n
 < OK\r\n
 ```
 
-### Current PID Parameters (AT+CPID)
+### Current PI Parameters (AT+CPID)
 
-Set or read the current (inner-loop) PID controller gains. Changes take effect immediately and reset the integrator.
+Set or read the six-step current (inner-loop) PI controller gains. Changes take
+effect immediately and reset the integrator. Exactly two finite coefficients are
+required; a third coefficient returns `ERROR`. The sampling frequency is the
+compile-time current-loop rate (20 kHz on STM32G431).
 
 | | |
 |---|---|
-| **Set** | `AT+CPID=<kp>,<ki>[,<kd>]*<CRC>\r\n` |
+| **Set** | `AT+CPID=<kp>,<ki>*<CRC>\r\n` |
 | **Query** | `AT+CPID?*<CRC>\r\n` |
 | **Set response** | `OK\r\n` |
-| **Query response** | `+CPID:0.010,0.100,0.000\r\nOK\r\n` |
+| **Query response** | `+CPID:0.010,0.100\r\nOK\r\n` |
 
 **Examples:**
 
 ```
-> AT+CPID=0.1,2.0,0.01*XXXX\r\n
+> AT+CPID=0.1,2.0*XXXX\r\n
 < OK\r\n
 
 > AT+CPID?*XXXX\r\n
-< +CPID:0.100,2.000,0.010\r\n
+< +CPID:0.100,2.000\r\n
 < OK\r\n
 ```
 
@@ -715,11 +720,11 @@ Unbuffered, like `+PLL`. Every field is a leaky accumulator or a running total r
 | fault | int | 0 = none, 1 = INVALID_CODE, 2 = ERRATIC_SEQUENCE. Latched until `AT+HCLEAR` |
 | invalid_score | float | Leaky accumulator of illegal 000/111 codes. Counting is **disabled** by default (see below) |
 | erratic_score | float | Non-advancing edges as a **fraction** of all edges (0..1). Faults at 0.35 |
-| edge_accum | float | Leaky edge count; divide by `decay_time_s` (0.5) for edges/sec |
+| edge_accum | float | Leaky edge count; divide by the decay time (0.5 s / `decay_time_us = 500000`) for edges/sec |
 | invalid_events | uint32 | Illegal-code readings since reset |
 | edges | uint32 | Hall transitions since reset |
 | last_pos | uint8 | Last valid decoded position (0-5) |
-| standing_us | float | Microseconds the latest reading has been an illegal code. **This is the detector**; faults at `invalid_persist_time_s` (300 us) |
+| standing_us | integer | Microseconds derived from elapsed PWM ticks. **This is the detector**; faults at `invalid_persist_time_us` (300 us), rounded up to a whole sample |
 
 **Example:**
 
@@ -773,7 +778,7 @@ Set or read the PLL PI gains.
 
 **Default values:** `kp=100.0`, `ki=5000.0` (giving ω_n=70.7 rad/s, ζ=0.707).
 
-The `kd` parameter is not used (PLL is PI-only, no derivative term).
+Exactly two finite coefficients are required, as for the other PI controllers.
 
 **Examples:**
 
@@ -829,10 +834,10 @@ ERROR\r\n
 | `AT+EMODE?` | Query | -- | `+EMODE:1` |
 | `AT+DMODE=<val>` | Set | 0, 1, 2 | `OK` |
 | `AT+DMODE?` | Query | -- | `+DMODE:0` |
-| `AT+SPID=<kp>,<ki>[,<kd>]` | Set | any float | `OK` |
-| `AT+SPID?` | Query | -- | `+SPID:0.050,1.000,0.000` |
-| `AT+CPID=<kp>,<ki>[,<kd>]` | Set | any float | `OK` |
-| `AT+CPID?` | Query | -- | `+CPID:0.050,1.000,0.000` |
+| `AT+SPID=<kp>,<ki>` | Set | two finite floats | `OK` |
+| `AT+SPID?` | Query | -- | `+SPID:0.050,1.000` |
+| `AT+CPID=<kp>,<ki>` | Set | two finite floats | `OK` |
+| `AT+CPID?` | Query | -- | `+CPID:0.050,1.000` |
 | `AT+ALGO=<val>` | Set | 0, 1 | `OK` |
 | `AT+ALGO?` | Query | -- | `+ALGO:0` |
 | `AT+FPID=<kp>,<ki>` | Set | any float | `OK` |

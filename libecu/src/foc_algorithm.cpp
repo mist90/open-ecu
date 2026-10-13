@@ -9,12 +9,12 @@
 
 namespace libecu {
 
-FocAlgorithm::FocAlgorithm(PwmInterface& pwm_interface, uint32_t pwm_frequency_hz) noexcept
+FocAlgorithm::FocAlgorithm(PwmInterface& pwm_interface) noexcept
     : pwm_interface_(pwm_interface)
     , params_{}
-    , dt_(pwm_frequency_hz > 0 ? 1.0f / static_cast<float>(pwm_frequency_hz) : 0.0f)
     , kp_(0.0f)
     , ki_(0.0f)
+    , ki_step_(0.0f)
     , integral_d_(0.0f)
     , integral_q_(0.0f)
     , prev_duty_u_(0.5f)
@@ -40,6 +40,7 @@ void FocAlgorithm::setCurrentPiGains(float kp, float ki) noexcept
 {
     kp_ = kp;
     ki_ = ki;
+    ki_step_ = ki / ActiveTiming::CURRENT_HZ;
     integral_d_ = 0.0f;
     integral_q_ = 0.0f;
 }
@@ -205,8 +206,8 @@ MotorAlgorithmOutput FocAlgorithm::update(const MotorAlgorithmInput& in) noexcep
 
     // ---- Integration, with anti-windup ------------------------------------
     if (current_mode) {
-        integral_d_ += ki_ * err_d * dt_;
-        integral_q_ += ki_ * err_q * dt_;
+        integral_d_ += ki_step_ * err_d;
+        integral_q_ += ki_step_ * err_q;
 
         // Back-calculation. The excess that the limiter clipped away never
         // reached the motor, so integrating as though it had is exactly what
@@ -214,10 +215,10 @@ MotorAlgorithmOutput FocAlgorithm::update(const MotorAlgorithmInput& in) noexcep
         // the drive stays pinned long after the demand drops.
         //
         // kb is dimensionless - the fraction of the clipped excess folded back
-        // per sample - and is deliberately NOT scaled by dt. Scaling it by dt
+        // per sample - and is deliberately NOT divided by the frequency. Doing so
         // is the obvious-looking form and it is useless here: at 50 us the
         // correction comes out some three orders of magnitude smaller than the
-        // ki*err*dt it is supposed to oppose. kb = 1 removes the whole excess
+        // ki_step*err it is supposed to oppose. kb = 1 removes the whole excess
         // in one sample, which is what a voltage-limited FOC loop wants.
         if (limited && params_.anti_windup_kb > 0.0f) {
             integral_d_ += params_.anti_windup_kb * (v_d - v_d_req);

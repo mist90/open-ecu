@@ -14,8 +14,9 @@ f_pwm = 40000        # Частота ШИМ, Гц
 dt = 0.1e-6          # Шаг 0.1 мкс для лучшего разрешения фронтов
 T_total = 0.06       # Время симуляции
 
-# --- ПИД Коэффициенты ---
-Kp, Ki, Kd = 0.1, 50.0, 0.0
+# --- ПИ-коэффициенты ---
+Kp, Ki = 0.1, 50.0
+ki_step = Ki / (2 * f_pwm)
 
 # Настройка меандра
 f_step = 40          # Частота смены задания
@@ -40,15 +41,12 @@ for i, t in enumerate(time):
     target = I_target_high if (t * f_step * 2) % 2 < 1 else I_target_low
     target_history[i] = target
 
-    # 2. ПИД-регулятор (вызов раз в период ШИМ)
+    # 2. ПИ-регулятор (вызов раз в период ШИМ)
     if i % int(1 / (f_pwm * dt)) == 0:
         error = target - current_val
 
-        potential_integral = i_integral + Ki * (error + prev_error) * 0.5 * (1.0 / f_pwm)
-
-        derivative = Kd * (error - prev_error) * f_pwm
-
-        duty_cycle = Kp * error + i_integral + derivative
+        potential_integral = i_integral + ki_step * (error + prev_error)
+        duty_cycle = Kp * error + i_integral
         if duty_cycle > 1.0:
             duty_cycle = 1.0
             if error < 0.0:
