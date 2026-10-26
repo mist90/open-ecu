@@ -54,6 +54,17 @@ int main() {
     check(std::fabs(2.0f * half - full) < 0.00001f, "half-LSB remains linear");
     calibration.injected_sample_sum = 0;
     check(!summed.initialize(calibration, divider), "zero sample sum is rejected");
+    calibration = {0.010f, 57.0f / 11.0f, 3.3f, 12};
+    check(plain.initialize(calibration, {169000.0f, 9310.0f}), "fractional IHM08M1 gain initializes");
+    check(plain.calibrateZeroOffset(), "IHM08M1 offset calibration");
+    // Independent circuit calculation: 1 + 4.7k/1k, attenuated by 6.8k/(6.8k+680).
+    const float expected = 100.0f * 3.3f / 4095.0f / (0.010f * 5.7f * 6800.0f / 7480.0f);
+    check(std::fabs(plain.convertAdcToCurrent(2100, phase) - expected) < 0.0001f,
+          "IHM08M1 current uses the full fractional amplifier gain");
+    calibration.opamp_gain = 0.0f;
+    check(!plain.initialize(calibration, divider), "zero gain is rejected");
+    calibration.opamp_gain = -1.0f;
+    check(!plain.initialize(calibration, divider), "negative gain is rejected");
     std::printf("ADC scale: %d failures\n", failures);
     return failures != 0;
 }

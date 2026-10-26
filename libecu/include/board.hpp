@@ -44,6 +44,8 @@ struct BoardInfo {
     float    nominal_bus_voltage;   ///< Nominal DC link voltage (V), used for PI tuning
     uint16_t requested_dead_time_ns;///< Dead time asked of the PWM driver (ns)
     uint16_t actual_dead_time_ns;   ///< Dead time the hardware actually programmed (ns)
+    float    max_duty_cycle = 0.95f;///< Board sampling/bootstrap window limit
+    float    max_modulation = 0.95f;///< FOC voltage-vector limit compatible with that window
 };
 
 /**

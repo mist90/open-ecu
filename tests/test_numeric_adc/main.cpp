@@ -45,6 +45,25 @@ int main() {
     check(fixed.temperature(0) == number<FixedProfile::Temperature>(-273), "open NTC sentinel is preserved");
     check(fixed.throttle(0) == FixedProfile::Duty{} && fixed.throttle(4095) == number<FixedProfile::Duty>(1),
           "throttle endpoints are exact");
+    auto ihm_float = calibration<FloatProfile>(1);
+    auto ihm_fixed = calibration<FixedProfile>(1);
+    ihm_float.shunt = 0.010f;
+    ihm_fixed.shunt = number<FixedProfile::ShuntResistance>(1, 100);
+    ihm_float.opamp_gain = 57.0f / 11.0f;
+    ihm_fixed.opamp_gain = number<FixedProfile::Gain>(57, 11);
+    AdcConversionCore<FloatProfile> shield_float;
+    AdcConversionCore<FixedProfile> shield_fixed;
+    check(shield_float.configure(ihm_float) && shield_fixed.configure(ihm_fixed),
+          "both profiles support the external fractional-gain amplifier");
+    shield_float.setZero(0, 2122, 1);
+    shield_fixed.setZero(0, 2122, 1);
+    for (unsigned raw = 0; raw <= 4095; ++raw) {
+        const float expected = (float(raw) - 2122.0f) * (3.3f / 4095.0f) / (0.010f * 57.0f / 11.0f);
+        check(std::abs(shield_float.current(raw, 0) - expected) < 0.0001f,
+              "fractional float gain matches the physical circuit");
+        check(std::abs(shield_fixed.current(raw, 0).toFloat() - expected) < 0.001f,
+              "fractional fixed gain matches the physical circuit within 1 mA");
+    }
     auto invalid = calibration<FixedProfile>(2);
     invalid.shunt = number<FixedProfile::ShuntResistance>(1, 100000000);
     check(!fixed.configure(invalid), "unrepresentable sensor gain is rejected");

@@ -56,13 +56,11 @@ public:
                     const TemperatureSensorParameters& temperature = TemperatureSensorParameters{}) noexcept {
         if (calibration.adc_resolution_bits < 2 || calibration.adc_resolution_bits > 16) return false;
         Core::Calibration typed{};
-        uint32_t gain = 0;
         if (!tryNumber(calibration.shunt_resistance_ohms, typed.shunt) ||
             !tryNumber(calibration.adc_reference_voltage, typed.reference) ||
-            !unsignedParameter(calibration.opamp_gain, gain) || gain > UINT16_MAX ||
+            !tryNumber(calibration.opamp_gain, typed.opamp_gain) ||
             !unsignedParameter(divider.r_up, typed.divider_up_ohms) ||
             !unsignedParameter(divider.r_down, typed.divider_down_ohms)) return false;
-        typed.opamp_gain = static_cast<uint16_t>(gain);
         typed.resolution_bits = static_cast<uint8_t>(calibration.adc_resolution_bits);
         typed.injected_sum = calibration.injected_sample_sum;
         typed.ntc_pulldown_ohms = typed.ntc_r25_ohms = typed.ntc_beta_k = 0;

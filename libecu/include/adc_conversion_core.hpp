@@ -11,7 +11,7 @@ namespace libecu {
 template<class Profile>
 struct AdcCalibrationT {
     typename Profile::ShuntResistance shunt{};
-    uint16_t opamp_gain = 16;
+    typename Profile::Gain opamp_gain = number<typename Profile::Gain>(16);
     typename Profile::Voltage reference{};
     uint8_t resolution_bits = 12;
     uint16_t injected_sum = 1;
@@ -40,15 +40,17 @@ public:
 
     bool configure(const Calibration& calibration) noexcept {
         if (calibration.resolution_bits < 2 || calibration.resolution_bits > 16 || !calibration.injected_sum ||
-            !calibration.opamp_gain || calibration.shunt <= Shunt{} || calibration.reference <= Voltage{} ||
+            calibration.opamp_gain <= Gain{} || calibration.shunt <= Shunt{} || calibration.reference <= Voltage{} ||
             !calibration.divider_down_ohms) return false;
         const uint32_t adc_max = (1u << calibration.resolution_bits) - 1u;
         const uint32_t injected_max = adc_max * calibration.injected_sum;
         if constexpr (!std::is_same<Count, float>::value) {
             if (uint64_t(injected_max) * Count::SCALE > uint64_t(INT32_MAX)) return false;
-            if (int64_t(calibration.shunt.raw()) * calibration.opamp_gain > INT32_MAX) return false;
         }
-        const Shunt amplified_shunt = scaleInteger<Shunt>(calibration.shunt, calibration.opamp_gain);
+        // External resistor networks need fractional gains (IHM08M1: 57/11),
+        // whereas the G4's internal PGA happens to have an integer gain.
+        const Shunt amplified_shunt = multiplyTo<Shunt>(calibration.shunt, calibration.opamp_gain);
+        if (amplified_shunt <= Shunt{} || !hasHeadroom(amplified_shunt)) return false;
         const Gain amperes_per_volt = divideTo<Gain>(number<Gain>(1), amplified_shunt);
         const Scale adc_scale = divideByInteger<Scale>(calibration.reference, injected_max);
         const Gain divider = number<Gain>(uint64_t(calibration.divider_up_ohms) + calibration.divider_down_ohms,

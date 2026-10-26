@@ -7,6 +7,8 @@ The firmware implements FOC and 6-step trapezoidal commutation with Hall sensor 
 ## Supported Platforms
 
 - **STM32G431** (b-g431b-esc1 board) - Primary target
+- **STM32F410** (NUCLEO-F410RB + X-NUCLEO-IHM08M1) — MOTOR_1, ST-LINK USB VCP.
+  [Wiring, signal paths, jumpers and bring-up](docs/NUCLEO_F410RB_IHM08M1.md).
 - Additional platforms can be added following the platform abstraction pattern
 
 ### STM32G431 Hardware Pinout
@@ -120,6 +122,9 @@ sudo apt install gcc-arm-none-eabi cmake stlink-tools openocd
 
 # Build for specific platform
 ./build.sh --platform STM32G431
+
+# NUCLEO-F410RB + X-NUCLEO-IHM08M1, AT console over USB at 115200 baud
+./build.sh --platform STM32F410
 
 # Debug build (-O0); see the ISR budget note in docs/FOC_HANDOFF.md
 ./build.sh --debug

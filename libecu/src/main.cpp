@@ -44,7 +44,7 @@ libecu::MotorControlParams makeMotorParams(const libecu::BoardInfo& board_info) 
 {
     libecu::MotorControlParams motor_params;
     motor_params.num_poles = BLDC_NUM_POLES;
-    motor_params.max_duty_cycle = 0.95f;
+    motor_params.max_duty_cycle = board_info.max_duty_cycle;
     motor_params.max_current = BLDC_MAX_CURRENT;
     motor_params.min_current = BLDC_MIN_CURRENT;
     motor_params.max_voltage = BLDC_MAX_VOLTAGE;
@@ -107,7 +107,7 @@ libecu::MotorControlParams makeMotorParams(const libecu::BoardInfo& board_info) 
     motor_params.algorithm = BLDC_START_WITH_FOC
                            ? libecu::DriveAlgorithm::FOC : libecu::DriveAlgorithm::SIX_STEP;
 
-    motor_params.foc.max_modulation = 0.95f;
+    motor_params.foc.max_modulation = board_info.max_modulation;
     motor_params.foc.max_duty_cycle = motor_params.max_duty_cycle;
     // -60 electrical degrees, derived from the six-step table geometry and the
     // PLL's +1-step field offset (see foc_algorithm.hpp). A derivation, not a
@@ -226,10 +226,8 @@ int main(void)
             const libecu::MotorStatus status = motor_controller.getStatus();
 #ifdef THROTTLE_BRAKE_CONTROL
             // Reads the throttle sampled during the last control tick, not the
-            // hardware: on this board the potentiometer shares an ADC group
-            // with the NTC, so the conversion has to happen in the same
-            // context as the temperature read. See Board::readThrottle() and
-            // the re-entrancy note on Stm32Adc::readRegularChannel().
+            // hardware. The board port owns ADC scheduling, including any
+            // sharing of the regular group with the NTC. See Board::readThrottle().
             //
             // Taken once per tick, normalised, and scaled below into the
             // speed demand.
