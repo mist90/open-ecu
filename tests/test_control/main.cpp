@@ -272,6 +272,26 @@ static void testNativePath() {
     for (unsigned i = 0; i < Console::OSC_BUFFER_SIZE; ++i) console.captureNativeOscSample(sample);
     check(console.drainOsc().find("+OSC:0,-32768,32767,95,4,-125,125,270\r\n") == 0,
           "native OSC preserves signs, saturates milliamps and wraps negative angles");
+#ifdef ECU_FIXED_NUMERIC
+    console.startOscilloscope();
+    constexpr auto period = number_v<P::Angle, 628318530718LL, 100000000000LL>;
+    uint32_t random = 0x36a902c7u;
+    std::string expected;
+    for (unsigned i = 0; i < Console::OSC_BUFFER_SIZE; ++i) {
+        random ^= random << 13; random ^= random >> 17; random ^= random << 5;
+        sample.angle_e_rad = P::Angle::fromRaw(static_cast<int32_t>(random));
+        console.captureNativeOscSample(sample);
+        int32_t wrapped = sample.angle_e_rad.raw() % period.raw();
+        if (wrapped < 0) wrapped += period.raw();
+        const uint32_t turn = (uint64_t(wrapped) << 16) / uint32_t(period.raw());
+        char line[96];
+        std::snprintf(line, sizeof(line), "+OSC:%u,-32768,32767,95,4,-125,125,%u\r\n",
+                      i, turn * 360u / 65536u);
+        expected += line;
+    }
+    expected += "+OSC:\r\n";
+    check(console.drainOsc() == expected, "fixed OSC angles match exact division over the complete signed range");
+#endif
 }
 
 #if defined(ECU_FIXED_PI) || defined(ECU_FIXED_NUMERIC)

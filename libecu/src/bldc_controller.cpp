@@ -767,28 +767,24 @@ void BldcController::pwmInterruptHandler() noexcept {
     // inline it, and at 20 kHz in a `-O0` build every avoided indirection is
     // worth having. The base class still exists for the non-ISR paths
     // (reset/onEnter), where clarity is worth more than cycles.
-    MotorAlgorithmOutputT<Profile> out{};
-    if (dmode_ == DriveMode::NEUTRAL) {
-        // Bridge disabled - there is nothing to regulate. Running the
-        // algorithm anyway lets the d/q integrators random-walk on ADC noise
-        // until they hit their clamp, which then publishes as duty 0.95 while
-        // the drive reports NEUTRAL. Functionally harmless, because onEnter()
-        // clears them when the drive re-arms, but a thoroughly misleading
-        // number to put in telemetry - and indistinguishable, from the
-        // outside, from the bridge actually being at 95 %.
-        out.angle_e_rad = multiplyTo<Profile::Angle>(in.angle_steps, FocAlgorithm::Core::RAD_PER_STEP);
-    } else {
+    const MotorAlgorithmOutputT<Profile> out = [&]() -> MotorAlgorithmOutputT<Profile> {
+        if (dmode_ == DriveMode::NEUTRAL) {
+            // Do not run the current regulators against an inactive bridge.
+            MotorAlgorithmOutputT<Profile> parked{};
+            parked.angle_e_rad = multiplyTo<Profile::Angle>(in.angle_steps, FocAlgorithm::Core::RAD_PER_STEP);
+            return parked;
+        }
+        // Construct only the selected result: no redundant clearing/copying
+        // of a second fixed-point output structure on every current-loop tick.
         switch (algorithm_) {
             case DriveAlgorithm::FOC:
-                out = foc_.updateNative(in);
-                break;
+                return foc_.updateNative(in);
 
             case DriveAlgorithm::SIX_STEP:
             default:
-                out = six_step_.updateNative(in);
-                break;
+                return six_step_.updateNative(in);
         }
-    }
+    }();
 
     {
         CriticalSection cs;

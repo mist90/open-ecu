@@ -153,8 +153,12 @@ private:
         if constexpr (std::is_same<State, float>::value) {
             state *= keep_;
         } else {
+            if (state == State{}) return;
             // Retain fractional leakage below the public count format's LSB.
-            state -= multiplyTo<State>(alpha_, numberCast<Count>(state));
+            const State leak = multiplyTo<State>(alpha_, numberCast<Count>(state));
+            // Both operands are nonnegative, so their signed difference cannot
+            // overflow. Avoid generic saturating 64-bit subtraction here.
+            state = State::fromRaw(state.raw() - leak.raw());
             if (state < State{}) state = State{};
         }
     }

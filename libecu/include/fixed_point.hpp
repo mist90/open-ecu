@@ -63,23 +63,40 @@ public:
     /** @brief Explicit conversion, with one rounding operation at the destination. */
     template<unsigned OtherBits, typename OtherStorage>
     [[gnu::always_inline]] explicit constexpr FixedPointType(FixedPointType<OtherBits, OtherStorage> other) noexcept {
-        const bool negative = other.raw() < 0;
-        uint64_t value = fixed_detail::magnitude(other.raw());
+        const int64_t value = other.raw();
         if constexpr (FractionBits > OtherBits) {
             constexpr unsigned shift = FractionBits - OtherBits;
-            if (value > (limit(negative) >> shift)) {
-                raw_ = negative ? std::numeric_limits<Storage>::min() : std::numeric_limits<Storage>::max();
-                return;
+            constexpr int64_t factor = int64_t(1) << shift;
+            // Widening into an accumulator usually fits by construction. Let
+            // the type ranges remove all run-time saturation/sign handling.
+            if constexpr (std::numeric_limits<OtherStorage>::digits + shift >
+                          std::numeric_limits<Storage>::digits) {
+                if (value > std::numeric_limits<Storage>::max() / factor) {
+                    raw_ = std::numeric_limits<Storage>::max();
+                    return;
+                }
+                if (value < std::numeric_limits<Storage>::min() / factor) {
+                    raw_ = std::numeric_limits<Storage>::min();
+                    return;
+                }
             }
-            value <<= shift;
+            raw_ = static_cast<Storage>(value * factor);
         } else if constexpr (FractionBits < OtherBits) {
             constexpr unsigned shift = OtherBits - FractionBits;
-            constexpr uint64_t divisor = uint64_t(1) << shift;
-            // magnitude(signed int64) <= 2^63 and shift <= 62, so adding
-            // half a divisor cannot overflow uint64_t. One add/shift rounds.
-            value = (value + divisor / 2u) / divisor;
+            constexpr int64_t half = int64_t(1) << (shift - 1u);
+            static_assert((int64_t(-1) >> 1) == -1, "Fixed point requires arithmetic right shift");
+            // The signed bias rounds ties away from zero. Only a wide positive
+            // input near INT64_MAX can overflow the bias addition.
+            if constexpr (sizeof(OtherStorage) == sizeof(int64_t)) {
+                if (value > INT64_MAX - half) {
+                    raw_ = fromWideRaw((value >> shift) + 1).raw();
+                    return;
+                }
+            }
+            raw_ = fromWideRaw((value + half - int64_t(value < 0)) >> shift).raw();
+        } else {
+            raw_ = fromWideRaw(value).raw();
         }
-        raw_ = signedMagnitude(value, negative);
     }
 
     /** @brief Construct from the underlying integer representation. */
@@ -91,18 +108,20 @@ public:
 
     /** @brief Saturate a widened raw result to this storage type. */
     [[gnu::always_inline]] static constexpr FixedPointType fromWideRaw(int64_t raw) noexcept {
-        if (raw > std::numeric_limits<Storage>::max()) return fromRaw(std::numeric_limits<Storage>::max());
-        if (raw < std::numeric_limits<Storage>::min()) return fromRaw(std::numeric_limits<Storage>::min());
-        return fromRaw(static_cast<Storage>(raw));
+        const Storage narrowed = static_cast<Storage>(raw);
+        // For a 32-bit result this is one sign-extension comparison on ARM,
+        // instead of two signed 64-bit range comparisons.
+        if (int64_t(narrowed) == raw) return fromRaw(narrowed);
+        return fromRaw(raw < 0 ? std::numeric_limits<Storage>::min() : std::numeric_limits<Storage>::max());
     }
 
     /** @brief Integer input without routing a sample through rational long division. */
     static constexpr FixedPointType fromInteger(int64_t value) noexcept {
-        const bool negative = value < 0;
-        const uint64_t magnitude = fixed_detail::magnitude(value);
-        if (magnitude > (limit(negative) >> FractionBits))
-            return fromRaw(signedMagnitude(UINT64_MAX, negative));
-        return fromRaw(signedMagnitude(magnitude << FractionBits, negative));
+        if (value > std::numeric_limits<Storage>::max() / int64_t(SCALE))
+            return fromRaw(std::numeric_limits<Storage>::max());
+        if (value < std::numeric_limits<Storage>::min() / int64_t(SCALE))
+            return fromRaw(std::numeric_limits<Storage>::min());
+        return fromRaw(static_cast<Storage>(value * int64_t(SCALE)));
     }
 
     /** @brief Convert a configuration literal in a constexpr initializer. */
@@ -205,9 +224,15 @@ public:
     constexpr float toFloat() const noexcept { return float(raw_) / float(SCALE); }
 
     [[gnu::always_inline]] constexpr FixedPointType operator-() const noexcept {
-        return fromRaw(signedMagnitude(fixed_detail::magnitude(raw_), raw_ >= 0));
+        return fromRaw(raw_ == std::numeric_limits<Storage>::min()
+                       ? std::numeric_limits<Storage>::max() : -raw_);
     }
     [[gnu::always_inline]] constexpr FixedPointType operator+(FixedPointType rhs) const noexcept {
+#if defined(__ARM_FEATURE_DSP) && defined(__GNUC__) && __GNUC__ >= 9 && !defined(__clang__)
+        if constexpr (sizeof(Storage) == sizeof(int32_t)) {
+            if (!__builtin_is_constant_evaluated()) return fromRaw(__builtin_arm_qadd(raw_, rhs.raw_));
+        }
+#endif
         if (rhs.raw_ > 0 && raw_ > std::numeric_limits<Storage>::max() - rhs.raw_)
             return fromRaw(std::numeric_limits<Storage>::max());
         if (rhs.raw_ < 0 && raw_ < std::numeric_limits<Storage>::min() - rhs.raw_)
@@ -215,6 +240,11 @@ public:
         return fromRaw(static_cast<Storage>(raw_ + rhs.raw_));
     }
     [[gnu::always_inline]] constexpr FixedPointType operator-(FixedPointType rhs) const noexcept {
+#if defined(__ARM_FEATURE_DSP) && defined(__GNUC__) && __GNUC__ >= 9 && !defined(__clang__)
+        if constexpr (sizeof(Storage) == sizeof(int32_t)) {
+            if (!__builtin_is_constant_evaluated()) return fromRaw(__builtin_arm_qsub(raw_, rhs.raw_));
+        }
+#endif
         if (rhs.raw_ < 0 && raw_ > std::numeric_limits<Storage>::max() + rhs.raw_)
             return fromRaw(std::numeric_limits<Storage>::max());
         if (rhs.raw_ > 0 && raw_ < std::numeric_limits<Storage>::min() + rhs.raw_)
@@ -259,7 +289,16 @@ private:
 template<class Out, unsigned A, typename SA, unsigned B, typename SB>
 [[gnu::always_inline]] constexpr Out multiplyTo(FixedPointType<A, SA> a, FixedPointType<B, SB> b) noexcept {
     static_assert(sizeof(SA) <= 4 && sizeof(SB) <= 4, "Multiply operands must fit in 32 bits");
-    return Out(FixedPointType<A + B, int64_t>::fromRaw(int64_t(a.raw()) * b.raw()));
+    const int64_t product = int64_t(a.raw()) * b.raw();
+    if constexpr (A + B > Out::FRACTION_BITS) {
+        constexpr unsigned shift = A + B - Out::FRACTION_BITS;
+        constexpr int64_t half = int64_t(1) << (shift - 1u);
+        // A signed 32x32 product is at most 2^62 in magnitude. Adding the
+        // rounding bias (at most 2^61) is therefore always representable.
+        return Out::fromWideRaw((product + half - int64_t(product < 0)) >> shift);
+    } else {
+        return Out(FixedPointType<A + B, int64_t>::fromRaw(product));
+    }
 }
 
 /** @brief Divide by an integer, preserving the destination's fractional precision. */

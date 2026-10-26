@@ -130,8 +130,44 @@ volatile F410Diagnostics f410_diagnostics{};
 volatile F410TimingCapture f410_timing_capture{};
 #ifdef PWM_TIMING_BENCH
 volatile F410BenchInputs f410_bench_inputs{{2122, 2122, 2122}, 2028, 0, 1};
+volatile uint32_t f410_fixed_self_test_failures = 0;
 #endif
 }
+
+#ifdef PWM_TIMING_BENCH
+// Exercise the actual Cortex-M4 integer instructions, including saturation;
+// host tests use the portable fallback. Volatile inputs prevent constant folding.
+static bool checkFixedArithmetic() {
+    using Q = libecu::FixedPointType<30>;
+    volatile int32_t values[] = {INT32_MIN, INT32_MIN + 1, -1073741824, -1, 0,
+                                1, 1073741824, INT32_MAX - 1, INT32_MAX};
+    for (unsigned i = 0; i < sizeof(values) / sizeof(values[0]); ++i) {
+        for (unsigned j = 0; j < sizeof(values) / sizeof(values[0]); ++j) {
+            const int32_t a = values[i], b = values[j];
+            const auto qa = Q::fromRaw(a), qb = Q::fromRaw(b);
+            const int64_t sum = int64_t(a) + b;
+            const int64_t difference = int64_t(a) - b;
+            const int32_t expected_sum = sum > INT32_MAX ? INT32_MAX : sum < INT32_MIN ? INT32_MIN : sum;
+            const int32_t expected_difference = difference > INT32_MAX ? INT32_MAX :
+                                               difference < INT32_MIN ? INT32_MIN : difference;
+            if ((qa + qb).raw() != expected_sum) ++f410_fixed_self_test_failures;
+            if ((qa - qb).raw() != expected_difference) ++f410_fixed_self_test_failures;
+            if ((-qa).raw() != (a == INT32_MIN ? INT32_MAX : -a)) ++f410_fixed_self_test_failures;
+            const Q reference = Q::fromRatio(int64_t(a) * b, int64_t(1) << 60);
+            if (libecu::multiplyTo<Q>(qa, qb) != reference) ++f410_fixed_self_test_failures;
+            const uint64_t square_sum = uint64_t(int64_t(a) * a) + uint64_t(int64_t(b) * b);
+            if (libecu::integerSqrt(square_sum) != libecu::numeric_detail::restoringSqrt(square_sum))
+                ++f410_fixed_self_test_failures;
+            const uint32_t divisor = (uint32_t(a) & 0x3fffffffU) + (1u << 18);
+            const uint32_t inverse = ((uint64_t(1) << 48) + divisor / 2u) / divisor;
+            if (libecu::FixedMath::inverseBusVoltage(libecu::FixedProfile::Voltage::fromRaw(divisor)).raw() !=
+                int32_t(inverse)) ++f410_fixed_self_test_failures;
+        }
+    }
+    printf("Fixed arithmetic self-test: %lu failures\n", (unsigned long)f410_fixed_self_test_failures);
+    return f410_fixed_self_test_failures == 0;
+}
+#endif
 
 static void trip(uint32_t reason) {
     libecu::CriticalSection lock;
@@ -309,6 +345,7 @@ public:
         printf("Clock: HSE/ST-LINK quartz 8 MHz -> 100 MHz\n");
 #ifdef PWM_TIMING_BENCH
         printf("TIMING BENCH: synthetic currents/Vbus/Hall, bridge outputs permanently OFF\n");
+        if (!checkFixedArithmetic()) return false;
 #endif
         if (!pwm_driver.initialize(ActiveTiming::CURRENT_HZ, ihm08::DEAD_TIME_NS) || !hall_sensor.initialize())
             return false;

@@ -13,6 +13,54 @@ static void check(bool ok, const char* message) {
     if (!ok) { if (failures < 15) std::printf("FAIL: %s\n", message); ++failures; }
 }
 
+static void testExactIntegerMath() {
+    uint64_t random = 0xd19e17ac429f035bULL;
+    bool roots_exact = true, reciprocals_exact = true;
+    for (unsigned i = 0; i < 200000; ++i) {
+        random ^= random << 13;
+        random ^= random >> 7;
+        random ^= random << 17;
+        const uint64_t value = i % 3 == 0 ? random :
+                               random & ((uint64_t(1) << (i % 3 == 1 ? 60 : 48)) - 1);
+        const uint32_t root = integerSqrt(value);
+        roots_exact &= __uint128_t(root) * root <= value &&
+                       (__uint128_t(root) + 1) * (__uint128_t(root) + 1) > value;
+        uint32_t divisor = random & INT32_MAX;
+        if (divisor < (1u << 18)) divisor += 1u << 18;
+        const uint32_t expected = ((uint64_t(1) << 48) + divisor / 2u) / divisor;
+        reciprocals_exact &= FixedMath::inverseBusVoltage(FixedProfile::Voltage::fromRaw(divisor)).raw() ==
+                             int32_t(expected);
+    }
+    for (uint64_t value : {uint64_t(0), uint64_t(1), uint64_t(2), uint64_t(3), uint64_t(4),
+                           (uint64_t(1) << 32) - 1, uint64_t(1) << 32, (uint64_t(1) << 32) + 1,
+                           (uint64_t(1) << 62) - 1, uint64_t(1) << 62, (uint64_t(1) << 62) + 1,
+                           uint64_t(UINT64_MAX)}) {
+        const uint32_t root = integerSqrt(value);
+        roots_exact &= __uint128_t(root) * root <= value &&
+                       (__uint128_t(root) + 1) * (__uint128_t(root) + 1) > value;
+    }
+    for (unsigned scale = 1; scale <= 15; ++scale) {
+        for (unsigned index = 64; index <= 256; ++index) {
+            for (int offset : {-1, 0, 1}) {
+                const uint64_t value = (uint64_t(index) << (24u + 2u * scale)) + offset;
+                const uint32_t root = integerSqrt(value);
+                roots_exact &= __uint128_t(root) * root <= value &&
+                               (__uint128_t(root) + 1) * (__uint128_t(root) + 1) > value;
+            }
+        }
+    }
+    for (unsigned bit = 18; bit <= 30; ++bit) {
+        for (int offset = -16; offset <= 16; ++offset) {
+            const uint32_t divisor = (1u << bit) + offset;
+            const uint32_t expected = ((uint64_t(1) << 48) + divisor / 2u) / divisor;
+            reciprocals_exact &= FixedMath::inverseBusVoltage(FixedProfile::Voltage::fromRaw(divisor)).raw() ==
+                                 int32_t(expected);
+        }
+    }
+    check(roots_exact, "integer sqrt is the exact floor across fast-path and uint64 boundary cases");
+    check(reciprocals_exact, "normalized reciprocal is bit-exact against rounded 64-bit division");
+}
+
 template<class P>
 static void testLowSideClamped() {
     using T = FocTransforms<P>;
@@ -44,6 +92,7 @@ static void testLowSideClamped() {
 }
 
 int main() {
+    testExactIntegerMath();
     testLowSideClamped<FloatProfile>();
     testLowSideClamped<FixedProfile>();
     using P = FixedProfile;

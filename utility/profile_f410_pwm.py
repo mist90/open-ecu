@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Profile the F410 ADC/current ISR with a bridge-disabled bench image, then restore firmware."""
 import argparse
+from collections import Counter
 import json
 from pathlib import Path
 import socket
@@ -18,8 +19,16 @@ parser.add_argument('--restore-elf', type=Path, required=True)
 parser.add_argument('--port', default='/dev/ttyACM0')
 parser.add_argument('--baud', type=int, default=BAUD)
 parser.add_argument('--stlink-serial')
+parser.add_argument('--case', action='append', help='Run only the named capture (repeatable)',
+                    choices=('neutral', 'FOC zero current', 'FOC positive saturation',
+                             'FOC negative saturation', 'FOC nonzero phase currents + OSC + telemetry',
+                             'six-step current + OSC + telemetry'))
+parser.add_argument('--pc-samples', type=int, default=0,
+                    help='Collect live DWT PC samples after timing each case')
 parser.add_argument('--output', type=Path, default=Path('/tmp/opencode/f410-pwm-timing.json'))
 args = parser.parse_args()
+if not 0 <= args.pc_samples <= 10000:
+    parser.error('--pc-samples must be between 0 and 10000')
 ELF = str(args.bench_elf.resolve())
 RESTORE = str(args.restore_elf.resolve())
 assert Path(ELF).is_file() and Path(RESTORE).is_file(), 'Both firmware files must exist'
@@ -104,6 +113,8 @@ with serial.Serial(args.port, args.baud, timeout=.03) as uart:
             tcl('; '.join(f'mww {address + 4*i} {value}' for i, value in enumerate(values)))
 
         def capture(label, algo=1, current=0, phases=(2122, 2122, 2122), active=True, osc=False, telemetry=False):
+            if args.case and label not in args.case:
+                return
             for cmd in ['AT+OSC=0', 'AT+TM=0', 'AT+DMODE=2', f'AT+ALGO={algo}',
                         'AT+MODE=2', 'AT+EMODE=1']:
                 command(uart, cmd)
@@ -111,7 +122,13 @@ with serial.Serial(args.port, args.baud, timeout=.03) as uart:
             if active:
                 command(uart, 'AT+DMODE=0')
                 command(uart, f'AT+CUR={current}')
-            assert f'+DMODE:{0 if active else 2}' in command(uart, 'AT+DMODE?')
+            mode = command(uart, 'AT+DMODE?')
+            if f'+DMODE:{0 if active else 2}' not in mode:
+                diagnostics = words(symbols['f410_diagnostics'], 6)
+                result = dict(case=label, error='Drive mode rejected or tripped', mode=mode.strip(),
+                              diagnostics=diagnostics, max_us=diagnostics[1]/100)
+                results.append(result)
+                raise RuntimeError(json.dumps(result))
             target_reply = command(uart, 'AT+CUR?')
             assert f'+CUR:{current if active else 0:.2f}' in target_reply, target_reply
             status = command(uart, 'AT+STATUS?')
@@ -138,6 +155,12 @@ with serial.Serial(args.port, args.baud, timeout=.03) as uart:
                           faults=diagnostics[3], moe=bool(bdtr & 0x8000),
                           status=status.strip(),
                           osc_lines=output.count('+OSC:'), telemetry_lines=output.count('+TM:'))
+            if args.pc_samples:
+                command(uart, 'AT+OSC=0')
+                command(uart, 'AT+TM=0')
+                pcs = tcl('set pcs {}; for {set i 0} {$i < ' + str(args.pc_samples) +
+                          '} {incr i} {mem2array pc 32 0xe000101c 1; lappend pcs $pc(0)}; set pcs')
+                result['pc_samples'] = dict(Counter(hex(int(pc, 0)) for pc in pcs.split()))
             print(json.dumps(result), flush=True)
             results.append(result)
             assert remaining == 0 and samples == 40000, result

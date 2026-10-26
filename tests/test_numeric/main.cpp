@@ -15,6 +15,75 @@ static void check(bool ok, const char* message) {
     if (!ok) { ++failures; std::printf("FAIL: %s\n", message); }
 }
 
+// Independent wide-integer oracle: rational arithmetic rather than the
+// implementation's shifts. Include random full-range raw values, not just
+// plausible motor inputs, so saturation and signed boundary cases remain exact.
+template<class Out, class In>
+static void testConversion() {
+    uint64_t random = 0x9162347abacdf109ULL;
+    bool exact = true;
+    for (unsigned index = 0; index < 10000; ++index) {
+        random ^= random << 13;
+        random ^= random >> 7;
+        random ^= random << 17;
+        using S = typename In::StorageType;
+        const S boundaries[] = {0, 1, -1, std::numeric_limits<S>::min(), std::numeric_limits<S>::max()};
+        const S raw = index < 5 ? boundaries[index] : static_cast<S>(random);
+        __int128 expected = raw;
+        if constexpr (Out::FRACTION_BITS >= In::FRACTION_BITS) {
+            expected *= __int128(1) << (Out::FRACTION_BITS - In::FRACTION_BITS);
+        } else {
+            const __int128 divisor = __int128(1) << (In::FRACTION_BITS - Out::FRACTION_BITS);
+            expected = expected < 0 ? -((-expected + divisor / 2) / divisor)
+                                    : (expected + divisor / 2) / divisor;
+        }
+        expected = std::max<__int128>(std::numeric_limits<typename Out::StorageType>::min(),
+                   std::min<__int128>(expected, std::numeric_limits<typename Out::StorageType>::max()));
+        exact &= Out(In::fromRaw(raw)).raw() == expected;
+        if constexpr (In::FRACTION_BITS == 0) exact &= Out::fromInteger(raw).raw() == expected;
+    }
+    check(exact, "fixed conversion matches the wide rational oracle over boundaries and full-range inputs");
+}
+
+template<unsigned A, unsigned B, class Out>
+static void testProducts() {
+    using Left = FixedPointType<A>;
+    using Right = FixedPointType<B>;
+    uint64_t random = 0xb83902147ea3675fULL;
+    bool exact = true;
+    for (unsigned i = 0; i < 10000; ++i) {
+        random ^= random << 13; random ^= random >> 7; random ^= random << 17;
+        const int32_t a = i == 0 ? INT32_MIN : int32_t(random);
+        const int32_t b = i == 0 ? INT32_MIN : int32_t(random >> 32);
+        __int128 expected = __int128(a) * b;
+        if constexpr (A + B > Out::FRACTION_BITS) {
+            const __int128 divisor = __int128(1) << (A + B - Out::FRACTION_BITS);
+            expected = expected < 0 ? -((-expected + divisor / 2) / divisor)
+                                    : (expected + divisor / 2) / divisor;
+        } else {
+            expected *= __int128(1) << (Out::FRACTION_BITS - A - B);
+        }
+        expected = std::max<__int128>(std::numeric_limits<typename Out::StorageType>::min(),
+                   std::min<__int128>(expected, std::numeric_limits<typename Out::StorageType>::max()));
+        exact &= multiplyTo<Out>(Left::fromRaw(a), Right::fromRaw(b)).raw() == expected;
+    }
+    check(exact, "mixed fixed multiplication matches exact rational rounding and saturation");
+}
+
+template<unsigned Bits, class Storage>
+static void testConversionDestinations() {
+    using In = FixedPointType<Bits, Storage>;
+    testConversion<FixedPointType<0>, In>();
+    testConversion<FixedPointType<4, int8_t>, In>();
+    testConversion<FixedPointType<12>, In>();
+    testConversion<FixedPointType<18>, In>();
+    testConversion<FixedPointType<24>, In>();
+    testConversion<FixedPointType<30>, In>();
+    testConversion<FixedPointType<0, int64_t>, In>();
+    testConversion<FixedPointType<32, int64_t>, In>();
+    testConversion<FixedPointType<62, int64_t>, In>();
+}
+
 template<class T> static T number(int64_t numerator, int64_t denominator = 1) {
     if constexpr (std::is_same<T, float>::value) return float(numerator) / float(denominator);
     else return T::fromRatio(numerator, denominator);
@@ -143,6 +212,23 @@ static void testSmallIncrements() {
 }
 
 int main() {
+    testProducts<20, 16, FixedPointType<12>>();
+    testProducts<20, 30, FixedPointType<20>>();
+    testProducts<24, 14, FixedPointType<14>>();
+    testProducts<14, 30, FixedPointType<32, int64_t>>();
+    testProducts<18, 30, FixedPointType<18>>();
+    testProducts<16, 20, FixedPointType<32, int64_t>>();
+    testProducts<30, 30, FixedPointType<30>>();
+    testProducts<0, 0, FixedPointType<32, int64_t>>();
+    testConversionDestinations<0, int32_t>();
+    testConversionDestinations<4, int8_t>();
+    testConversionDestinations<12, int32_t>();
+    testConversionDestinations<18, int32_t>();
+    testConversionDestinations<24, int32_t>();
+    testConversionDestinations<30, int32_t>();
+    testConversionDestinations<0, int64_t>();
+    testConversionDestinations<32, int64_t>();
+    testConversionDestinations<62, int64_t>();
     testFixed();
     testPi<FloatProfile::PiTypes, 100>();
     testPi<FloatProfile::PiTypes, 20000>();

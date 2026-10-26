@@ -39,7 +39,7 @@ public:
 
     /** @param max_speed Maximum electrical speed magnitude in steps/s. */
     explicit MotorPLLCore(Speed max_speed, bool inverse = false) noexcept
-        : inverse_(inverse), max_speed_(max_speed) {
+        : inverse_(inverse), integral_limit_(numberCast<Integral>(max_speed)) {
         setGains(number<Gain>(100), number<Gain>(5000));
     }
 
@@ -68,15 +68,41 @@ public:
             else if (numericAbs(speed_) > number_v<Speed, 5>) synchronized_ = true;
         }
 
-        integral_ += multiplyTo<Integral>(error, ki_step_);
-        integral_ = numericClamp(integral_, -numberCast<Integral>(max_speed_), numberCast<Integral>(max_speed_));
+        const Integral increment = multiplyTo<Integral>(error, ki_step_);
+        if constexpr (std::is_same<Profile, FixedProfile>::value) {
+            constexpr int bound_bit = 31 + Integral::FRACTION_BITS - Speed::FRACTION_BITS;
+            constexpr int increment_bit = 62 + Integral::FRACTION_BITS - Angle::FRACTION_BITS - StepGain::FRACTION_BITS;
+            static_assert(sizeof(typename Integral::StorageType) == 8 && bound_bit < 62 && increment_bit < 62,
+                          "PLL bound plus one increment must fit int64");
+            integral_ = Integral::fromRaw(integral_.raw() + increment.raw());
+            integral_ = numericClamp(integral_, Integral::fromRaw(-integral_limit_.raw()), integral_limit_);
+        } else {
+            integral_ += increment;
+            integral_ = numericClamp(integral_, -integral_limit_, integral_limit_);
+        }
         speed_ = multiplyTo<Speed>(error, kp_) + numberCast<Speed>(integral_);
         if (reset_angle) {
             integral_ = numberCast<Integral>(speed_);
             phase_ = number<Phase>(hall_);
         } else {
-            phase_ += multiplyTo<Phase>(speed_, number_v<Fraction, 1, FrequencyHz>);
-            phase_ = wrapValue(phase_, number_v<Phase, 6>);
+            const Phase advance = multiplyTo<Phase>(speed_, number_v<Fraction, 1, FrequencyHz>);
+            if constexpr (std::is_same<Profile, FixedProfile>::value) {
+                constexpr int advance_bit = 62 + Phase::FRACTION_BITS - Speed::FRACTION_BITS - Fraction::FRACTION_BITS;
+                static_assert(sizeof(typename Phase::StorageType) == 8 && advance_bit < 62 &&
+                              Phase::FRACTION_BITS + 3 < 62, "Wrapped phase plus advance must fit int64");
+                constexpr int64_t period = int64_t(Phase::SCALE) * 6;
+                int64_t raw = phase_.raw() + advance.raw();
+                if (raw >= period) raw -= period;
+                else if (raw < 0) raw += period;
+                if (raw >= period || raw < 0) {
+                    raw %= period;
+                    if (raw < 0) raw += period;
+                }
+                phase_ = Phase::fromRaw(raw);
+            } else {
+                phase_ += advance;
+                phase_ = wrapValue(phase_, number_v<Phase, 6>);
+            }
         }
     }
 
@@ -105,7 +131,17 @@ public:
     bool isUsingPLL() const noexcept { return use_pll_; }
     Angle getAngle() const noexcept {
         // Narrowing may round a phase just below six up to the endpoint.
-        const Angle angle = numberCast<Angle>(phase_);
+        Angle angle{};
+        if constexpr (std::is_same<Profile, FixedProfile>::value) {
+            // phase_ is always wrapped into [0,6), so conversion neither
+            // needs saturation nor a negative-number rounding path.
+            static_assert(Phase::FRACTION_BITS > Angle::FRACTION_BITS && Angle::FRACTION_BITS + 3 <= 31,
+                          "Wrapped phase must fit the public angle format");
+            constexpr unsigned shift = Phase::FRACTION_BITS - Angle::FRACTION_BITS;
+            angle = Angle::fromRaw(static_cast<int32_t>((phase_.raw() + (int64_t(1) << (shift - 1))) >> shift));
+        } else {
+            angle = numberCast<Angle>(phase_);
+        }
         return angle >= ANGLE_MAX ? angle - ANGLE_MAX : angle;
     }
     Speed getSpeedStepsSec() const noexcept { return numberCast<Speed>(integral_); }
@@ -118,7 +154,7 @@ private:
     bool inverse_ = false;
     bool synchronized_ = false;
     bool use_pll_ = false;
-    Speed max_speed_{};
+    Integral integral_limit_{};
     Phase phase_{};
     Speed speed_{};
     Integral integral_{};

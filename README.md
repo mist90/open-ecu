@@ -185,6 +185,12 @@ Select control/ADC/PWM arithmetic with
 `./build.sh --numeric-profile float|fixed` or CMake `-DNUMERIC_PROFILE=fixed`.
 On STM32G431, `PI_NUMERIC_PROFILE=fixed` is a PI-only override for the float control profile.
 
+The fixed control kernels use integer arithmetic, including transforms and voltage limiting.
+On ARM cores with DSP instructions, saturating 32-bit operations use `QADD`/`QSUB`;
+host and Cortex-M0 builds use the portable implementation. Numeric formats and rounding
+are shared by both paths. The F410 bridge-disabled timing image also checks the native
+integer operations before starting its synthetic control loop.
+
 Motor parameters live in `libecu/include/motor_config.hpp`. An undefined
 `MOTOR_1` selects JK42BLS01; defining it selects the scooter motor.
 The STM32F410 target defines `MOTOR_1` in CMake.

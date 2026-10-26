@@ -214,6 +214,7 @@ static inline void sinCos(float angle, float& sin_out, float& cos_out) noexcept
         return remaining > 0.0f ? __builtin_sqrtf(remaining) : 0.0f;
     }
     static float voltageMagnitude(float d, float q) noexcept { return __builtin_sqrtf(d * d + q * q); }
+    static float inverseBusVoltage(float bus) noexcept { return 1.0f / bus; }
     static bool voltageLimitExceeded(float d, float q, float limit) noexcept {
         return d * d + q * q > limit * limit;
     }

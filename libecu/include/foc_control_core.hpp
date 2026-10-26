@@ -62,20 +62,17 @@ public:
 
     /** @brief Run one sample. Voltages and current magnitudes are physical SI values. */
     LIBECU_HOT_LOOP Output update(const Input& in) noexcept {
-        Output out{};
-        out.angle_e_rad = multiplyTo<Angle>(in.angle_steps, RAD_PER_STEP) + params_.angle_offset_rad;
+        const Angle angle = multiplyTo<Angle>(in.angle_steps, RAD_PER_STEP) + params_.angle_offset_rad;
         Unit sine{}, cosine{};
-        Math::sinCos(out.angle_e_rad, sine, cosine);
+        Math::sinCos(angle, sine, cosine);
 
         Current u = -in.i_u, v = -in.i_v, w = -in.i_w;
         if (previous_.u >= previous_.v && previous_.u >= previous_.w) u = -(v + w);
         else if (previous_.v >= previous_.w) v = -(u + w);
         else w = -(u + v);
         const auto dq = Transforms::park(Transforms::clarkeZeroSum(u, v, w), sine, cosine);
-        out.i_d = dq.d;
-        out.i_q = dq.q;
         const bool reverse = in.drive_mode == DriveMode::REVERSE;
-        out.measured_current = reverse ? -dq.q : dq.q;
+        const Current measured_current = reverse ? -dq.q : dq.q;
         const Voltage limit = multiplyTo<Voltage>(params_.max_modulation, Transforms::voltageLimit(in.bus_voltage));
         const bool current_mode = in.electric_mode == ElectricMode::CURRENT_MODE;
         Current error_d{}, error_q{};
@@ -99,36 +96,36 @@ public:
         }
 
         const bool limited = Math::voltageLimitExceeded(requested_d, requested_q, limit);
-        out.v_d = numericClamp(numberCast<Voltage>(requested_d), -limit, limit);
-        out.v_q = numberCast<Voltage>(requested_q);
+        const Voltage v_d = numericClamp(numberCast<Voltage>(requested_d), -limit, limit);
+        Voltage v_q = numberCast<Voltage>(requested_q);
         if (limited) {
-            const Voltage room = Math::qVoltageLimit(out.v_d, limit);
-            out.v_q = numericClamp(out.v_q, -room, room);
+            const Voltage room = Math::qVoltageLimit(v_d, limit);
+            v_q = numericClamp(v_q, -room, room);
         }
         if (current_mode) {
-            integral_d_ += multiplyTo<Integral>(ki_step_, error_d);
-            integral_q_ += multiplyTo<Integral>(ki_step_, error_q);
+            addIntegral(integral_d_, multiplyTo<Integral>(ki_step_, error_d));
+            addIntegral(integral_q_, multiplyTo<Integral>(ki_step_, error_q));
             if (limited && params_.anti_windup_kb > Unit{}) {
-                integral_d_ += multiplyTo<Integral>(params_.anti_windup_kb,
-                                                    numberCast<Request>(out.v_d) - requested_d);
-                integral_q_ += multiplyTo<Integral>(params_.anti_windup_kb,
-                                                    numberCast<Request>(out.v_q) - requested_q);
+                addIntegral(integral_d_, multiplyTo<Integral>(params_.anti_windup_kb,
+                                                            numberCast<Request>(v_d) - requested_d));
+                addIntegral(integral_q_, multiplyTo<Integral>(params_.anti_windup_kb,
+                                                            numberCast<Request>(v_q) - requested_q));
             }
             const Integral bound = numberCast<Integral>(limit);
             integral_d_ = numericClamp(integral_d_, -bound, bound);
             integral_q_ = numericClamp(integral_q_, -bound, bound);
         }
 
-        const auto voltage = Transforms::invPark(DqVectorT<Voltage>{out.v_d, out.v_q}, sine, cosine);
+        const auto voltage = Transforms::invPark(DqVectorT<Voltage>{v_d, v_q}, sine, cosine);
         auto duty = Transforms::svpwm(voltage.alpha, voltage.beta, in.bus_voltage,
                                      params_.low_side_clamped_pwm);
         const Duty low = params_.low_side_clamped_pwm ? Duty{} : number_v<Duty, 1> - params_.max_duty_cycle;
-        out.duty_u = numericClamp(duty.u, low, params_.max_duty_cycle);
-        out.duty_v = numericClamp(duty.v, low, params_.max_duty_cycle);
-        out.duty_w = numericClamp(duty.w, low, params_.max_duty_cycle);
-        previous_ = {out.duty_u, out.duty_v, out.duty_w};
-        out.saturation = limited ? ((reverse ? -requested_q : requested_q) > Request{} ? 1 : -1) : 0;
-        return out;
+        duty.u = numericClamp(duty.u, low, params_.max_duty_cycle);
+        duty.v = numericClamp(duty.v, low, params_.max_duty_cycle);
+        duty.w = numericClamp(duty.w, low, params_.max_duty_cycle);
+        previous_ = duty;
+        const int8_t saturation = limited ? ((reverse ? -requested_q : requested_q) > Request{} ? 1 : -1) : 0;
+        return {duty.u, duty.v, duty.w, Duty{}, measured_current, dq.d, dq.q, v_d, v_q, angle, saturation};
     }
 
     /** @brief Scalar modulation depth for a slow telemetry snapshot. */
@@ -138,6 +135,23 @@ public:
     }
 
 private:
+    static void addIntegral(Integral& state, Integral delta) noexcept {
+        if constexpr (std::is_same<Profile, FixedProfile>::value) {
+            // Each sample begins voltage-clamped, then adds at most one Ki
+            // term and one back-calculation term. The full operand ranges,
+            // not merely typical motor values, leave ample int64 headroom.
+            constexpr int bound_bit = 31 + Integral::FRACTION_BITS - Voltage::FRACTION_BITS;
+            constexpr int ki_bit = 62 + Integral::FRACTION_BITS - StepGain::FRACTION_BITS - Current::FRACTION_BITS;
+            constexpr int aw_bit = 62 + Integral::FRACTION_BITS - Unit::FRACTION_BITS - Request::FRACTION_BITS;
+            static_assert(sizeof(typename Integral::StorageType) == 8 &&
+                          bound_bit < 61 && ki_bit < 61 && aw_bit < 61,
+                          "Three bounded FOC terms must fit the wide accumulator");
+            state = Integral::fromRaw(state.raw() + delta.raw());
+        } else {
+            state += delta;
+        }
+    }
+
     Params params_{};
     Gain kp_{}, ki_{};
     StepGain ki_step_{};

@@ -7,6 +7,7 @@
 #include "numeric_profiles.hpp"
 #include "numeric_ops.hpp"
 #include "foc_math.hpp"
+#include <array>
 
 namespace libecu {
 
@@ -52,6 +53,35 @@ public:
         return squared(d.raw(), q.raw()) > (limit_sq >> shift);
     }
 
+    /** @brief Exact rounded Q30 reciprocal of a Q18 bus voltage, using 32-bit division. */
+    static Fraction inverseBusVoltage(Voltage bus) noexcept {
+        static_assert(Voltage::FRACTION_BITS == 18 && Fraction::FRACTION_BITS == 30,
+                      "Reciprocal normalization requires Q18 voltage and Q30 fractions");
+        if (bus < number_v<Voltage, 1>) return divideTo<Fraction>(number_v<Voltage, 1>, bus);
+        const uint32_t divisor = static_cast<uint32_t>(bus.raw());
+        unsigned shift = 0;
+#if defined(__GNUC__)
+        shift = 16u - __builtin_clz(divisor);
+#else
+        for (uint32_t top = divisor; top > 65535u; top >>= 1) ++shift;
+#endif
+        // The normalized divisor has 16 significant bits. The first reciprocal
+        // has relative error <2^-15; one Newton correction leaves at most one
+        // quotient count of error across the entire positive Q18 voltage range.
+        const uint32_t reciprocal = UINT32_MAX / (divisor >> shift);
+        const uint32_t initial = reciprocal << (16u - shift);
+        constexpr uint64_t numerator = uint64_t(1) << 48;
+        const int64_t error = int64_t(uint64_t(initial) * divisor) - int64_t(numerator);
+        const int32_t correction = static_cast<int32_t>((error * reciprocal) >> (32u + shift));
+        uint32_t quotient = static_cast<uint32_t>(int32_t(initial) - correction);
+        uint64_t product = uint64_t(quotient) * divisor;
+        if (product > numerator) { --quotient; product -= divisor; }
+        if (numerator - product >= divisor) { ++quotient; product += divisor; }
+        const uint32_t remainder = static_cast<uint32_t>(numerator - product);
+        quotient += remainder >= divisor - remainder;
+        return Fraction::fromRaw(static_cast<int32_t>(quotient));
+    }
+
     /** @brief Natural logarithm of a positive bounded integer ratio (NTC divider). */
     static FixedProfile::Logarithm logRatio(uint64_t numerator, uint64_t denominator) noexcept {
         using Log = FixedProfile::Logarithm;
@@ -79,19 +109,13 @@ private:
         return uint64_t(int64_t(a) * a) + uint64_t(int64_t(b) * b);
     }
     static int32_t sample(unsigned index) noexcept {
-        index &= 255u;
-        const unsigned position = index & 63u;
-        switch (index >> 6) {
-            case 0: return SIN_QUARTER[position];
-            case 1: return SIN_QUARTER[64u - position];
-            case 2: return -SIN_QUARTER[position];
-            default: return -SIN_QUARTER[64u - position];
-        }
+        return SIN_TABLE[index & 255u];
     }
     static int32_t interpolate(unsigned index, uint32_t fraction) noexcept {
         const int32_t first = sample(index);
-        const int64_t delta = int64_t(sample(index + 1u)) - first;
-        return first + static_cast<int32_t>(fixed_detail::roundedDivide(delta * fraction, int64_t(1) << 24));
+        const int32_t delta = sample(index + 1u) - first;
+        const int64_t product = int64_t(delta) * fraction;
+        return first + static_cast<int32_t>((product + (int64_t(1) << 23) - int64_t(product < 0)) >> 24);
     }
     // round(sin(pi*i/128) * 2^30), i=0..64. Quadrant symmetry gives 256 samples.
     inline static constexpr int32_t SIN_QUARTER[65] = {
@@ -105,6 +129,17 @@ private:
         1053110176, 1057933813, 1062120190, 1065666786, 1068571464, 1070832474, 1072448455, 1073418433,
         1073741824,
     };
+    // Expand symmetry at compile time: four branch-free loads per sin/cos pair.
+    inline static constexpr auto SIN_TABLE = [] {
+        std::array<int32_t, 256> table{};
+        for (unsigned i = 0; i < 64; ++i) {
+            table[i] = SIN_QUARTER[i];
+            table[64 + i] = SIN_QUARTER[64 - i];
+            table[128 + i] = -SIN_QUARTER[i];
+            table[192 + i] = -SIN_QUARTER[64 - i];
+        }
+        return table;
+    }();
 };
 
 template<class Scalar> struct AlphaBetaT { Scalar alpha{}; Scalar beta{}; };
@@ -155,7 +190,7 @@ struct FocTransforms {
         const Voltage common = low_side_clamped ? lowest : divideByConstant<Voltage, 2>(highest + lowest);
         const Duty zero = low_side_clamped ? Duty{} : number<Duty>(1, 2);
         if (bus <= number_v<Voltage, 1>) return {zero, zero, zero};
-        const Unit inverse_bus = divideTo<Unit>(number_v<Voltage, 1>, bus);
+        const Unit inverse_bus = Profile::Math::inverseBusVoltage(bus);
         return {zero + multiplyTo<Duty>(a - common, inverse_bus),
                 zero + multiplyTo<Duty>(b - common, inverse_bus),
                 zero + multiplyTo<Duty>(c - common, inverse_bus)};

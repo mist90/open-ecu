@@ -725,7 +725,13 @@ uint16_t oscAngle(Angle angle) noexcept {
     } else {
         constexpr Angle period = number_v<Angle, 628318530718LL, 100000000000LL>;
         const auto wrapped = wrapValue(angle, period);
-        return static_cast<uint16_t>((uint64_t(wrapped.raw()) << 16) / uint32_t(period.raw()));
+        // The reciprocal estimate is at most one count low. Correct it with
+        // a multiply/compare instead of a software 64-bit divide per OSC sample.
+        constexpr uint64_t reciprocal = (uint64_t(1) << 48) / uint32_t(period.raw());
+        const uint64_t numerator = uint64_t(wrapped.raw()) << 16;
+        uint32_t turn = static_cast<uint32_t>((uint64_t(wrapped.raw()) * reciprocal) >> 32);
+        if (uint64_t(turn + 1u) * uint32_t(period.raw()) <= numerator) ++turn;
+        return static_cast<uint16_t>(turn);
     }
 }
 
