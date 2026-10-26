@@ -20,6 +20,7 @@ struct FocParamsT {
     typename P::Inductance l_phase_h{};
     typename P::Flux flux_linkage_wb{};
     typename P::Fraction anti_windup_kb = number<typename P::Fraction>(1);
+    bool low_side_clamped_pwm = false;
 };
 
 /** @brief Pure, allocation-free electrical FOC loop with profile-owned math. */
@@ -55,7 +56,8 @@ public:
     void setAngleOffset(Angle angle) noexcept { params_.angle_offset_rad = angle; }
     void reset() noexcept {
         integral_d_ = integral_q_ = Integral{};
-        previous_ = {number<Duty>(1, 2), number<Duty>(1, 2), number<Duty>(1, 2)};
+        const Duty zero = params_.low_side_clamped_pwm ? Duty{} : number<Duty>(1, 2);
+        previous_ = {zero, zero, zero};
     }
 
     /** @brief Run one sample. Voltages and current magnitudes are physical SI values. */
@@ -118,8 +120,9 @@ public:
         }
 
         const auto voltage = Transforms::invPark(DqVectorT<Voltage>{out.v_d, out.v_q}, sine, cosine);
-        auto duty = Transforms::svpwm(voltage.alpha, voltage.beta, in.bus_voltage);
-        const Duty low = number_v<Duty, 1> - params_.max_duty_cycle;
+        auto duty = Transforms::svpwm(voltage.alpha, voltage.beta, in.bus_voltage,
+                                     params_.low_side_clamped_pwm);
+        const Duty low = params_.low_side_clamped_pwm ? Duty{} : number_v<Duty, 1> - params_.max_duty_cycle;
         out.duty_u = numericClamp(duty.u, low, params_.max_duty_cycle);
         out.duty_v = numericClamp(duty.v, low, params_.max_duty_cycle);
         out.duty_w = numericClamp(duty.w, low, params_.max_duty_cycle);

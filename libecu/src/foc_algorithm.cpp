@@ -21,6 +21,7 @@ bool FocAlgorithm::setParams(const FocParams& params) noexcept {
         params.max_duty_cycle < 0.5f || params.max_duty_cycle > 1.0f ||
         params.anti_windup_kb < 0.0f || params.anti_windup_kb > 1.0f) return false;
     typed.use_decoupling = params.use_decoupling;
+    typed.low_side_clamped_pwm = params.low_side_clamped_pwm;
     core_.setParams(typed);
     params_ = params;
     return true;
@@ -57,7 +58,8 @@ void FocAlgorithm::onEnter() noexcept {
     pwm_interface_.setChannelState(PwmChannel::PHASE_U, PwmState::UP);
     pwm_interface_.setChannelState(PwmChannel::PHASE_V, PwmState::UP);
     pwm_interface_.setChannelState(PwmChannel::PHASE_W, PwmState::UP);
-    pwm_interface_.updateNativeDutyCycle(number_v<Core::Duty, 1, 2>);
+    const Core::Duty zero = params_.low_side_clamped_pwm ? Core::Duty{} : number_v<Core::Duty, 1, 2>;
+    pwm_interface_.updateNativeDutyCycle(zero);
     pwm_interface_.apply();
 }
 

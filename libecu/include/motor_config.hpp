@@ -19,9 +19,6 @@
 #define BLDC_MIN_CURRENT  -6.0f
 #define BLDC_MAX_SPEED 12.0f
 #define BLDC_MAX_ACCELERATION 6.0f
-// Over-voltage cut-out: above this the bus is being pushed by regeneration
-// hard enough to damage the battery, and the drive goes to NEUTRAL.
-#define BLDC_MAX_VOLTAGE 36.0f
 // Thermal cut-out, degrees C, measured by the NTC on the board. Above this the
 // drive goes to NEUTRAL, the same way over-voltage does. Not yet calibrated
 // against a reference thermometer - see the NTC note in stm32_adc.cpp.
@@ -68,7 +65,6 @@
 #define BLDC_MIN_CURRENT  -6.0f
 #define BLDC_MAX_SPEED 200.0f
 #define BLDC_MAX_ACCELERATION 20.0f
-#define BLDC_MAX_VOLTAGE 36.0f
 #define BLDC_MAX_TEMPERATURE 100.0f
 #define BLDC_INVERTION true
 #define BLDC_SPEED_VOLTAGE_KP 0.005f

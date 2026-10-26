@@ -126,8 +126,8 @@ CURRENT REF.
   +3.3V powers the shield's analog section through CN7.16/CN6.4.
 * **Nucleo +5V → CN7.18 → shield `5V` net → J3.4**, the Hall sensor supply.
 * **J1.1 = V+/VIN+, J1.2 = V−/GND** — the separate motor power input. The
-  board is rated 10–48 V; MOTOR_1 has a software Vbus limit of 36 V and the
-  31.3 V nominal link used for PI tuning.
+  board is rated 10–48 V; this port allows a DC link up to **42 V**, with
+  overvoltage shutdown above that limit. The nominal link for PI tuning is 31.3 V.
 * **J1 → U4 ST1S14 → +15V → L6398**, then **U19 LD1117-5 → `+5V` → R170 →
   CN7.6 E5V**. On the shield schematic `5V` and `+5V` are different nets!
 * With JP5=U5V the E5V shield output is not tied to the USB +5V, so R170
@@ -178,7 +178,7 @@ For OFF the timer keeps CCxE=1, clears CCxNE, forces OCxREF inactive and
 sets OSSR=1: both line levels are then driven explicitly. MOE=0 with OSSI=1
 gives the same safe levels. Copying the G431 polarity, or disabling both
 CCxE/CCxNE, is not valid for this driver. The programmed TIM1 dead time is
-500 ns (50 ticks of 10 ns).
+1 µs (100 ticks of 10 ns).
 
 ### Phase currents
 
@@ -266,8 +266,8 @@ Trip level is about **30 A** of positive current. BKIN is active LOW and
 clears MOE asynchronously, without any ISR. AOE is off; the break handler
 latches the fault until reset. In addition the port disables the bridge on
 |Iphase| > 25 A, Vbus < 10 V while enabled, ADC/DMA failure or stall, and
-current-ISR overrun. The shared controller adds the MOTOR_1 limits:
-overvoltage, overtemperature and Hall health. These thresholds do not
+current-ISR overrun. The shared controller adds the board's 42 V overvoltage
+limit, the MOTOR_1 overtemperature limit and Hall health. These thresholds do not
 replace the hardware BKIN.
 
 ### Nets tied together on the shield
@@ -294,12 +294,13 @@ These matter even with a fixed pin map:
 * The connector is the **CN1 USB Mini-B on the ST-LINK half** of the Nucleo.
   No external USB-UART adapter is needed. The STM32F410 itself has no USB
   peripheral — the ST-LINK/V2-1 provides the virtual COM port.
-* **115200 baud, 8N1, no flow control**. Linux usually creates
+* **2,000,000 baud, 8N1, no flow control**, matching the G431. USART2 runs
+  from 50 MHz APB1 with an exact baud divider of 25. Linux usually creates
   `/dev/ttyACM0`; with several boards attached, pick the port under
   `/dev/serial/by-id/`.
 * RX uses DMA1 Stream5 Channel4 into a 256-byte ring. Transmits happen from
-  the main loop, never from the current-loop ISR. Pass the baud explicitly
-  to the project's utilities if their default assumes the 2 Mbaud G431 link.
+  the main loop, never from the current-loop ISR. The project's utilities
+  default to the same 2 Mbaud link.
 * SWD: ST-LINK → CN2 → PA13 SWDIO / PA14 SWCLK; NRST through SB12.
 
 ## 4. Peripherals and timing
@@ -309,7 +310,7 @@ These matter even with a fixed pin map:
 | HCLK / APB2 | 100 MHz / 100 MHz |
 | APB1 / TIM5CLK | 50 MHz / 100 MHz (doubled because the APB prescaler is 2) |
 | TIM1 | PSC=0, ARR=2500, RCR=0, center-aligned → 20 kHz |
-| TIM1 CH4 | CCR4=2300, PWM1, TRGO=OC4REF, falling edge |
+| TIM1 CH4 | CCR4=2400, PWM1, TRGO=OC4REF, falling edge |
 | ADC1 | APB2/4 = 25 MHz, 12 bit, U/V/W/Vbus injected, 15-cycle sampling |
 | DMA2 Stream0 Channel0 | NTC/pot, circular, two halfwords; regular sequence started once per 10 ms |
 | TIM5 | PSC=99, ARR=0xFFFFFFFF, 1 MHz counter; Hall XOR/IC1 with CKD=DIV2, IC1F=0xF |
@@ -322,20 +323,34 @@ only the digital-filter clock, not the counter rate. CH2/CH3 of TIM5 are
 inputs to the XOR only and are never enabled as outputs.
 
 The ADC is triggered **once per full PWM period**, by the falling OC4REF
-while counting up, 2 µs before the CNT peak. The three current conversions
+while counting up, 1 µs before the CNT peak. The three current conversions
 take about 3×(15+12)/25 MHz = **3.24 µs**, all four injected channels
 **4.32 µs**, plus a small trigger synchronization. The control ISR runs
 from **JEOC after the whole sequence**, so it always reads a fresh,
 consistent JDR1–JDR4 set.
 
 Unlike the G431, the currents are sampled sequentially, with no internal
-PGA and no hardware oversampling. With the 0.80 duty limit all low-side
-switches conduct near the counter peak inside a 10 µs window (−5…+5 µs);
-the last phase-current sample completes near +1.24 µs, which covers the
-500 ns dead time and the settling estimates of UM1996. The FOC
-`max_modulation=0.60` matches the symmetric duty bounds of 0.20–0.80. That
-limit caps the available voltage and top speed and should only be raised
-after measuring the sampling window on real hardware.
+PGA and no hardware oversampling. Each current's sample-and-hold aperture
+is 15/25 MHz = 0.60 µs; successive apertures start 1.08 µs apart. Relative
+to the counter peak, U/V/W sampling starts at −1.00/+0.08/+1.16 µs, plus
+up to 0.13 µs trigger latency (DS11144: three ADC clocks and one APB2 clock).
+
+FOC uses **low-side-clamped space-vector modulation (DPWMMIN)**: subtracting
+the lowest phase reference from all three references preserves the
+line-to-line voltages and keeps one low-side switch continuously on. The
+zero vector uses all low sides, with no all-high zero-vector interval.
+`max_modulation=0.95` matches the duty range **0.00–0.95**. The highest-duty
+phase is reconstructed from the other two currents: its 2.5 µs low-side
+window at maximum duty is too short for the complete sequential scan.
+For a circular voltage vector at 95% modulation, the two lower duties never
+exceed `sqrt(3)/2 × 0.95 ≈ 0.82273`. Each retained shunt therefore has at
+least 8.86 µs of low-side window. Even the earliest aperture starts after
+the 1 µs dead time and the 2 µs settling budget (UM1996 T-noise + T-rise);
+the latest aperture ends before its low-side switch turns off.
+
+The voltage-vector limit is applied before modulation, so the current
+regulators' anti-windup uses the same available voltage range as the PWM
+outputs. These settings are supplied by the board through `BoardInfo`.
 
 The NTC and potentiometer use a separate DMA-driven regular sequence with
 144-cycle sampling. The injected group preempts it. No ADC wait happens in

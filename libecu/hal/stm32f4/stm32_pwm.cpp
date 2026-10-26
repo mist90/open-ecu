@@ -52,7 +52,7 @@ bool Stm32Pwm::initialize(uint32_t frequency, uint16_t dead_time_ns) {
     for (uint32_t channel : {TIM_CHANNEL_1, TIM_CHANNEL_2, TIM_CHANNEL_3}) {
         if (HAL_TIM_PWM_ConfigChannel(&timer_, &oc, channel) != HAL_OK) return false;
     }
-    // OC4REF falls once per full period, 2 us BEFORE the centre of all-low time.
+    // OC4REF falls once per full period, 1 us BEFORE the centre of all-low time.
     // ADC JEXTSEL=TIM1_TRGO, falling edge; CH4 is internal, PA11 stays Hi-Z (BKIN net!).
     oc.Pulse = period_ - ihm08::ADC_LEAD_TICKS;
     if (HAL_TIM_PWM_ConfigChannel(&timer_, &oc, TIM_CHANNEL_4) != HAL_OK) return false;

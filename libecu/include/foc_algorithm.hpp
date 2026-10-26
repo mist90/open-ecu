@@ -101,6 +101,9 @@ struct FocParams {
      * A backstop only - the voltage limit above should keep the duties in
      * range - but it also enforces a minimum low-side on-time, which is what
      * keeps the two surviving shunt samples valid.
+     * With low_side_clamped_pwm, max_modulation may reach max_duty_cycle;
+     * centered modulation needs max_modulation <= 2*max_duty_cycle - 1
+     * to avoid clipping any angle of the voltage vector.
      */
     float max_duty_cycle;
 
@@ -147,6 +150,9 @@ struct FocParams {
      * integration it is meant to cancel.
      */
     float anti_windup_kb;
+
+    /// @brief Clamp the lowest phase duty to zero (DPWMMIN), preserving line voltages.
+    bool low_side_clamped_pwm = false;
 };
 
 /**

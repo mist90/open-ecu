@@ -13,7 +13,39 @@ static void check(bool ok, const char* message) {
     if (!ok) { if (failures < 15) std::printf("FAIL: %s\n", message); ++failures; }
 }
 
+template<class P>
+static void testLowSideClamped() {
+    using T = FocTransforms<P>;
+    using V = typename P::Voltage;
+    for (float bus : {10.0f, 31.3f, 42.0f}) {
+        for (float modulation : {0.0f, 0.3f, 0.6f, 0.8f, 0.95f}) {
+            for (int degrees = 0; degrees < 360; ++degrees) {
+                const float theta = degrees * FOC_PI / 180.0f;
+                const float alpha = bus * FOC_INV_SQRT3 * modulation * std::cos(theta);
+                const float beta = bus * FOC_INV_SQRT3 * modulation * std::sin(theta);
+                const auto duty = T::svpwm(numberCast<V>(alpha), numberCast<V>(beta), numberCast<V>(bus), true);
+                const float u = numberCast<float>(duty.u);
+                const float v = numberCast<float>(duty.v);
+                const float w = numberCast<float>(duty.w);
+                check(std::min({u, v, w}) == 0.0f, "DPWMMIN always holds one low side on");
+                check(std::max({u, v, w}) <= modulation + 0.000002f,
+                      "DPWMMIN duty never exceeds the modulation limit");
+                // Reconstruct actual motor voltages, independently of the modulator.
+                check(std::abs(bus * (2.0f * u - v - w) / 3.0f - alpha) < 0.0001f,
+                      "clamped duties reproduce requested alpha voltage through the entire linear range");
+                check(std::abs(bus * (v - w) / FOC_SQRT3 - beta) < 0.0001f,
+                      "clamped duties reproduce requested beta voltage through the entire linear range");
+            }
+        }
+    }
+    const auto dead = T::svpwm(number<V>(10), number<V>(10), V{}, true);
+    check(dead.u == typename P::Duty{} && dead.v == dead.u && dead.w == dead.u,
+          "DPWMMIN dead bus produces a non-switching zero vector");
+}
+
 int main() {
+    testLowSideClamped<FloatProfile>();
+    testLowSideClamped<FixedProfile>();
     using P = FixedProfile;
     using M = P::Math;
     using T = FocTransforms<P>;

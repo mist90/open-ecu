@@ -346,7 +346,8 @@ struct LoopResult {
  *        nonsense, to prove the reconstruction is actually load-bearing
  */
 static LoopResult runLoop(float iq_command, DriveMode drive_mode, float speed_hz_e,
-                          float seconds, bool corrupt_worst_shunt = false, bool decoupling = false)
+                          float seconds, bool corrupt_worst_shunt = false, bool decoupling = false,
+                          bool low_side_clamped = false)
 {
     FakePwm pwm;
     FocAlgorithm foc(pwm);
@@ -354,6 +355,7 @@ static LoopResult runLoop(float iq_command, DriveMode drive_mode, float speed_hz
     FocParams p;
     p.max_modulation = 0.95f;
     p.max_duty_cycle = 0.95f;
+    p.low_side_clamped_pwm = low_side_clamped;
     p.angle_offset_rad = 0.0f;   // the model and the algorithm share one angle
     p.id_target = 0.0f;
     p.use_decoupling = decoupling;
@@ -366,6 +368,10 @@ static LoopResult runLoop(float iq_command, DriveMode drive_mode, float speed_hz
     const float w_c = FOC_TWO_PI * 500.0f;
     foc.setCurrentPiGains(L_PHASE * w_c, R_PHASE * w_c);
     foc.onEnter();
+    if (low_side_clamped) {
+        check(pwm.duty_u == 0.0f && pwm.duty_v == 0.0f && pwm.duty_w == 0.0f,
+              "DPWMMIN enters with all low sides on, without a common-mode switching burst");
+    }
 
     MotorModel motor;
     const float dt = 1.0f / F_PWM;
@@ -494,6 +500,18 @@ static void testCurrentSignConvention()
 static void testClosedLoop()
 {
     std::printf("Closed-loop FOC against the MOTOR_1 model\n");
+
+    for (DriveMode mode : {DriveMode::FORWARD, DriveMode::REVERSE}) {
+        const float direction = mode == DriveMode::FORWARD ? 1.0f : -1.0f;
+        // Ten mechanical RPS needs more voltage than the old 0.60 limit.
+        // Include worst-shunt corruption to exercise the actual sampling path.
+        const auto r = runLoop(1.0f, mode, direction * 200.0f, 0.08f, true, false, true);
+        checkNear(r.i_d, 0.0f, 0.08f, "DPWMMIN holds Id at high speed");
+        checkNear(r.i_q, direction, 0.08f, "DPWMMIN tracks torque above the old voltage ceiling");
+        checkNear(r.reported_current, 1.0f, 0.08f, "DPWMMIN keeps the commanded-direction current sign");
+        check(r.min_duty == 0.0f && r.max_duty <= 0.95f,
+              "DPWMMIN motor loop stays inside the board duty bounds");
+    }
 
     for (DriveMode mode : {DriveMode::FORWARD, DriveMode::REVERSE}) {
         const float frequency = mode == DriveMode::FORWARD ? 120.0f : -120.0f;

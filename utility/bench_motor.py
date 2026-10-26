@@ -93,6 +93,8 @@ class Bench:
             row = {"t": now - self.started, "tag": self.tag, "line": line}
             result.append(line)
             self.records.append(row)
+            if self.guard and line.startswith("Board fault mask "):
+                raise RuntimeError(line)
             if line.startswith(("+TM:", "+PLL:", "+HSTATUS:")):
                 try:
                     values = [float(value) for value in line.split(":", 1)[1].split(";")]
@@ -113,7 +115,7 @@ class Bench:
                             raise RuntimeError(f"Current guard: {values[6]:.3f} A")
                         if abs(values[3]) > self.args.max_speed:
                             raise RuntimeError(f"Speed guard: {values[3]:.3f} RPS")
-                        if not 10.0 <= values[7] <= 30.0:
+                        if not self.args.min_bus_voltage <= values[7] <= self.args.max_bus_voltage:
                             raise RuntimeError(f"Bus-voltage guard: {values[7]:.3f} V")
                         if len(values) >= 10 and values[9] > 65.0:
                             raise RuntimeError(f"Temperature guard: {values[9]:.1f} C")
@@ -258,7 +260,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", default="/dev/ttyACM0")
     parser.add_argument("--platform", choices=("STM32G431", "STM32F410"), default="STM32G431")
-    parser.add_argument("--baud", type=int, help="UART baud rate (default: selected board's rate)")
+    parser.add_argument("--baud", type=int, default=BAUD, help="UART baud rate (default: 2000000)")
     parser.add_argument("--poles", type=int, required=True)
     parser.add_argument("--algo", type=int, choices=(0, 1), default=0)
     parser.add_argument("--mode", choices=("voltage", "current", "speed", "speed-voltage",
@@ -276,13 +278,19 @@ def main():
     parser.add_argument("--settle", type=float, default=1.0)
     parser.add_argument("--max-current", type=float, default=2.0)
     parser.add_argument("--max-speed", type=float, default=40.0)
+    parser.add_argument("--min-bus-voltage", type=float, default=10.0)
+    parser.add_argument("--max-bus-voltage", type=float,
+                        help="Bus guard (default: 42 V on F410, 30 V on G431)")
     parser.add_argument("--set", action="append", default=[], help="Additional setting, e.g. PLLID=100,5000")
     parser.add_argument("--profile-address", help="Address of pwm_bench_profile or F410 f410_timing_capture")
     parser.add_argument("--hall-swd", type=int, help="OpenOCD Tcl port for independent GPIO Hall sampling")
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
-    if args.baud is None:
-        args.baud = 115200 if args.platform == "STM32F410" else BAUD
+    if args.max_bus_voltage is None:
+        args.max_bus_voltage = 42.0 if args.platform == "STM32F410" else 30.0
+    if not (math.isfinite(args.min_bus_voltage) and math.isfinite(args.max_bus_voltage)
+            and 0 < args.min_bus_voltage < args.max_bus_voltage):
+        parser.error("Require finite bus guards with 0 < minimum < maximum")
     if args.poles <= 0 or args.poles % 2 or args.seconds <= 0 or args.settle < 0:
         parser.error("Require an even positive pole count and positive measurement duration")
     if not all(math.isfinite(value) and value >= 0 for value in (args.align_seconds, args.open_ramp_seconds)):
@@ -304,7 +312,7 @@ def main():
             bench.command("AT+" + setting)
         report["gains"] = {name: bench.command("AT+" + name + "?", "+" + name + ":")
                            for name in ("SPID", "CPID", "FPID", "PLLID", "FANG")}
-        # All three 100 Hz streams exceed the F410's 115200-baud VCP capacity.
+        # Older 115200-baud firmware cannot carry all three 100 Hz streams.
         streams = ("AT+TM=1", "AT+HSTATUS=1")
         if args.baud >= 230400:
             streams += ("AT+PLL=1",)
@@ -315,6 +323,8 @@ def main():
                    "DUT" if args.mode in ("voltage", "open-voltage") else "CUR")
         bench.armed = True
         bench.command(f"AT+DMODE={args.direction}")
+        if bench.command("AT+DMODE?", "+DMODE:") != str(args.direction):
+            raise RuntimeError("Drive did not enter the requested direction")
         if args.mode.startswith("open"):
             if args.align_seconds or args.open_ramp_seconds:
                 bench.tag = "alignment"

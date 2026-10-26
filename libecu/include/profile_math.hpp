@@ -141,7 +141,8 @@ struct FocTransforms {
                 multiplyTo<Scalar>(dq.d, sine) + multiplyTo<Scalar>(dq.q, cosine)};
     }
     static Voltage voltageLimit(Voltage bus) noexcept { return multiplyTo<Voltage>(bus, INV_SQRT3); }
-    static PhaseDutiesT<Duty> svpwm(Voltage alpha, Voltage beta, Voltage bus) noexcept {
+    static PhaseDutiesT<Duty> svpwm(Voltage alpha, Voltage beta, Voltage bus,
+                                  bool low_side_clamped = false) noexcept {
         const Voltage a = alpha;
         const Voltage half_alpha = divideByConstant<Voltage, 2>(alpha);
         const Voltage beta_component = multiplyTo<Voltage>(beta, SQRT3_OVER2);
@@ -149,13 +150,15 @@ struct FocTransforms {
         const Voltage c = -half_alpha - beta_component;
         const Voltage highest = a > b ? (a > c ? a : c) : (b > c ? b : c);
         const Voltage lowest = a < b ? (a < c ? a : c) : (b < c ? b : c);
-        const Voltage common = divideByConstant<Voltage, 2>(highest + lowest);
-        constexpr Duty half = number<Duty>(1, 2);
-        if (bus <= number_v<Voltage, 1>) return {half, half, half};
+        // Move only the common mode: DPWMMIN holds one low side continuously
+        // on, removing the all-high zero vector and extending shunt sampling.
+        const Voltage common = low_side_clamped ? lowest : divideByConstant<Voltage, 2>(highest + lowest);
+        const Duty zero = low_side_clamped ? Duty{} : number<Duty>(1, 2);
+        if (bus <= number_v<Voltage, 1>) return {zero, zero, zero};
         const Unit inverse_bus = divideTo<Unit>(number_v<Voltage, 1>, bus);
-        return {half + multiplyTo<Duty>(a - common, inverse_bus),
-                half + multiplyTo<Duty>(b - common, inverse_bus),
-                half + multiplyTo<Duty>(c - common, inverse_bus)};
+        return {zero + multiplyTo<Duty>(a - common, inverse_bus),
+                zero + multiplyTo<Duty>(b - common, inverse_bus),
+                zero + multiplyTo<Duty>(c - common, inverse_bus)};
     }
 };
 

@@ -6,7 +6,7 @@
 - **Build System**: CMake 3.16+ with ARM GCC toolchain
 - **Control Loop**: 100Hz speed control + 20kHz current loop (Hall sensors: async)
 - **Architecture**: Layered (libecu core → HAL → Application)
-- **Debug UART**: 115200 baud, PA2 (TX), PA3 (RX) — primary debug output
+- **Debug UART**: 2,000,000 baud, PA2 (TX), PA3 (RX) — primary debug output
 - **IDE support**: CMake generates `STM32G431/build/compile_commands.json`
 
 ## MCU Constraints (CRITICAL)

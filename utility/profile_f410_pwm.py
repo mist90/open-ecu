@@ -11,11 +11,12 @@ import serial
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'utility'))
-from ecu import frame
+from ecu import BAUD, frame
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--bench-elf', type=Path, required=True)
 parser.add_argument('--restore-elf', type=Path, required=True)
 parser.add_argument('--port', default='/dev/ttyACM0')
+parser.add_argument('--baud', type=int, default=BAUD)
 parser.add_argument('--stlink-serial')
 parser.add_argument('--output', type=Path, default=Path('/tmp/opencode/f410-pwm-timing.json'))
 args = parser.parse_args()
@@ -62,7 +63,7 @@ server = None
 connection = None
 results = []
 logfile = None
-with serial.Serial(args.port, 115200, timeout=.03) as uart:
+with serial.Serial(args.port, args.baud, timeout=.03) as uart:
     try:
         flash(ELF)
         boot = collect(uart, .4)

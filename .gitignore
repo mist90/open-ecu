@@ -21,6 +21,7 @@ tests/test_numeric_pll/test
 tests/test_profile_math/test
 tests/test_numeric_adc/test
 tests/test_f410_console/test
+tests/test_f410_sampling/test
 tests/test_open_loop/test
 libecu/lib/
 __pycache__/

@@ -47,7 +47,7 @@ libecu::MotorControlParams makeMotorParams(const libecu::BoardInfo& board_info) 
     motor_params.max_duty_cycle = board_info.max_duty_cycle;
     motor_params.max_current = BLDC_MAX_CURRENT;
     motor_params.min_current = BLDC_MIN_CURRENT;
-    motor_params.max_voltage = BLDC_MAX_VOLTAGE;
+    motor_params.max_voltage = board_info.max_bus_voltage;
     motor_params.max_temperature_c = BLDC_MAX_TEMPERATURE;
     motor_params.max_speed_rps = BLDC_MAX_SPEED;
     motor_params.acceleration_rate = BLDC_MAX_ACCELERATION;  // RPS/s
@@ -109,6 +109,7 @@ libecu::MotorControlParams makeMotorParams(const libecu::BoardInfo& board_info) 
 
     motor_params.foc.max_modulation = board_info.max_modulation;
     motor_params.foc.max_duty_cycle = motor_params.max_duty_cycle;
+    motor_params.foc.low_side_clamped_pwm = board_info.low_side_clamped_pwm;
     // -60 electrical degrees, derived from the six-step table geometry and the
     // PLL's +1-step field offset (see foc_algorithm.hpp). A derivation, not a
     // measurement - trim with AT+FANG on the bench before trusting the torque.

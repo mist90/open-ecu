@@ -125,7 +125,7 @@ sudo apt install gcc-arm-none-eabi cmake stlink-tools openocd
 # Build for specific platform
 ./build.sh --platform STM32G431
 
-# NUCLEO-F410RB + X-NUCLEO-IHM08M1, AT console over USB at 115200 baud
+# NUCLEO-F410RB + X-NUCLEO-IHM08M1, AT console over USB at 2000000 baud
 ./build.sh --platform STM32F410
 
 # Debug build (-O0); see the ISR budget note in docs/FOC_HANDOFF.md
@@ -194,6 +194,7 @@ Additional host regressions:
 - `tests/test_hall_handoff/run.sh` — physical Hall resynchronization after open-loop operation and parking
 - `tests/test_open_loop/run.sh float|fixed` — PWM-clocked field speed, direction and independent Hall feedback
 - `tests/test_f410_console/run.sh` — heapless console formatting and parsing
+- `tests/test_f410_sampling/run.sh` — retained-shunt ADC timing across the F410 modulation range
 - `tests/test_adc_scaling/run.sh` — injected ADC sums, zero calibration and regular-channel isolation
 - `tests/test_numeric_pll/run.sh` — paired float/fixed traces at 10/20/40 kHz
 - `tests/test_profile_math/run.sh` — LUT/transforms, voltage limits and Cortex-M0 helper audit

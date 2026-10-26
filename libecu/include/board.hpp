@@ -46,6 +46,8 @@ struct BoardInfo {
     uint16_t actual_dead_time_ns;   ///< Dead time the hardware actually programmed (ns)
     float    max_duty_cycle = 0.95f;///< Board sampling/bootstrap window limit
     float    max_modulation = 0.95f;///< FOC voltage-vector limit compatible with that window
+    float    max_bus_voltage = 36.0f;///< DC link overvoltage cut-out (V)
+    bool     low_side_clamped_pwm = false; ///< FOC zero vector uses only the low-side switches
 };
 
 /**
