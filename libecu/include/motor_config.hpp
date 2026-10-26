@@ -62,7 +62,7 @@
 // more than worst-case excursion.
 #define BLDC_ILOOP_BW_HZ        500.0f
 #else
-// JK42BLS01, tuned unloaded at 20.8 V. See docs/JK42BLS01_TUNING.md.
+// JK42BLS01, tuned unloaded at 20.8 V.
 #define BLDC_NUM_POLES 8
 #define BLDC_MAX_CURRENT 6.0f
 #define BLDC_MIN_CURRENT  -6.0f

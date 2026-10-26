@@ -1,115 +1,151 @@
 # NUCLEO-F410RB + X-NUCLEO-IHM08M1
 
-Порт `STM32F410` рассчитан на эту конкретную пару плат, установленных друг на
-друга через **оба 38-контактных ST morpho разъёма CN7 и CN10**. Одних Arduino
-разъёмов недостаточно. Мотор выбирается определением `MOTOR_1` в CMake этого
-порта: 40 полюсов, прежние параметры двигателя и FOC при запуске.
+The `STM32F410` port targets this exact board pair: a NUCLEO-F410RB with an
+X-NUCLEO-IHM08M1 power shield stacked through **both 38-pin ST morpho
+connectors CN7 and CN10**, plus **three extra Hall-to-TIM5 jumper wires**
+described below. The Arduino headers alone are not enough. The motor is
+selected by the `MOTOR_1` define of this port's CMake: 40 poles, the existing
+motor parameters and FOC at startup.
 
-Статус на 2026-10-26: прошивка `-O2`, float + hard FPU залита и верифицирована
-на F410. USB VCP работает в обе стороны. Время активного FOC измерено на MCU
-с синтетическими датчиками и принудительно отключённым мостом: максимум 27 µs
-при периоде 50 µs; подробнее §6. После восстановления R13 реальная калибровка
-всех трёх токовых каналов проходит, аварий и пропусков ISR нет; подробнее §7.
-Привод оставлен в NEUTRAL с нулевым заданием скорости, MOE=0.
-Вращение и силовые сигналы с питанием J1 ещё не проверены.
+Place the Nucleo below the shield, with both boards component-side up.
+The shield's wide power section and motor terminals point away from the
+ST-LINK USB connector; the Nucleo's B1 and B2 buttons remain accessible.
 
-## 1. Документация
+The clock source is the mandatory quartz-derived 8 MHz HSE from ST-LINK.
+Hall acquisition uses TIM5 with a 5.12 µs hardware input filter.
 
-Скачанные PDF и их SHA-256 находятся в
-[`hardware/NUCLEO-F410RB-IHM08M1/`](hardware/NUCLEO-F410RB-IHM08M1/README.md).
-Основные источники:
+## 1. Reference documents
 
-* **UM1724 Rev 17**: §7.5 питание, §7.10 UART, таблица 10 solder bridges,
-  рисунок 25 и таблицы 20/33 именно для **F410RB**.
-* **MB1136 C-04**, листы 2–5: питание, MCU, ST-LINK и разъёмы Nucleo.
-* **UM1996 Rev 4**: §2.2 сборка, таблица 1 перемычек, §4.1.2 измерение тока,
-  BOM R19 и таблица 7 электрических параметров IHM08M1.
-* **IHM08M1 schematic, version 3**, листы 1–3: силовая часть, аналоговая
-  обработка, маршрутизация выводов. PDF содержит также условия лицензии.
-* **STM32F410x8/B DS11144 Rev 8**, таблицы 9/10: выводы и AF.
-* **RM0401 Rev 4**: ADC1, TIM1, TIM5, DMA; в частности таблица 60 состояний
-  комплементарных выходов при MOE/CCxE/CCxNE/OSSI/OSSR.
-* **L6398**, таблицы 1/2 и характеристики dead time: **HIN активен HIGH,
-  LIN активен LOW**, встроенный dead time типично 320 ns.
+* **UM1724 Rev 17** — STM32 Nucleo-64 boards user manual: power (§7.5),
+  UART (§7.10), solder bridges (Table 10), Figure 25 and Tables 20/33 which
+  are specific to the **F410RB**.
+  <https://www.st.com/resource/en/user_manual/um1724-stm32-nucleo64-boards-mb1136-stmicroelectronics.pdf>
+* **MB1136 C-04** board schematic (Nucleo-64), sheets 2–5: power, MCU,
+  ST-LINK and connectors.
+  <https://www.st.com/resource/en/schematic_pack/mb1136-default-c04_schematic.pdf>
+* **UM1996 Rev 4** — IHM08M1 getting started: assembly (§2.2), jumper
+  Table 1, current sensing (§4.1.2), BOM R19 and electrical Table 7.
+  <https://www.st.com/resource/en/user_manual/um1996-getting-started-with-xnucleoihm08m1-lowvoltage-bldc-motor-driver-expansion-board-based-on-stl220n6f7-for-stm32-nucleo-stmicroelectronics.pdf>
+* **X-NUCLEO-IHM08M1 schematic, version 3**, sheets 1–3: power stage, analog
+  conditioning, pin routing.
+  <https://www.st.com/resource/en/schematic_pack/x-nucleo-ihm08m1_schematic.pdf>
+* **STM32F410x8/B DS11144 Rev 8** datasheet, Tables 9/10: pins and alternate
+  functions. <https://www.st.com/resource/en/datasheet/stm32f410rb.pdf>
+* **RM0401 Rev 4** reference manual: ADC1, TIM1, TIM5, DMA; in particular
+  Table 60 (complementary output control with MOE/CCxE/CCxNE/OSSI/OSSR).
+  <https://www.st.com/resource/en/reference_manual/rm0401-stm32f410-advanced-armbased-32bit-mcus-stmicroelectronics.pdf>
+* **L6398** gate driver datasheet, Tables 1/2 and dead-time data: **HIN is
+  active HIGH, LIN is active LOW**, built-in dead time typically 320 ns.
+  <https://www.st.com/resource/en/datasheet/l6398.pdf>
 
-Обозначение `CN10.23` ниже означает контакт 23 разъёма CN10, а не номер ножки
-корпуса MCU. Нумерация контактов и обозначения Rxx/Jxx взяты со схем.
+Notation: `CN10.23` below means pin 23 of connector CN10, not an MCU package
+pin. Connector pin numbers and Rxx/Jxx designators follow the schematics.
 
-## 2. Перемычки и питание
+## 2. Jumpers and power supply
 
-### NUCLEO-F410RB: конфигурация с питанием логики от USB
+### NUCLEO-F410RB: USB-powered logic configuration
 
-| Элемент | Положение | Назначение |
+| Item | Position | Purpose |
 |---|---|---|
-| CN2, обе перемычки | установлены | ST-LINK программирует встроенный F410 |
-| JP1 | разомкнута | штатное управление питанием при USB enumeration |
-| JP5 | **1–2, U5V** | логика Nucleo и shield питается от USB |
-| JP6 (IDD) | замкнута | питание MCU |
-| BOOT0 / CN7.5–7 | перемычки нет | загрузка из Flash, BOOT0 подтянут вниз |
-| SB13, SB14 | **ON** | USART2 подключён к ST-LINK VCP |
-| SB61, SB62, SB63 | **OFF** | PA3 не связан с AVDD; UART изолирован от D0/D1 |
-| SB51, SB56 | **ON** | PC0/PC1 проходят к CN7.38/CN7.36 для токов W/V |
-| SB46, SB52 | **OFF** | вместо этих аналоговых входов не подключены PB9/PB8 I²C |
-| SB17 | ON | кнопка B1 подключена к PC13 |
+| CN2, both jumpers | fitted | ST-LINK programs the on-board F410 |
+| JP1 | open | default USB power management |
+| JP5 | **1–2, U5V** | Nucleo and shield logic powered from USB |
+| JP6 (IDD) | closed | MCU supply |
+| BOOT0 / CN7.5–7 | no jumper | boot from Flash; BOOT0 pulled down |
+| SB13, SB14 | **ON** | USART2 routed to the ST-LINK virtual COM port |
+| SB61, SB62, SB63 | **OFF** | PA3 not tied to AVDD; UART isolated from D0/D1 |
+| SB51, SB56 | **ON** | PC0/PC1 reach CN7.38/CN7.36 for the W/V currents |
+| SB46, SB52 | **OFF** | PB9/PB8 I²C not substituted on those analog inputs |
+| SB17 | ON | user button B1 connected to PC13 |
+| SB16, SB50 | **ON** | quartz-derived 8 MHz MCO from ST-LINK to PH0/HSE of the F410 |
+| SB54 / SB55 | ON / OFF | factory MCO routing; R35/R37 and X3 are not fitted |
 
-SBxx — паяные перемычки, обычно уже выставлены как нужно. SB15 соединяет PB3
-со **входом** SWO ST-LINK; это не второй выход на линии Hall. Порт переводит
-PB3 в EXTI и не включает SWO/JTAG trace; SWD на PA13/PA14 работает. SB21/LD2
-на PA5 допустим, поскольку BEMF3 здесь не измеряется и PA5 не управляется как LED.
+SBxx are solder bridges, normally factory-set as listed. SB15 connects PB3
+to the **input** side of the ST-LINK SWO — it is not a second output on any
+Hall line; this port leaves PB3 in high-impedance analog mode and never
+enables SWO/JTAG trace. SWD on PA13/PA14 keeps working. SB21/LD2 on PA5 is
+acceptable: BEMF3 is not measured here and PA5 is never driven as an LED.
 
-Тактовая частота получается из внутреннего HSI: HSI16 / 16 × 200 / 2 = 100 MHz.
-Прошивке не нужен MCO от ST-LINK, состояние HSE-перемычек не определяет её запуск.
+Clock tree: **ST-LINK crystal 8 MHz → MCO → SB16/SB50 → PH0 with HSE in
+bypass → PLL /8 × 200 / 2 = 100 MHz**. The crystal reference defines the
+speed and PWM timebases. If HSE is absent, initialization fails with the
+bridge disabled; there is no operating fallback to HSI. Clock security
+(CSS) raises an NMI on HSE loss, which also parks the bridge.
 
-### X-NUCLEO-IHM08M1: трёхшунтовая конфигурация с биполярным измерением
+### Mandatory extra Hall wiring
 
-Настройки одинаковы для FOC и для `AT+ALGO=0` в этой прошивке:
+The sensors stay connected to the stock J3 header of the IHM08M1. Downstream
+of the shield's RC filters, pull-ups (JP3) and clamping diodes, three jumper
+wires route the same signals to TIM5:
 
-| Элемент | Положение / действие |
+| Signal | From | To |
+|---|---|---|
+| H1 | **CN7.17 — PA15** | **CN10.16 — PB12 / AF2 TIM5_CH1** |
+| H2 | **CN10.31 — PB3** | **CN7.1 — PC10 / AF2 TIM5_CH2** |
+| H3 | **CN10.25 — PB10** | **CN7.2 — PC11 / AF2 TIM5_CH3** |
+
+The reason for these wires: the Hall lines run in the same cable as the
+motor phases and pick up strong switching interference. On its native pins
+PA15/PB3/PB10 the F410 has no timer with a common Hall-sensor interface,
+and a plain EXTI input has no input filter at all. TIM5 provides the XOR of
+three inputs with a digital filter (see the Hall section below). The
+original PA15/PB3/PB10 pads are left Hi-Z, the shield's R79/R81/R84 stay
+fitted, and keeping J3 in the path preserves the shield's whole analog
+front end. Wire the jumpers with USB and J1 power removed.
+
+### X-NUCLEO-IHM08M1: three-shunt bipolar sensing
+
+The settings are the same for FOC and for `AT+ALGO=0` in this firmware:
+
+| Item | Position / action |
 |---|---|
-| JP1 | **замкнуть** — смещение усилителя фазы V для биполярного тока |
-| JP2 | **замкнуть** — одинаковое усиление всех трёх каналов |
-| JP3 | **замкнуть** — подтяжки Hall к 3.3 V |
-| J5 | **3Sh**, SENS1 соединён с Vshunt_1 |
-| J6 | **3Sh**, SENS3 соединён с Vshunt_3 |
-| J9 | **разомкнуть** — силовое напряжение не подаётся напрямую на VIN Nucleo |
-| C3, C5, C7 | **снять**, как требует UM1996 для FOC |
-| R170 | установлен, штатный 0 Ω: выход 5 V shield идёт на E5V Nucleo |
-| J7 | свободен, это диагностический разъём |
+| JP1 | **close** — V-channel amplifier bias for bipolar current |
+| JP2 | **close** — equal gain on all three channels |
+| JP3 | **close** — Hall pull-ups to 3.3 V |
+| J5 | **3Sh**, SENS1 tied to Vshunt_1 |
+| J6 | **3Sh**, SENS3 tied to Vshunt_3 |
+| J9 | **open** — motor power is not fed onto the Nucleo VIN input |
+| C3, C5, C7 | **remove**, as UM1996 requires for FOC |
+| R170 | fitted, stock 0 Ω: the shield's 5 V output feeds the Nucleo E5V |
+| J7 | left free — debug header |
 
-**J5/J6 на серийной плате могут быть паяными перемычками**, а не съёмными
-джамперами. Перенести соединение с `1Sh` на `3Sh`, не замыкать обе стороны.
-Изменения выполняются при отключённых USB и J1. Для проверки конфигурации не
-измерять «прозвонку на землю»: через шунты 10 mΩ обе стороны почти закорочены.
+**J5/J6 on a production board may be solder bridges** rather than removable
+jumpers: move the connection from `1Sh` to `3Sh`, do not bridge both sides.
+Reconfigure with USB and J1 power removed. Do not verify the setting with a
+continuity-to-ground test: through the 10 mΩ shunts both sides are nearly
+shorted.
 
-В штатной разводке должны присутствовать R47/R48/R50 (токи), R51 (Vbus), R54
-(температура), R56/R58/R64/R67/R70/R72 (PWM), R78 (BKIN), R79/R81/R84 (Hall).
-R76 не устанавливать: иначе PA4 потенциометра попадёт на CURRENT REF.
+The stock build must have R47/R48/R50 (currents), R51 (Vbus), R54
+(temperature), R56/R58/R64/R67/R70/R72 (PWM), R78 (BKIN) and R79/R81/R84
+(Hall) fitted. Do not fit R76: it would tie the PA4 potentiometer line to
+CURRENT REF.
 
-### Пути питания
+### Power paths
 
-* **USB Mini-B CN1 Nucleo → U5V → T2 → JP5.1–2 → +5V → U4 3.3V → JP6 → MCU**.
-  +3.3V через CN7.16/CN6.4 питает аналоговую часть shield.
-* **+5V Nucleo → CN7.18 → `5V` shield → J3.4**, питание датчиков Hall.
-* **J1.1 = V+/VIN+, J1.2 = V−/GND**. Это отдельное питание силовой части,
-  не питание от USB. На плате указан диапазон 10–48 V; MOTOR_1 имеет программный
-  предел Vbus 36 V, номинал для начальной настройки регуляторов здесь 31.3 V.
-* **J1 → U4 ST1S14 → +15V → L6398**, затем **U19 LD1117-5 → `+5V` → R170 →
-  CN7.6 E5V**. На схеме shield `5V` и `+5V` — разные сети!
-* При JP5=U5V питание shield на E5V не соединено с USB +5V. Поэтому для этой
-  конфигурации R170 снимать не требуется. **J9 при MOTOR_1 оставлять открытым**:
-  закрытый J9 передаст ~31 V на рассчитанный на 7–12 V вход VIN Nucleo.
-* GND обеих плат соединены через morpho. Силовой ток возвращается через J1.2.
+* **Nucleo USB Mini-B CN1 → U5V → T2 → JP5.1–2 → +5V → U4 3.3V → JP6 → MCU**.
+  +3.3V powers the shield's analog section through CN7.16/CN6.4.
+* **Nucleo +5V → CN7.18 → shield `5V` net → J3.4**, the Hall sensor supply.
+* **J1.1 = V+/VIN+, J1.2 = V−/GND** — the separate motor power input. The
+  board is rated 10–48 V; MOTOR_1 has a software Vbus limit of 36 V and the
+  31.3 V nominal link used for PI tuning.
+* **J1 → U4 ST1S14 → +15V → L6398**, then **U19 LD1117-5 → `+5V` → R170 →
+  CN7.6 E5V**. On the shield schematic `5V` and `+5V` are different nets!
+* With JP5=U5V the E5V shield output is not tied to the USB +5V, so R170
+  stays fitted. **Keep J9 open with MOTOR_1**: closed, it would put ~31 V on
+  a Nucleo VIN input rated for 7–12 V.
+* The grounds of both boards join through the morpho connectors. Motor
+  current returns through J1.2.
 
-Для работы без питания логики от USB используется JP5 **2–3, E5V** и питание
-J1; это также штатная схема UM1996. USB при этом нужен для VCP/прошивки.
+To run without USB logic power, set JP5 to **2–3, E5V** and power J1 — the
+stock UM1996 configuration. USB is then still needed for the VCP/flashing.
 
-## 3. Полные пути значимых сигналов
+## 3. Signal paths
 
-### PWM и мотор
+### PWM and motor
 
-Все шесть таймерных выходов — **AF1 TIM1**, 20 kHz, center-aligned.
+All six timer outputs are **AF1 TIM1**, 20 kHz, center-aligned.
 
-| Фаза | MCU / функция | Morpho → резистор shield → драйвер → MOSFET |
+| Phase | MCU / function | Morpho → shield resistor → driver → MOSFET |
 |---|---|---|
 | U high | PA8 / CH1 | CN10.23 → R56 → U22.HIN (2) → HVG → Q11 |
 | U low | PA7 / CH1N | CN10.15 → R58 → U22.LIN (1) → LVG → Q12 |
@@ -118,93 +154,107 @@ J1; это также штатная схема UM1996. USB при этом ну
 | W high | PA10 / CH3 | CN10.33 → R70 → U21.HIN (2) → HVG → Q9 |
 | W low | PB1 / CH3N | CN10.24 → R72 → U21.LIN (1) → LVG → Q10 |
 
-**На схеме J16 нумерация обратная именам фаз:**
+**On the schematic the J16 pin order is reversed relative to the phase
+names:**
 
-* U = OUT1 = середина Q11/Q12 = **J16.3**.
-* V = OUT2 = середина Q7/Q8 = **J16.2**.
-* W = OUT3 = середина Q9/Q10 = **J16.1**.
+* U = OUT1 = midpoint of Q11/Q12 = **J16.3**.
+* V = OUT2 = midpoint of Q7/Q8 = **J16.2**.
+* W = OUT3 = midpoint of Q9/Q10 = **J16.1**.
 
-Перенести провода U/V/W и Hall1/2/3 в том же логическом порядке, что на G431;
-цвета проводов двигателя схема плат определить не позволяет.
+Move the U/V/W motor wires and Hall1/2/3 in the same logical order as on
+the G431; the board schematics cannot tell you the wire colors of a given
+motor cable.
 
-Полярность CHxN = LOW; OISx=0, OISxN=1. У L6398:
+CHxN polarity is LOW; OISx=0, OISxN=1. For the L6398:
 
-| Состояние | HIN | LIN | Результат |
+| State | HIN | LIN | Result |
 |---|---|---|---|
-| OFF / NEUTRAL | 0 | 1 | оба ключа закрыты |
-| high active | 1 | 1 | верхний ключ открыт |
-| DOWN | 0 | 0 | нижний ключ открыт |
-| dead time | 0 | 1 | оба закрыты |
+| OFF / NEUTRAL | 0 | 1 | both switches off |
+| high side active | 1 | 1 | high-side switch on |
+| DOWN | 0 | 0 | low-side switch on |
+| dead time | 0 | 1 | both off |
 
-Для OFF таймер сохраняет CCxE=1, ставит CCxNE=0, forced-inactive и OSSR=1.
-Это задаёт оба уровня явно. MOE=0 с OSSI=1 даёт те же безопасные уровни.
-Просто скопировать полярность G431 или отключить оба CCxE/CCxNE нельзя.
-Программируемый dead time TIM1 — 500 ns (50 тактов по 10 ns); это стартовое
-значение, ещё не измеренный оптимум данного силового каскада.
+For OFF the timer keeps CCxE=1, clears CCxNE, forces OCxREF inactive and
+sets OSSR=1: both line levels are then driven explicitly. MOE=0 with OSSI=1
+gives the same safe levels. Copying the G431 polarity, or disabling both
+CCxE/CCxNE, is not valid for this driver. The programmed TIM1 dead time is
+500 ns (50 ticks of 10 ns).
 
-### Фазные токи
+### Phase currents
 
-| Фаза | Путь низкой стороны и аналогового сигнала | MCU |
+| Phase | Low-side and analog signal path | MCU |
 |---|---|---|
 | U | Q12 → SENS1 → J5=3Sh → R43 10 mΩ → GND; Vshunt_1 → R2/R1 → U10A → R3 → Curr_fdbk1 → R47 → CN7.28 | PA0 / ADC1_IN0, injected rank 1 |
 | V | Q8 → SENS2/Vshunt_2 → R44 10 mΩ → GND; R7/R6 → U10B → R8 → Curr_fdbk2 → R48 → CN7.36 | PC1 / ADC1_IN11, rank 2 |
 | W | Q10 → SENS3 → J6=3Sh → R45 10 mΩ → GND; Vshunt_3 → R13/R12 → U10C → R14 → Curr_fdbk3 → R50 → CN7.38 | PC0 / ADC1_IN10, rank 3 |
 
-При замкнутых JP1/JP2:
+With JP1/JP2 closed:
 
 ```
 G = (1 + 4700/1000) × 6800/(6800+680) = 57/11 ≈ 5.181818
-Vzero = 3.3 × 680/(6800+680) × 5.7 ≈ 1.710 V ≈ 2122 отсчёта
+Vzero = 3.3 × 680/(6800+680) × 5.7 ≈ 1.710 V ≈ 2122 counts
 I = (raw - zero) × 3.3 / (4095 × 0.010 × G)
 ```
 
-Калибровка усредняет реальные нули всех фаз при отключённом мосте. Значения
-далеко от середины диапазона отвергаются; это выявляет отсутствие питания
-усилителя/неверное положение JP1/проблему аналогового соединения. При отказе
-мост блокируется до reset, но AT-консоль продолжает работать для диагностики.
-Калибровка производится на неподвижном моторе.
-Положительный ток соответствует направлению из фазы через нижний ключ в шунт;
-FOC сам преобразует этот знак в принятую систему фазных токов.
+At startup the firmware averages the real zero of every phase with the
+bridge off. A zero far from mid-scale is rejected, which catches an
+unpowered amplifier, a wrong JP1 position or a broken analog connection. On
+failure the bridge stays disabled until reset, while the AT console keeps
+working for diagnostics. Calibrate with the motor stationary. Positive
+current is the direction out of the phase through the low-side switch into
+the shunt; FOC converts that sign into its own phase-current convention.
 
-### Напряжение, температура и ручное управление
+### Bus voltage, temperature and manual inputs
 
-| Сигнал | Путь | MCU / использование |
+| Signal | Path | MCU / use |
 |---|---|---|
-| Vbus | J1.1 → R17 169 kΩ → VBUS_SENS/VBUS; R18 9.31 kΩ на GND, C14 4.7 nF → R51 → CN7.30 | PA1 / ADC1_IN1, injected rank 4 |
-| Температура | 3.3V → R19 NTC 10 kΩ → Temperature feedback → R20 4.7 kΩ → GND; C10 10 nF → R54 → CN7.35 | PC2 / ADC1_IN12, regular rank 1 |
-| Потенциометр | R42 движок / SPEED → R181 → CN7.32 | PA4 / ADC1_IN4, regular rank 2 |
-| Кнопка B1 | VDD → R30 4.7 kΩ → SB17/PC13; B1 замыкает на GND | PC13, активный LOW |
+| Vbus | J1.1 → R17 169 kΩ → VBUS_SENS/VBUS; R18 9.31 kΩ to GND, C14 4.7 nF → R51 → CN7.30 | PA1 / ADC1_IN1, injected rank 4 |
+| Temperature | 3.3V → R19 NTC 10 kΩ → temperature feedback → R20 4.7 kΩ → GND; C10 10 nF → R54 → CN7.35 | PC2 / ADC1_IN12, regular rank 1 |
+| Potentiometer | R42 wiper / SPEED → R181 → CN7.32 | PA4 / ADC1_IN4, regular rank 2 |
+| Button B1 | VDD → R30 4.7 kΩ → SB17/PC13; B1 shorts to GND | PC13, active LOW |
 
-Vbus = raw × 3.3 / 4095 × (169000+9310)/9310, коэффициент ≈19.153.
-NTC из BOM — TDK NTCG103JF103F, R25=10 kΩ, B25/85=3435 K; напряжение
-увеличивается при нагреве. При 25 °C ожидается около 1.055 V. R42 отсутствует
-на опубликованном листе схемы, но присутствует на плате и в BOM; вывод SPEED
-и R181 показаны явно. Это известный пропуск схемы, не альтернативная распиновка.
+Vbus = raw × 3.3 / 4095 × (169000+9310)/9310, ratio ≈ 19.153. The BOM NTC
+is a TDK NTCG103JF103F: R25 = 10 kΩ, B25/85 = 3435 K; the pin voltage rises
+with temperature, about 1.055 V at 25 °C. R42 is missing from the published
+schematic sheet but present on the board and in the BOM; the SPEED net and
+R181 are shown explicitly. It is a known schematic omission, not an
+alternative pinout.
 
-По умолчанию управляет AT-консоль. Опция сборки `--throttle` включает
-потенциометр как задание скорости и B1 как тормоз (нулевое задание скорости
-при включённом мосте). Эта опция может запустить мотор при открытом потенциометре
-после загрузки. Для первоначальной проверки используется стандартная AT-сборка.
+By default the AT console controls the drive. The `--throttle` build option
+enables the potentiometer as the speed demand and B1 as a brake (zero speed
+command with the bridge still enabled). That option can spin the motor at
+power-up if the pot is open — use the stock AT build for first bring-up.
 
 ### Hall
 
-| J3 | Путь на shield | Morpho / MCU |
+| J3 | Shield path | Morpho / MCU |
 |---|---|---|
-| 1: A+/H1 | R30 1.8 kΩ → A+/H1 → R79 | CN7.17 → PA15 / EXTI15, bit 0 |
-| 2: B+/H2 | R31 1.8 kΩ → B+/H2 → R81 | CN10.31 → PB3 / EXTI3, bit 1 |
-| 3: Z+/H3 | R32 1.8 kΩ → Z+/H3 → R84 | CN10.25 → PB10 / EXTI10, bit 2 |
-| 4 | 5V | питание Hall от Nucleo +5V |
-| 5 | GND | общий провод |
+| 1: A+/H1 | R30 1.8 kΩ → A+/H1 → R79 | CN7.17 → jumper → CN10.16 → PB12 / TIM5_CH1, bit 0 |
+| 2: B+/H2 | R31 1.8 kΩ → B+/H2 → R81 | CN10.31 → jumper → CN7.1 → PC10 / TIM5_CH2, bit 1 |
+| 3: Z+/H3 | R32 1.8 kΩ → Z+/H3 → R84 | CN10.25 → jumper → CN7.2 → PC11 / TIM5_CH3, bit 2 |
+| 4 | 5V | Hall supply from the Nucleo +5V |
+| 5 | GND | common return |
 
-JP3 включает R27/R28/R29 10 kΩ к 3.3V; D2/D3/D4 ограничивают положительный
-уровень. Основной вариант датчиков — открытый коллектор. Проверить распиновку
-собственного кабеля перед подключением: стандартного порядка цветов нет.
-Таблица кодов общая с G431: 001→0, 011→1, 010→2, 110→3, 100→4, 101→5;
-000/111 невалидны. На F410 эти три вывода не образуют таймерный Hall interface:
-**TIM2 у него отсутствует**, используются EXTI по обоим фронтам и отложенное
-чтение существующего контроллера.
+JP3 enables the R27/R28/R29 10 kΩ pull-ups to 3.3 V; D2/D3/D4 clamp the
+positive level. Most sensors here are open-collector — check the pinout of
+your particular cable before connecting, there is no standard color order.
+The sector decode is shared with the G431: 001→0, 011→1, 010→2, 110→3,
+100→4, 101→5; 000/111 are invalid.
 
-### Аппаратная токовая защита
+Because the F410 has no timer Hall interface on PA15/PB3/PB10, the three
+jumpers above feed TIM5. It runs with the XOR of the three inputs enabled
+(`TI1S=1`), captures both filtered edges through TI1F_ED/TRC on channel 1
+and raises the TIM5 interrupt; the controller then re-reads the sector
+level in the PWM ISR, as on the G431.
+
+Input filter: **CKD=DIV2, IC1F=0xF** — eight samples at fDTS/32 =
+1.5625 MHz, a nominal qualification window of **5.12 µs**. The setting is
+deliberately conservative: a shorter window admits PWM-correlated pulses
+picked up on the shared motor cable, while genuine Hall edges on this motor
+are orders of magnitude slower. The filter clock division does not affect
+the timer counter (see below).
+
+### Hardware overcurrent protection
 
 ```
 Vshunt_1/2/3 → R171/R174/R176 + RC → U24/U25/U26 LMV331
@@ -212,264 +262,163 @@ Vshunt_1/2/3 → R171/R174/R176 + RC → U24/U25/U26 LMV331
 open-collector outputs → BKIN → R78 → CN10.13 → PA6 / AF1 TIM1_BKIN
 ```
 
-Срабатывание при положительном токе около **30 A**. BKIN активен LOW и
-асинхронно сбрасывает MOE без участия ISR. AOE выключен; обработчик фиксирует
-аварию до reset. В дополнение порт отключает мост при |Iphase| >25 A, Vbus<10 V
-во включённом состоянии, ошибке ADC/DMA, остановке выборок или превышении
-периода токовым ISR. Общий контроллер применяет пределы MOTOR_1: перенапряжение,
-температура и Hall health. Эти пороги не заменяют аппаратный BKIN.
+Trip level is about **30 A** of positive current. BKIN is active LOW and
+clears MOE asynchronously, without any ISR. AOE is off; the break handler
+latches the fault until reset. In addition the port disables the bridge on
+|Iphase| > 25 A, Vbus < 10 V while enabled, ADC/DMA failure or stall, and
+current-ISR overrun. The shared controller adds the MOTOR_1 limits:
+overvoltage, overtemperature and Hall health. These thresholds do not
+replace the hardware BKIN.
 
-### Линии, соединённые между собой на shield
+### Nets tied together on the shield
 
-Их важно учитывать даже при жёсткой распиновке:
+These matter even with a fixed pin map:
 
-* R58/R86: **PA7 и PB15** соединены на сети U-LIN. PB15 на F410 имеет функцию
-  **CH3N**, а не CH1N: он оставлен Hi-Z.
-* R73/R74/R78: **PA11, PB14 и PA6** сидят на BKIN. PA11 имеет функцию CH4,
-  но ADC trigger использует CH4 только внутри TIM1. Выводить его на PA11 нельзя.
-  PA11/PB14 оставлены Hi-Z.
-* R63/R62/R65: **PA5, PB13, PC5** соединены на BEMF3. Они оставлены Hi-Z.
-* BEMF2 R60 выведен на CN10.18: у **F410RB это NC**, а не PB11.
-  Другая ветвь R61 идёт на PC4. Sensorless в этом порте не используется.
-* PC3/BEMF1, PC9/GPIO_BEMF, PB4/CURRENT REF и PA12/CPOUT не управляются.
-  CPOUT — отдельный компаратор со своим порогом; аппаратный BKIN использует
-  U24–U26 и от CURRENT REF не зависит.
+* R58/R86 tie **PA7 and PB15** together on the U-LIN net. On the F410 PB15
+  is **TIM1_CH3N**, not CH1N: it is left Hi-Z.
+* R73/R74/R78 put **PA11, PB14 and PA6** on BKIN. PA11 is TIM1_CH4, but the
+  ADC trigger uses CH4 only inside TIM1 — it must not reach the PA11 pin.
+  PA11/PB14 are left Hi-Z.
+* R63/R62/R65 tie **PA5, PB13, PC5** to BEMF3. All left Hi-Z.
+* BEMF2 via R60 lands on CN10.18, which is **NC on the F410RB**, not PB11.
+  The other branch, R61, goes to PC4. Sensorless operation is not used in
+  this port.
+* PC3/BEMF1, PC9/GPIO_BEMF, PB4/CURRENT REF and PA12/CPOUT are never driven.
+  CPOUT is a separate comparator with its own threshold; the hardware BKIN
+  uses U24–U26 and is independent of CURRENT REF.
 
-### UART через USB и SWD
+### UART over USB and SWD
 
 * **F410 PA2 / USART2_TX AF7 → USART_TX → SB13 → ST-LINK PA3 / RX → USB VCP**.
 * **USB VCP → ST-LINK PA2 / TX → SB14 → USART_RX → F410 PA3 / USART2_RX AF7**.
-* Коннектор — **CN1 USB Mini-B на части ST-LINK**. Внешний USB–UART не нужен.
-  У самого STM32F410 USB-периферии нет: USB здесь реализует ST-LINK/V2-1.
-* Скорость **115200, 8N1, без flow control**. Linux обычно создаёт `/dev/ttyACM0`;
-  при нескольких платах выбирать по `/dev/serial/by-id/`.
-* RX использует DMA1 Stream5 Channel4, кольцо 256 байт. Передача идёт из main,
-  никогда из токового ISR. Утилитам проекта указывать baud 115200 явно, если
-  их значение по умолчанию рассчитано на G431 с 2 Mbaud.
-* SWD: ST-LINK → CN2 → PA13 SWDIO / PA14 SWCLK; NRST через SB12.
+* The connector is the **CN1 USB Mini-B on the ST-LINK half** of the Nucleo.
+  No external USB-UART adapter is needed. The STM32F410 itself has no USB
+  peripheral — the ST-LINK/V2-1 provides the virtual COM port.
+* **115200 baud, 8N1, no flow control**. Linux usually creates
+  `/dev/ttyACM0`; with several boards attached, pick the port under
+  `/dev/serial/by-id/`.
+* RX uses DMA1 Stream5 Channel4 into a 256-byte ring. Transmits happen from
+  the main loop, never from the current-loop ISR. Pass the baud explicitly
+  to the project's utilities if their default assumes the 2 Mbaud G431 link.
+* SWD: ST-LINK → CN2 → PA13 SWDIO / PA14 SWCLK; NRST through SB12.
 
-## 4. Периферия и временная диаграмма
+## 4. Peripherals and timing
 
-| Ресурс | Настройка |
+| Resource | Configuration |
 |---|---|
 | HCLK / APB2 | 100 MHz / 100 MHz |
-| APB1 / TIM5CLK | 50 MHz / 100 MHz (удвоение при APB prescaler=2) |
+| APB1 / TIM5CLK | 50 MHz / 100 MHz (doubled because the APB prescaler is 2) |
 | TIM1 | PSC=0, ARR=2500, RCR=0, center-aligned → 20 kHz |
-| TIM1 CH4 | CCR4=2300, PWM1, TRGO=OC4REF, падающий фронт |
-| ADC1 | APB2/4=25 MHz, 12 бит, U/V/W/Vbus injected, 15 cycles sample |
-| DMA2 Stream0 Channel0 | NTC/pot, circular, две halfword; запуск regular раз в 10 ms |
-| TIM5 | PSC=99, ARR=0xFFFFFFFF, счётчик 1 MHz для `time_us()` |
-| SysTick | 1 kHz HAL tick, делитель 10 для speed loop 100 Hz |
-| IRQ priority | BKIN=0; ADC/ADC DMA=1; Hall EXTI=2; SysTick=3 |
+| TIM1 CH4 | CCR4=2300, PWM1, TRGO=OC4REF, falling edge |
+| ADC1 | APB2/4 = 25 MHz, 12 bit, U/V/W/Vbus injected, 15-cycle sampling |
+| DMA2 Stream0 Channel0 | NTC/pot, circular, two halfwords; regular sequence started once per 10 ms |
+| TIM5 | PSC=99, ARR=0xFFFFFFFF, 1 MHz counter; Hall XOR/IC1 with CKD=DIV2, IC1F=0xF |
+| SysTick | 1 kHz HAL tick, divided by 10 for the 100 Hz speed loop |
+| IRQ priorities | BKIN=0; ADC/ADC DMA=1; Hall TIM5=2; SysTick=3 |
 
-ADC запускается **один раз за полный период**, на падающем OC4REF при счёте
-вверх, за 2 µs до верхней точки CNT. Три тока занимают около
-3×(15+12)/25 MHz = **3.24 µs**, все четыре injected канала — **4.32 µs**,
-плюс небольшая синхронизация триггера. Контроллер запускается из **JEOC после
-завершения всей последовательности**, поэтому читает новые согласованные JDR1–4.
+The TIM5 slave reset is disabled (`SMS=0`): Hall captures do not reset CNT,
+so `time_us()` stays a monotonic 32-bit microsecond counter. CKD divides
+only the digital-filter clock, not the counter rate. CH2/CH3 of TIM5 are
+inputs to the XOR only and are never enabled as outputs.
 
-В отличие от G431, токи здесь измеряются последовательно, без встроенного PGA
-и без аппаратного oversampling. При ограничении duty=0.80 все нижние ключи
-проводят около вершины в окне 10 µs: от −5 до +5 µs. До первого измерения есть
-3 µs от переключения, а последнее фазное измерение заканчивается около +1.24 µs.
-Это покрывает 500 ns dead time и оценочные времена установления из UM1996.
-FOC max_modulation=0.60 согласован с симметричными границами duty 0.20–0.80.
-Предел ограничивает доступное напряжение/максимальную скорость и поднимается
-только после измерения окна на этом железе.
+The ADC is triggered **once per full PWM period**, by the falling OC4REF
+while counting up, 2 µs before the CNT peak. The three current conversions
+take about 3×(15+12)/25 MHz = **3.24 µs**, all four injected channels
+**4.32 µs**, plus a small trigger synchronization. The control ISR runs
+from **JEOC after the whole sequence**, so it always reads a fresh,
+consistent JDR1–JDR4 set.
 
-NTC и потенциометр используют отдельную regular последовательность с DMA и
-временем sample 144 cycles. Injected имеет приоритет. В ISR нет ожидания ADC,
-а интерфейс возвращает кэшированные regular значения. HAL tick остаётся 1 ms,
-так что таймауты UART и HAL_Delay не растягиваются в 10 раз.
+Unlike the G431, the currents are sampled sequentially, with no internal
+PGA and no hardware oversampling. With the 0.80 duty limit all low-side
+switches conduct near the counter peak inside a 10 µs window (−5…+5 µs);
+the last phase-current sample completes near +1.24 µs, which covers the
+500 ns dead time and the settling estimates of UM1996. The FOC
+`max_modulation=0.60` matches the symmetric duty bounds of 0.20–0.80. That
+limit caps the available voltage and top speed and should only be raised
+after measuring the sampling window on real hardware.
 
-`f410_diagnostics` доступен через SWD:
+The NTC and potentiometer use a separate DMA-driven regular sequence with
+144-cycle sampling. The injected group preempts it. No ADC wait happens in
+an ISR — the interface returns cached regular values. The HAL tick stays at
+1 ms, so UART timeouts and `HAL_Delay` are not stretched.
 
-* `samples`: число injected последовательностей;
-* `max_current_loop_cycles`: максимум тела ISR вместе с OSC capture;
-* `overruns`: случаи превышения 5000 CPU cycles / нового JEOC до выхода;
-* `faults`: bitmask 1=BKIN, 2=|I|>25A, 4=Vbus<10V, 8=ADC/DMA/stale,
-  16=ISR overrun, 32=некорректное показание NTC при включённом приводе,
-  64=не прошла калибровка токовых входов.
+`AT+SPD` specifies mechanical RPS for VELOCITY or the OPEN_LOOP field;
+TORQUE uses the `AT+CUR` current demand. The open-loop field phase is a
+DDS accumulator advanced on every
+PWM tick (`libecu/include/open_loop_phase.hpp`); the six-step sector is its
+rounded value with the usual commutation offset. Physical Hall tracking
+and the speed/position telemetry keep reporting the real rotor in open
+loop; the virtual field never overwrites them.
 
-При ошибке аппаратуры выводится `Board fault mask ...`; для повторного
-включения требуется reset. 5000 cycles — весь период 50 µs; измерение тела ISR
-и резерв на вход/выход исключения приведены в §6.
+`f410_diagnostics` is reachable over SWD:
 
-## 5. Код, сборка и первичная проверка
+* `samples`: number of injected sequences;
+* `max_current_loop_cycles`: ISR body maximum, including OSC capture;
+* `overruns`: ISR bodies exceeding the 5000-cycle period, or a new JEOC
+  pending on exit;
+* `faults`: bitmask — 1=BKIN, 2=|I|>25 A, 4=Vbus<10 V, 8=ADC/DMA/stale,
+  16=ISR overrun, 32=out-of-range NTC while driving, 64=current-input
+  calibration failed;
+* `hall_captures`: hardware TIM5 captures after the digital filter;
+* `hall_overcaptures`: lost-capture (CC1OF) events. This is distinct from
+  the decoded Hall edge count published in HSTATUS.
 
-* `STM32F410/Core/Src/board.cpp`: фабрика платы, часы, UART/DMA, маршрутизация ISR.
-* `libecu/hal/stm32f4/`: фиксированные PWM/Hall/ADC-драйверы.
-* `STM32F410/Core/Inc/board_config.hpp`: электрические параметры этой платы.
-* `STM32F410/Core/Inc/ecu_config.hpp`: частоты и численный профиль.
-* `STM32F410/Drivers.tar.gz`: закреплённые версии ST HAL/CMSIS; сеть при сборке
-  не требуется. Векторная таблица берётся именно для STM32F410Rx.
-* Общий `libecu/src/main.cpp` получает duty/modulation через BoardInfo.
-  ADC conversion core принимает дробный gain; значение 16 для G431 поддерживается.
-* Все объекты имеют статическое размещение, стек зарезервирован 4 KiB. Для
-  консоли F410 используются heapless nanoprintf/fast_float вместо скрытых
-  аллокаций newlib при `snprintf/strtof`; `_sbrk` всегда возвращает ошибку.
+On any hardware fault the console prints `Board fault mask ...`; the bridge
+stays latched off until reset. The 5000-cycle budget is the full 50 µs PWM
+period.
 
-Из корня проекта:
+## 5. Code, build and first bring-up
+
+* `STM32F410/Core/Src/board.cpp` — board factory, clocks, UART/DMA, ISR
+  routing.
+* `libecu/hal/stm32f4/` — the fixed PWM/Hall/ADC drivers of this port.
+* `STM32F410/Core/Inc/board_config.hpp` — electrical constants of the stack.
+* `STM32F410/Core/Inc/ecu_config.hpp` — loop rates and numeric profile.
+* `STM32F410/Drivers.tar.gz` — pinned ST HAL/CMSIS sources; no network is
+  needed at build time. The vector table is specifically STM32F410Rx.
+* The shared `libecu/src/main.cpp` takes duty/modulation limits from
+  BoardInfo. The ADC conversion core accepts fractional gains; the integer
+  16 of the G431 keeps working.
+* All objects are statically allocated with a 4 KiB reserved stack. The
+  F410 console uses heapless nanoprintf/fast_float instead of newlib's
+  allocating float printf/strtof; `_sbrk` always fails.
+
+From the repository root:
 
 ```sh
 ./build.sh --platform STM32F410
 ./flash.sh --platform STM32F410 --verify
 
-# Опциональная сборка с ручным управлением:
+# Optional build with the manual throttle/brake inputs:
 ./build.sh --platform STM32F410 --throttle
 
-# Debug использует -Og, а не -O0; real-time проверять на железе:
+# Debug uses -Og rather than -O0; check real-time behavior on hardware:
 ./build.sh --platform STM32F410 --debug
 ./flash.sh --platform STM32F410 --debug --verify
 ```
 
-Release использует **`-O2 -mfpu=fpv4-sp-d16 -mfloat-abi=hard`**, частота CPU
-100 MHz, арифметика float по умолчанию. Результаты:
-`STM32F410/build-release/open-ecu.{elf,hex,bin,map}`;
-Debug — `STM32F410/build/`. Выбор fixed-профиля: `--numeric-profile fixed`.
-Flash: OpenOCD `interface/stlink.cfg` + `target/stm32f4x.cfg`, либо `--method stlink`.
-Верификация включена всегда. ST-LINK USB используется и для прошивки, и для AT.
+Release uses **`-O2 -mfpu=fpv4-sp-d16 -mfloat-abi=hard`** with the CPU at
+100 MHz and float arithmetic by default. Artifacts land in
+`STM32F410/build-release/open-ecu.{elf,hex,bin,map}`; Debug in
+`STM32F410/build/`. Fixed-point profile: `--numeric-profile fixed`.
+Flashing uses OpenOCD `interface/stlink.cfg` + `target/stm32f4x.cfg`, or
+`--method stlink`; verification is always on. The ST-LINK USB connection
+carries both flashing and the AT console.
 
-Первый этап выполняется с **USB, без силового питания J1**. После прошивки
-проверить баннер, `AT+VER?`, `AT+ALGO?`, `AT+DMODE?`, `AT+SPD?`, телеметрию и
-нулевые токи; нули ADC ожидаются около 1.71 V. Затем вручную повернуть мотор
-и проверить Hall. Для проверки работы PWM/BKIN/токов понадобится J1 и
-осциллограф; полярность выходов, калибровку тока и FOC angle offset следует
-подтвердить на стенде перед вращением под нагрузкой. Калибровка усилителя
-работает от USB, поскольку питание его аналоговой части — 3.3V Nucleo.
-Команды выше записаны без транспортного оформления: на UART нужно передавать
-`AT+...*CRC16\r\n`; готовый encoder — `frame()` в `utility/ecu.py`.
+First bring-up is done **over USB only, without J1 power**. After flashing,
+check the banner, `AT+VER?`, `AT+ALGO?`, `AT+DMODE?`, `AT+SPD?`, telemetry
+and zero currents — the ADC zeros should sit near 1.71 V. Then rotate the
+motor by hand and check the Hall readings. Verifying PWM/BKIN/currents
+needs J1 power and an oscilloscope; output polarity, current scale and the
+FOC angle offset should be confirmed on the bench before loaded operation.
+The current-sense calibration works from USB, since the amplifier is
+powered from the Nucleo 3.3 V. The commands above are shown without
+transport framing: the UART expects `AT+...*CRC16\r\n`, encoded by
+`frame()` in `utility/ecu.py`.
 
-После каждого стендового запуска оставлять:
+Leave the drive parked after every bench session:
 
 ```
 AT+SPD=0
 AT+DMODE=2
 ```
-
-Офлайн-проверки: сборка F410, сборка G431 после изменения общего ADC/main,
-тесты `test_adc_scaling` (float/fixed), `test_numeric_adc`, `test_f410_console`
-и существующие тесты контроллера/FOC. Сборка не подтверждает реальную полярность
-на выходах, время ISR или фактическое состояние перемычек конкретного экземпляра.
-
-Проверено ARM GCC 10.3.1: текущий F410 Release float `-O2` — 76332 B Flash,
-18640 B RAM с учётом 4096 B зарезервированного стека, при доступных
-128 KiB Flash / 32 KiB SRAM. FOC: 212 проверок, контроллер: 70, ошибок нет.
-
-## 6. Проверка на реальном MCU без J1, 2026-10-23
-
-ST-LINK `066EFF535752877167082532`, device ID `0x10006458` (F410), 128 KiB Flash,
-32 KiB SRAM. Flash verify прошёл. VCP `/dev/ttyACM0`, 115200 8N1:
-
-```
-AT+VER?      -> +VER:1.1.0-f410-float
-AT+ALGO?     -> +ALGO:1
-AT+DMODE?    -> +DMODE:2
-AT+SPD?      -> +SPD:0.00
-AT+MAXVALS?  -> +MAXVALS:12.00,-6.00,18.00,36.00,0.80,100.00
-```
-
-### Бюджет PWM
-
-Для измерения используется отдельная сборка `ENABLE_PWM_TIMING_BENCH=ON`:
-
-* Реальные TIM1 → ADC1 → JEOC задают частоту 20 kHz. Исполняется полный
-  `BldcController::pwmInterruptHandler()` с FOC/PI/PWM-записью, OSC capture,
-  защитами и работающими SysTick, regular ADC/DMA и UART.
-* Vbus=31.30 V и фазные токи задаются синтетическими ADC-отсчётами; Hall
-  последовательно переключается каждые 28 тактов (~5.95 RPS для MOTOR_1).
-  Дополнительная обработка Hall включена в измеряемое время.
-* **MOE принудительно запрещён в PWM-драйвере**, независимо от AT-команд;
-  фактический MOE=0 проверялся через SWD для каждого случая. Это измерение
-  вычислительной нагрузки, а не работа двигателя без силового питания.
-* DWT CYCCNT, 100 MHz: 100 cycles = 1 µs. В каждом случае 40000 тактов,
-  суммарно 240000. Задание тока подтверждено запросом `AT+CUR?`;
-  его нужно задавать **после** DMODE=0, так как в NEUTRAL оно игнорируется.
-
-| Режим | Среднее тела ISR, µs | Максимум, µs |
-|---|---:|---:|
-| NEUTRAL | 12.106 | 15.04 |
-| FOC, Iq*=0 | 20.777 | 23.98 |
-| FOC, Iq*=+6 A, насыщение | 21.397 | 24.62 |
-| FOC, Iq*=−6 A, насыщение | 21.298 | 24.54 |
-| FOC, ненулевые фазные токи, OSC + телеметрия | 21.129 | **27.00** |
-| Six-step current, OSC + телеметрия | 17.751 | 23.38 |
-
-Пропусков/overrun и аварий в измерительной сборке: **0**. С инженерным резервом
-2 µs на неохваченные вход/выход исключения и хвост диагностического кода
-получается около **29 µs из 50 µs**, запас ~21 µs. Частота **20 kHz сохранена**.
-Это наблюдавшийся максимум в перечисленных сценариях, а не формальное
-доказательство WCET для любых входов; после подключения J1 нужно повторить
-измерение с настоящими токами и Hall-помехами.
-
-В center-aligned PWM CCR загружаются на ближайшем update (каждые 25 µs).
-Длинные такты с OSC могут закончиться после нижней точки счётчика: тогда
-изменение duty применяется на следующем update. Бюджет ISR здесь проверен
-относительно **полного периода 50 µs**, не гарантируется попадание в каждый
-ближайший полупериодный update.
-
-Повторение измерения (скрипт прошивает bench, измеряет и восстанавливает normal
-в `finally`; стандартный `build.sh` всегда явно выключает bench):
-
-```sh
-./build.sh --platform STM32F410
-cmake -S STM32F410 -B /tmp/opencode/f410-timing-bench \
-  -DCMAKE_BUILD_TYPE=Release -DNUMERIC_PROFILE=float \
-  -DENABLE_PWM_TIMING_BENCH=ON -DENABLE_THROTTLE_BRAKE_CONTROL=OFF
-cmake --build /tmp/opencode/f410-timing-bench --parallel
-python3 utility/profile_f410_pwm.py \
-  --bench-elf /tmp/opencode/f410-timing-bench/open-ecu.elf \
-  --restore-elf STM32F410/build-release/open-ecu.elf \
-  --port /dev/ttyACM0 --stlink-serial 066EFF535752877167082532
-```
-
-### Диагностика токового канала W до ремонта
-
-До ремонта при неподвижном приводе и отключённом J1: U≈2122, V≈2128, **W≈4073**
-отсчётов. NTC показывает около 26 °C. Увеличение sample time канала 10
-с 15 до 480 cycles не устранило насыщение. При перестановке U/W в injected
-последовательности насыщение переехало вместе с каналом 10, то есть это
-не ошибка номера JDR/rank. Исходные регистры после диагностики восстановлены.
-
-Для такого симптома проверяется цепь **Curr_fdbk3 → R50 → CN7.38 → SB51 → PC0**:
-
-1. На Nucleo **SB51 ON, SB52 OFF**; для V также SB56 ON, SB46 OFF.
-2. Измерить CN7.38 относительно GND: ожидается около **1.7 V**.
-   Если там 1.7 V, а ADC на PC0 видит верхний предел — проверять SB51,
-   контакт разъёма и участок до MCU. Если на CN7.38 уже около 3.3 V —
-   проверить R50 и аналоговый канал U10C/R12/R13/R15/R16/R45 на shield.
-
-После измерений восстановлена **обычная** прошивка `-O2`, bench выключен;
-подтверждены `AT+SPD=0`, `AT+DMODE=2`. При плохом нуле выдаётся fault `0x40`,
-мост остаётся заблокированным, диагностика по UART работает. После исправления
-соединений выполнить reset и повторить калибровку.
-
-## 7. После восстановления R13, 2026-10-26
-
-Причина насыщения W найдена пользователем: при удалении C7 случайно снят R13.
-Без R13 вход U10C подтягивается через R12 к 3.3 V. Для временного восстановления
-предложены 1 kΩ и 2.2 kΩ параллельно на площадках R13: 687.5 Ω вместо 680 Ω.
-Расчётное изменение усиления W составляет −0.1002%, нулевое напряжение —
-около 1.727 V; смещение компенсируется отдельной калибровкой этой фазы.
-
-После ремонта проверено совпадение 76332 байт Flash с обычным Release ELF
-(`-O2`, float, hard FPU), затем выполнен reset при отключённом J1. Баннер:
-
-```
-PWM 20000 Hz, dead time 500 ns, duty <=80%; ADC zeros 1.710 1.715 1.725 V
-ECU started, control: float, PI: float
-```
-
-* Калибровка проходит; `f410_diagnostics.faults=0`, `overruns=0`.
-* Аппаратные injected-последовательности продолжают поступать с частотой
-  около 20 kHz. Максимум тела ISR в NEUTRAL после загрузки — 16.47 µs;
-  это отдельная проверка от активного FOC benchmark в §6.
-* В 100 снимках ADC средние U/V/W: **2121.69 / 2128.46 / 2140.03** отсчёта;
-  стандартное отклонение: 2.33 / 2.24 / 3.90 отсчёта. Насыщения W больше нет.
-* NTC: около 26.3 °C. UART 115200 отвечает на запросы версии, режима,
-  статуса, лимитов и коэффициентов FOC.
-* Подтверждены `AT+DMODE? → 2`, `AT+SPD? → 0.00`, `TIM1.BDTR.MOE=0`.
-
-Проверка выполнена без включения привода и без питания J1. Следующий этап —
-проверка силовых сигналов и работы с реальными токами; вращение после ремонта
-в этой проверке не запускалось.

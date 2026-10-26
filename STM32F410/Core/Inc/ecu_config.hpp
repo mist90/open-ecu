@@ -12,13 +12,13 @@ using ActiveNumericProfile = FixedProfile;
 using ActivePiProfile = FixedProfile;
 inline constexpr const char* CONTROL_PROFILE_NAME = "fixed";
 inline constexpr const char* PI_PROFILE_NAME = "fixed";
-inline constexpr const char* PI_FIRMWARE_VERSION = "1.1.0-f410-fixed";
+inline constexpr const char* PI_FIRMWARE_VERSION = "1.2.0-f410-fixed";
 #else
 using ActiveNumericProfile = FloatProfile;
 using ActivePiProfile = FloatProfile;
 inline constexpr const char* CONTROL_PROFILE_NAME = "float";
 inline constexpr const char* PI_PROFILE_NAME = "float";
-inline constexpr const char* PI_FIRMWARE_VERSION = "1.1.0-f410-float";
+inline constexpr const char* PI_FIRMWARE_VERSION = "1.2.0-f410-float";
 #endif
 } // namespace libecu
 #endif

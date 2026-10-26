@@ -17,8 +17,8 @@
 namespace {
 libecu::Stm32Pwm pwm_driver;
 libecu::Stm32Adc adc_driver;
-libecu::Stm32HallSensor hall_sensor;
 TIM_HandleTypeDef microseconds_timer{};
+libecu::Stm32HallSensor hall_sensor(microseconds_timer);
 UART_HandleTypeDef console_uart{};
 DMA_HandleTypeDef console_rx_dma{};
 alignas(4) volatile uint8_t rx_buffer[256]{};
@@ -41,14 +41,14 @@ enum Fault : uint32_t {
 bool configureClocks() {
     __HAL_RCC_PWR_CLK_ENABLE();
     __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
-    // HSI is independent of ST-LINK/MCO and works with USB disconnected.
+    // Mandatory crystal-derived 8 MHz MCO from ST-LINK, through SB16/SB50 to PH0.
+    // HSI measured +1.55% on this board and is not a control-clock fallback.
     RCC_OscInitTypeDef osc{};
-    osc.OscillatorType = RCC_OSCILLATORTYPE_HSI;
-    osc.HSIState = RCC_HSI_ON;
-    osc.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
+    osc.OscillatorType = RCC_OSCILLATORTYPE_HSE;
+    osc.HSEState = RCC_HSE_BYPASS;
     osc.PLL.PLLState = RCC_PLL_ON;
-    osc.PLL.PLLSource = RCC_PLLSOURCE_HSI;
-    osc.PLL.PLLM = 16;
+    osc.PLL.PLLSource = RCC_PLLSOURCE_HSE;
+    osc.PLL.PLLM = 8;
     osc.PLL.PLLN = 200;
     osc.PLL.PLLP = RCC_PLLP_DIV2;
     osc.PLL.PLLQ = 4;
@@ -60,7 +60,9 @@ bool configureClocks() {
     clocks.AHBCLKDivider = RCC_SYSCLK_DIV1;
     clocks.APB1CLKDivider = RCC_HCLK_DIV2;
     clocks.APB2CLKDivider = RCC_HCLK_DIV1;
-    return HAL_RCC_ClockConfig(&clocks, FLASH_LATENCY_3) == HAL_OK;
+    if (HAL_RCC_ClockConfig(&clocks, FLASH_LATENCY_3) != HAL_OK) return false;
+    HAL_RCC_EnableCSS(); // Clock loss reaches the bridge-parking NMI handler.
+    return true;
 }
 
 bool configureTimebase() {
@@ -121,6 +123,8 @@ struct F410Diagnostics {
     uint32_t max_current_loop_cycles;
     uint32_t overruns;
     uint32_t faults;
+    uint32_t hall_captures;
+    uint32_t hall_overcaptures;
 };
 volatile F410Diagnostics f410_diagnostics{};
 volatile F410TimingCapture f410_timing_capture{};
@@ -228,8 +232,18 @@ extern "C" void board_adc_interrupt() {
 
 extern "C" void DMA2_Stream0_IRQHandler() { adc_driver.dmaInterrupt(); }
 extern "C" void HAL_ADC_ErrorCallback(ADC_HandleTypeDef*) { trip(ADC_FAILURE); }
-extern "C" void board_hall_interrupt() {
-    if (controller) controller->hallSensorInterruptHandler();
+extern "C" void board_hall_timer_interrupt() {
+    if (__HAL_TIM_GET_FLAG(&microseconds_timer, TIM_FLAG_CC1OF)) {
+        ++f410_diagnostics.hall_overcaptures;
+        __HAL_TIM_CLEAR_FLAG(&microseconds_timer, TIM_FLAG_CC1OF);
+    }
+    HAL_TIM_IRQHandler(&microseconds_timer);
+}
+extern "C" void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef* timer) {
+    if (timer->Instance == TIM5 && timer->Channel == HAL_TIM_ACTIVE_CHANNEL_1) {
+        ++f410_diagnostics.hall_captures;
+        if (controller) controller->hallSensorInterruptHandler();
+    }
 }
 extern "C" void board_systick() {
     static uint32_t divider = 0;
@@ -292,11 +306,13 @@ public:
         HAL_GPIO_Init(GPIOC, &gpio);
 
         printf("NUCLEO-F410RB + X-NUCLEO-IHM08M1, MOTOR_1, VCP %lu 8N1\n", (unsigned long)ihm08::UART_BAUD);
+        printf("Clock: HSE/ST-LINK quartz 8 MHz -> 100 MHz\n");
 #ifdef PWM_TIMING_BENCH
         printf("TIMING BENCH: synthetic currents/Vbus/Hall, bridge outputs permanently OFF\n");
 #endif
         if (!pwm_driver.initialize(ActiveTiming::CURRENT_HZ, ihm08::DEAD_TIME_NS) || !hall_sensor.initialize())
             return false;
+        printf("Hall: TIM5 PB12/PC10/PC11, CKD=2 IC1F=0xF (5.12 us), Morpho jumpers required\n");
         info_ = {ActiveTiming::CURRENT_HZ, ActiveTiming::SPEED_HZ, ihm08::NOMINAL_BUS_VOLTAGE,
                  ihm08::DEAD_TIME_NS, pwm_driver.getActualDeadTimeNs(), ihm08::MAX_DUTY, ihm08::MAX_MODULATION};
         CurrentSensorCalibration calibration{ihm08::SHUNT_OHMS, ihm08::CURRENT_GAIN, ihm08::ADC_REFERENCE, 12};

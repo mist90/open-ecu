@@ -64,8 +64,11 @@ int main() {
         controller.setControlMode(ControlMode::OPEN_LOOP);
         controller.setTargetSpeed(20.0f);
         clock_us += 100000;
-        controller.update();
-        check(controller.getPllInfo().hall_state_raw != hall.position, "open loop supplied a different virtual Hall sector");
+        for (unsigned tick = 0; tick < 100; ++tick) controller.pwmInterruptHandler();
+        check(controller.getPllInfo().hall_state_raw == hall.position,
+              "open-loop field does not overwrite physical Hall tracking");
+        check(controller.getStatus().target_position != (hall.position + 4) % 6,
+              "the virtual field advances independently on the PWM clock");
 
         // No sensor interrupt: the rotor has settled at sector 3 after the open-loop run.
         hall.position = 3;

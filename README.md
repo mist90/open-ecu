@@ -80,6 +80,8 @@ port rather than a new main.
 - **Closed-loop speed control** using PI algorithm
 - **Safety monitoring** with overcurrent, overtemperature, and undervoltage protection
 - **Modular architecture** allowing easy porting to other MCUs
+- **PWM-clocked open-loop field**: `AT+SPD` uses mechanical RPS in both directions;
+  Hall speed/position telemetry remains physical feedback in open-loop mode
 - **Real-time performance** optimized for embedded systems
 
 ### Control Loop
@@ -179,19 +181,19 @@ cd STM32G431
 
 ### Testing
 
-The experimental branch selects control/ADC/PWM arithmetic with
+Select control/ADC/PWM arithmetic with
 `./build.sh --numeric-profile float|fixed` or CMake `-DNUMERIC_PROFILE=fixed`.
-See [docs/CONTROL_NUMERIC_BENCH.md](docs/CONTROL_NUMERIC_BENCH.md) for the native
-control path, remaining float-facing configuration/diagnostics, and JK42BLS01 measurements.
-`PI_NUMERIC_PROFILE=fixed` remains a PI-only override for the float control profile.
+On STM32G431, `PI_NUMERIC_PROFILE=fixed` is a PI-only override for the float control profile.
 
-JK42BLS01 six-step tuning, bench data and motor selection are documented in
-[docs/JK42BLS01_TUNING.md](docs/JK42BLS01_TUNING.md). Comment out `MOTOR_1` in
-`libecu/include/motor_config.hpp` for this motor; define it for the scooter motor.
+Motor parameters live in `libecu/include/motor_config.hpp`. An undefined
+`MOTOR_1` selects JK42BLS01; defining it selects the scooter motor.
+The STM32F410 target defines `MOTOR_1` in CMake.
 
 Additional host regressions:
 - `tests/test_motor_alignment/run.sh` — both motors, both directions, PLL and discrete commutation
 - `tests/test_hall_handoff/run.sh` — physical Hall resynchronization after open-loop operation and parking
+- `tests/test_open_loop/run.sh float|fixed` — PWM-clocked field speed, direction and independent Hall feedback
+- `tests/test_f410_console/run.sh` — heapless console formatting and parsing
 - `tests/test_adc_scaling/run.sh` — injected ADC sums, zero calibration and regular-channel isolation
 - `tests/test_numeric_pll/run.sh` — paired float/fixed traces at 10/20/40 kHz
 - `tests/test_profile_math/run.sh` — LUT/transforms, voltage limits and Cortex-M0 helper audit

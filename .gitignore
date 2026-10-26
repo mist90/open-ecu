@@ -21,9 +21,16 @@ tests/test_numeric_pll/test
 tests/test_profile_math/test
 tests/test_numeric_adc/test
 tests/test_f410_console/test
+tests/test_open_loop/test
 libecu/lib/
 __pycache__/
 
 # Extracted STM32 HAL Drivers (source of truth: STM32G431/Drivers.tar.gz)
 STM32G431/Drivers/
 STM32F410/Drivers/
+
+# Local implementation notes, measurements and downloaded reference documents
+/docs/*NUMERIC*.md
+/docs/*FIXED_POINT*.md
+/docs/measurements/
+/docs/hardware/

@@ -3,6 +3,15 @@
 
 Example: python3 utility/bench_motor.py --poles 8 --mode speed --values 2 5 10
          --out /tmp/opencode/jk42-speed.json
+
+F410 slow current-regulated open-loop probe (one commutation every 2 s):
+    python3 utility/bench_motor.py --platform STM32F410 --poles 40 --algo 0
+        --mode open-current --open-speed 0.00416667 --values 2.5
+        --seconds 12.2 --settle 0.3 --max-current 4 --max-speed 2
+        --hall-swd 6666 --out /tmp/opencode/f410-slow.json
+The --hall-swd option needs an already running, matching OpenOCD server.
+UART speed is physical Hall feedback, including in open-loop; GPIO sampling
+provides an independent check of rotor motion.
 """
 
 import argparse
@@ -23,7 +32,7 @@ from ecu import BAUD, frame
 class Bench:
     def __init__(self, args):
         self.args = args
-        self.port = serial.Serial(args.port, BAUD, timeout=0.01, exclusive=True)
+        self.port = serial.Serial(args.port, args.baud, timeout=0.01, exclusive=True)
         # Park immediately if the link is already live, then allow ST-Link VCP
         # line coding to settle before the acknowledged setup sequence.
         self.port.write(frame("AT+DMODE=2") + frame("AT+SPD=0"))
@@ -48,17 +57,26 @@ class Bench:
 
     def read(self):
         if self.hall_socket is not None and time.monotonic() >= self.next_hall:
-            self.hall_socket.sendall(b"capture {mdw 0x48000410 1}\x1a")
+            if self.args.platform == "STM32F410":
+                self.hall_socket.sendall(
+                    b"mem2array hb 32 0x40020410 1; mem2array hc 32 0x40020810 1; "
+                    b"list $hb(0) $hc(0)\x1a")
+            else:
+                self.hall_socket.sendall(b"capture {mdw 0x48000410 1}\x1a")
             reply = b""
             while not reply.endswith(b"\x1a"):
                 chunk = self.hall_socket.recv(4096)
                 if not chunk:
                     raise RuntimeError("SWD connection closed")
                 reply += chunk
-            match = re.search(rb"0x48000410:\s*([0-9a-fA-F]+)", reply)
-            if not match:
-                raise RuntimeError("Unexpected GPIO read: " + repr(reply))
-            code = (int(match[1], 16) >> 6) & 7
+            if self.args.platform == "STM32F410":
+                gpio_b, gpio_c = (int(value, 0) for value in reply[:-1].split())
+                code = ((gpio_b >> 12) & 1) | (((gpio_c >> 10) & 1) << 1) | (((gpio_c >> 11) & 1) << 2)
+            else:
+                match = re.search(rb"0x48000410:\s*([0-9a-fA-F]+)", reply)
+                if not match:
+                    raise RuntimeError("Unexpected GPIO read: " + repr(reply))
+                code = (int(match[1], 16) >> 6) & 7
             position = (255, 0, 2, 1, 4, 5, 3, 255)[code]
             now = time.monotonic()
             self.records.append({"t": now - self.started, "tag": self.tag,
@@ -128,12 +146,27 @@ class Bench:
         if not self.args.profile_address:
             return
         address = int(self.args.profile_address, 0)
-        commands = ["init", f"mww 0x{address:x} 0"]
-        commands += [f"mww 0x{address + offset:x} 0" for offset in (4, 8, 12, 16)]
-        commands += [f"mww 0x{address:x} 20000", "shutdown"]
+        offsets = (4, 8, 12, 16, 20) if self.args.platform == "STM32F410" else (4, 8, 12, 16)
+        commands = [f"mww 0x{address:x} 0"]
+        commands += [f"mww 0x{address + offset:x} 0" for offset in offsets]
+        commands += [f"mww 0x{address:x} 20000"]
+        if self.hall_socket is not None:
+            # Reuse the existing probe connection; a second OpenOCD cannot open it.
+            self.hall_socket.sendall("; ".join(commands).encode() + b"\x1a")
+            response = b""
+            while not response.endswith(b"\x1a"):
+                chunk = self.hall_socket.recv(4096)
+                if not chunk:
+                    raise RuntimeError("SWD connection closed while arming the profile")
+                response += chunk
+            if response[:-1].strip():
+                raise RuntimeError("Unexpected profile setup response: " + repr(response))
+            return
+        target = "stm32f4x" if self.args.platform == "STM32F410" else "stm32g4x"
         self.swd = subprocess.Popen(
-            ["openocd", "-f", "interface/stlink.cfg", "-f", "target/stm32g4x.cfg",
-             "-c", "; ".join(commands)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            ["openocd", "-f", "interface/stlink.cfg", "-f", f"target/{target}.cfg",
+             "-c", "; ".join(["init"] + commands + ["shutdown"])],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True)
 
     def finish_profile(self):
@@ -224,12 +257,18 @@ def summarize(records, tag, since, poles):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", default="/dev/ttyACM0")
+    parser.add_argument("--platform", choices=("STM32G431", "STM32F410"), default="STM32G431")
+    parser.add_argument("--baud", type=int, help="UART baud rate (default: selected board's rate)")
     parser.add_argument("--poles", type=int, required=True)
     parser.add_argument("--algo", type=int, choices=(0, 1), default=0)
     parser.add_argument("--mode", choices=("voltage", "current", "speed", "speed-voltage",
                                            "open-voltage", "open-current"), default="speed")
-    parser.add_argument("--open-speed", type=float, default=20.0,
-                        help="SPD command in open-loop mode (check actual commutation frequency)")
+    parser.add_argument("--open-speed", type=float, default=0.25,
+                        help="Mechanical RPS of the open-loop field (default: 0.25)")
+    parser.add_argument("--align-seconds", type=float, default=0.0,
+                        help="Hold the initial open-loop field at the first duty/current value")
+    parser.add_argument("--open-ramp-seconds", type=float, default=0.0,
+                        help="Ramp the open-loop SPD command to --open-speed in five steps")
     parser.add_argument("--osc", action="store_true", help="Record the raw 20 kHz OSC bursts as well")
     parser.add_argument("--direction", type=int, choices=(0, 1), default=0)
     parser.add_argument("--values", type=float, nargs="+", required=True)
@@ -238,12 +277,18 @@ def main():
     parser.add_argument("--max-current", type=float, default=2.0)
     parser.add_argument("--max-speed", type=float, default=40.0)
     parser.add_argument("--set", action="append", default=[], help="Additional setting, e.g. PLLID=100,5000")
-    parser.add_argument("--profile-address", help="Address of pwm_bench_profile in the bench ELF")
+    parser.add_argument("--profile-address", help="Address of pwm_bench_profile or F410 f410_timing_capture")
     parser.add_argument("--hall-swd", type=int, help="OpenOCD Tcl port for independent GPIO Hall sampling")
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
+    if args.baud is None:
+        args.baud = 115200 if args.platform == "STM32F410" else BAUD
     if args.poles <= 0 or args.poles % 2 or args.seconds <= 0 or args.settle < 0:
         parser.error("Require an even positive pole count and positive measurement duration")
+    if not all(math.isfinite(value) and value >= 0 for value in (args.align_seconds, args.open_ramp_seconds)):
+        parser.error("Alignment/ramp durations must be finite and non-negative")
+    if (args.align_seconds or args.open_ramp_seconds) and not args.mode.startswith("open"):
+        parser.error("Alignment and open-loop ramp require an open-loop mode")
     bench = Bench(args)
     report = {"date": datetime.datetime.now(datetime.timezone.utc).isoformat(),
               "config": vars(args), "results": []}
@@ -259,25 +304,47 @@ def main():
             bench.command("AT+" + setting)
         report["gains"] = {name: bench.command("AT+" + name + "?", "+" + name + ":")
                            for name in ("SPID", "CPID", "FPID", "PLLID", "FANG")}
-        for command in ("AT+TM=1", "AT+PLL=1", "AT+HSTATUS=1"):
+        # All three 100 Hz streams exceed the F410's 115200-baud VCP capacity.
+        streams = ("AT+TM=1", "AT+HSTATUS=1")
+        if args.baud >= 230400:
+            streams += ("AT+PLL=1",)
+        for command in streams:
             bench.command(command)
         bench.collect(0.1)
+        setting = ("SPD" if args.mode.startswith("speed") else
+                   "DUT" if args.mode in ("voltage", "open-voltage") else "CUR")
         bench.armed = True
         bench.command(f"AT+DMODE={args.direction}")
         if args.mode.startswith("open"):
-            bench.command(f"AT+SPD={args.open_speed:.5f}")
-        if args.osc:
-            bench.command("AT+OSC=1")
-        setting = ("SPD" if args.mode.startswith("speed") else
-                   "DUT" if args.mode in ("voltage", "open-voltage") else "CUR")
+            if args.align_seconds or args.open_ramp_seconds:
+                bench.tag = "alignment"
+                bench.command("AT+SPD=0")
+                bench.command(f"AT+{setting}={args.values[0]:.5f}")
+                bench.collect(args.align_seconds)
+            if args.open_ramp_seconds:
+                for step in range(1, 6):
+                    speed = args.open_speed * step / 5
+                    bench.tag = f"ramp SPD={speed:.3f}"
+                    bench.command(f"AT+SPD={speed:.8g}")
+                    bench.collect(args.open_ramp_seconds / 5)
+            else:
+                bench.command(f"AT+SPD={args.open_speed:.8g}")
         for index, value in enumerate(args.values):
             bench.tag = f"{setting}={value}"
+            if args.osc:
+                bench.command("AT+OSC=0")
             bench.command(f"AT+{setting}={value:.5f}")
             bench.collect(args.settle)
             since = time.monotonic() - bench.started
             if index == len(args.values) - 1:
                 bench.start_profile()
+            if args.osc:
+                # Capture at the requested operating point, and after arming
+                # profiling, rather than filling the buffer during startup.
+                bench.command("AT+OSC=1")
             bench.collect(args.seconds)
+            if args.osc:
+                bench.command("AT+OSC=0")
             bench.finish_profile()
             result = summarize(bench.records, bench.tag, since, args.poles)
             result["command"] = value

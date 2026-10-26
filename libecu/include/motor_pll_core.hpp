@@ -82,9 +82,7 @@ public:
 
     /** @brief Commutation step with the motor-specific torque alignment. */
     uint8_t getNextHall(DriveMode mode) const noexcept {
-        int offset = 0;
-        if (mode == DriveMode::FORWARD) offset = inverse_ ? -2 : 1;
-        else if (mode == DriveMode::REVERSE) offset = inverse_ ? 1 : -2;
+        const int offset = commutationOffset(mode, inverse_);
         const int next = use_pll_ ? roundInteger(getAngle() + number<Angle>(offset)) : int(hall_) + offset;
         return static_cast<uint8_t>((next % 6 + 6) % 6);
     }

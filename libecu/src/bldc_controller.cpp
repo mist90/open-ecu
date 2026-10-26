@@ -13,25 +13,7 @@
 #define SPEED_TIMEOUT_US          500000  ///< Timeout for speed measurement (1 second)
 #define BLDC_NUM_PHASES           3        ///< Number of phases in BLDC motor
 
-// Platform specific time function
-uint32_t time_us(void);
-
 namespace libecu {
-
-namespace {
-template<class Speed>
-uint32_t openLoopInterval(Speed speed, uint32_t steps_per_revolution) noexcept {
-    if (!steps_per_revolution) return 0;
-    if constexpr (std::is_same<Speed, float>::value) {
-        const float interval = 10000000.0f / (speed * steps_per_revolution);
-        return interval >= 4294967296.0f ? UINT32_MAX : static_cast<uint32_t>(interval);
-    } else {
-        const uint64_t interval = uint64_t(10000000) * Speed::SCALE /
-                                  (uint64_t(speed.raw()) * steps_per_revolution);
-        return interval > UINT32_MAX ? UINT32_MAX : static_cast<uint32_t>(interval);
-    }
-}
-} // namespace
 
 BldcController::BldcController(
     PwmInterface& pwm_interface,
@@ -43,6 +25,7 @@ BldcController::BldcController(
     , adc_interface_(adc_interface)
     , hall_monitor_()
     , motor_pll_(params.max_speed_rps * params.num_poles * BLDC_NUM_PHASES, params.useInverseCommTable)
+    , open_loop_()
     , pi_speed_controller_()
     , six_step_(pwm_interface)
     , foc_(pwm_interface)
@@ -51,8 +34,6 @@ BldcController::BldcController(
     , dmode_(DriveMode::NEUTRAL)
     , initialized_(false)
     , hall_update_pending_(false)
-    , open_loop_step_(0)
-    , open_loop_last_step_time_us_(0)
     , duty_command_{}
     , filtered_target_speed_{}
     , filtered_measured_speed_{}
@@ -134,10 +115,12 @@ BldcController::BldcController(
         tryNumber(params_.measured_speed_lpf_alpha, limits_.speed_alpha) &&
         tryNumber(params_.measured_current_lpf_alpha, limits_.current_alpha) &&
         tryNumber(params_.acceleration_rate, acceleration) &&
+        open_loop_.setSpeed(limits_.max_speed, params_.num_poles) &&
         foc_.setParams(foc_params) &&
         foc_.setCurrentPiGains(params_.foc_current_regulator.kp, params_.foc_current_regulator.ki);
     acceleration_step_ = divideByInteger<Accumulator>(acceleration, ActiveTiming::SPEED_HZ);
     acceleration_enabled_ = acceleration > Speed{};
+    open_loop_.setSpeed(Speed{}, params_.num_poles);
 
     motor_pll_.setUsePLL(true);
 }
@@ -270,13 +253,8 @@ void BldcController::update() noexcept
     } else if (status.is_running) {
         switch (status.control_mode) {
             case ControlMode::OPEN_LOOP: {
-                uint32_t current_time_us = time_us();
-                uint32_t step_interval_us = calculateOpenLoopStepInterval(status.target_speed_rps);
-                if (step_interval_us > 0 && (current_time_us - open_loop_last_step_time_us_) >= step_interval_us) {
-                    open_loop_step_ = (open_loop_step_ + 1) % 6;
-                    open_loop_last_step_time_us_ = current_time_us;
-                }
-                motor_pll_.updateHall(open_loop_step_);
+                // The field angle advances on the PWM clock. The slow loop
+                // reports physical Hall speed, just as it does in closed loop.
                 break;
             }
 
@@ -332,7 +310,9 @@ void BldcController::setNativeTargetSpeed(Speed target) noexcept {
     if (target < Speed{})
         return;
     // Clamp to maximum speed
-    status_.target_speed_rps = std::min(target, limits_.max_speed);
+    const Speed limited = std::min(target, limits_.max_speed);
+    if (!open_loop_.setSpeed(limited, params_.num_poles)) return;
+    status_.target_speed_rps = limited;
 }
 
 void BldcController::setDutyCycle(float duty_cycle) noexcept
@@ -369,12 +349,12 @@ void BldcController::setControlMode(ControlMode mode) noexcept
         const bool from_open_loop = status_.control_mode == ControlMode::OPEN_LOOP;
         status_.control_mode = mode;
         if (from_open_loop) {
-            // A stationary rotor produces no new Hall edge. Discard the last
-            // virtual sector now, before the closed loop can energise it.
-            synchronizeHallPosition(true);
+            // Hall tracking continues during open loop. Refresh a stationary
+            // sensor without discarding a valid estimate of a moving rotor.
+            synchronizeHallPosition();
             algorithm().reset();
         } else if (mode == ControlMode::OPEN_LOOP) {
-            hall_update_pending_ = false;
+            open_loop_.seed(motor_pll_.getNativeAngle());
         }
 
         // Reset PI when switching to velocity control
@@ -468,6 +448,7 @@ void BldcController::setDriveMode(DriveMode mode) noexcept
         pwm_interface_.setNeutral();
         pwm_interface_.enable(false);
         status_.target_speed_rps = Speed{};
+        open_loop_.setSpeed(Speed{}, params_.num_poles);
         status_.duty_cycle = Duty{};
         duty_command_ = Duty{};
         status_.target_current = Current{};
@@ -475,8 +456,10 @@ void BldcController::setDriveMode(DriveMode mode) noexcept
         algorithm().reset();
         filtered_measured_current_ = Current{};
     } else {
-        if (was_neutral && status_.control_mode != ControlMode::OPEN_LOOP) {
+        if (was_neutral) {
             synchronizeHallPosition();
+            if (status_.control_mode == ControlMode::OPEN_LOOP)
+                open_loop_.seed(motor_pll_.getNativeAngle());
         }
         pwm_interface_.enable(true);
         // Must follow enable(): the PWM driver ignores channel-state writes
@@ -583,8 +566,8 @@ void BldcController::start() noexcept
     status_.is_running = true;
 
     CriticalSection cs;
-    open_loop_last_step_time_us_ = time_us();
     synchronizeHallPosition(true);
+    open_loop_.seed(motor_pll_.getNativeAngle());
 
     // The inverter follows the *drive mode*, not the run flag.
     //
@@ -623,7 +606,6 @@ void BldcController::stop() noexcept
     // recomputes the duty from the current loop every cycle, so clearing only
     // the duty left the drive producing exactly as much torque as before.
     status_.target_current = Current{};
-    open_loop_step_ = 0;
     algorithm().reset();
     pwm_interface_.updateNativeDutyCycle(Duty{});
 
@@ -650,7 +632,7 @@ void BldcController::synchronizeHallPosition(bool discard_tracking) noexcept
     if (discard_tracking || changed || hall > 5) motor_pll_.reset();
     // Also feed the Hall monitor through the normal debounced PWM path, and
     // retry an invalid sample without requiring another physical edge.
-    hall_update_pending_ = status_.control_mode != ControlMode::OPEN_LOOP;
+    hall_update_pending_ = true;
 }
 
 void BldcController::holdVelocityLoop() noexcept
@@ -694,23 +676,8 @@ BldcController::Speed BldcController::applyAccelerationLimit(Speed target_speed)
     return numberCast<Speed>(limited_target_speed_);
 }
 
-uint32_t BldcController::calculateOpenLoopStepInterval(Speed speed_rps) noexcept
-{
-    // step_interval_us = 1,000,000 / (speed_rps / 60 * num_poles * 6)
-    // = 1,000,000 * 60 / (speed_rps * num_poles * 6)
-    // = 10,000,000 / (speed_rps * num_poles)
-    if (speed_rps <= Speed{}) {
-        return 0;
-    }
-    // Preserve the existing OPEN_LOOP scale/scheduling until its separate fix.
-    return openLoopInterval(speed_rps, params_.num_poles * BLDC_NUM_PHASES);
-}
-
 void BldcController::hallSensorInterruptHandler() noexcept
 {
-    if (status_.control_mode == ControlMode::OPEN_LOOP)
-        return;
-
     // Deferred Hall update: set flag, process in PWM ISR.
     // Hall signal may bounce (1→0→1) due to EMI from power cables.
     // PWM ISR re-reads stable state 50μs later, hiding bounce from PLL.
@@ -739,7 +706,9 @@ void BldcController::pwmInterruptHandler() noexcept {
     // accumulators and ages a standing illegal code, both of which have to run
     // on the PWM clock rather than on Hall events - those arrive at the
     // commutation rate, which is exactly what is unreliable when a line breaks.
-    hall_monitor_.tick((dmode_ != DriveMode::NEUTRAL) && status_.is_running);
+    const bool hall_controls_drive = status_.control_mode != ControlMode::OPEN_LOOP;
+    const bool hall_guard_active = hall_controls_drive && dmode_ != DriveMode::NEUTRAL && status_.is_running;
+    hall_monitor_.tick(hall_guard_active);
 
     // Process deferred Hall update (debounced re-read from stable GPIO state)
     if (hall_update_pending_) {
@@ -747,8 +716,7 @@ void BldcController::pwmInterruptHandler() noexcept {
         // One read, shared by the health monitor and the PLL, so they can never
         // disagree and the lines are never sampled mid-transition.
         uint8_t hall_state = hall_interface_.getPosition();
-        hall_monitor_.onPosition(hall_state,
-                                 (dmode_ != DriveMode::NEUTRAL) && status_.is_running);
+        hall_monitor_.onPosition(hall_state, hall_guard_active);
         if (hall_state <= 5) {
             {
                 CriticalSection cs;
@@ -762,22 +730,31 @@ void BldcController::pwmInterruptHandler() noexcept {
     }
 
     // Read shared data atomically (avoid torn reads from SysTick interrupt)
+    Profile::Angle measured_angle{};
     {
         CriticalSection cs;
         in.electric_mode = status_.electric_mode;
         in.target_current = status_.target_current;
         in.duty_command = duty_command_;
         motor_pll_.updateTick();
-        in.step = motor_pll_.getNextHall(dmode_);
-        in.angle_steps = motor_pll_.getNativeAngle();
-        in.speed_steps_s = motor_pll_.getNativeSpeedStepsSec();
+        measured_angle = motor_pll_.getNativeAngle();
+        if (status_.control_mode == ControlMode::OPEN_LOOP) {
+            if (status_.is_running) open_loop_.advance(dmode_);
+            in.step = open_loop_.step(dmode_, params_.useInverseCommTable);
+            in.angle_steps = open_loop_.angle();
+            in.speed_steps_s = status_.is_running ? open_loop_.speed(dmode_) : Profile::PllSpeed{};
+        } else {
+            in.step = motor_pll_.getNextHall(dmode_);
+            in.angle_steps = measured_angle;
+            in.speed_steps_s = motor_pll_.getNativeSpeedStepsSec();
+        }
     }
     in.drive_mode = dmode_;
 
     // Hall health. The monitor latches, so unlike the old PLL rule this does
     // not re-assert every cycle; it has to be cleared explicitly once the
     // wiring is dealt with.
-    if (hall_monitor_.isFaulted() && dmode_ != DriveMode::NEUTRAL) {
+    if (hall_controls_drive && hall_monitor_.isFaulted() && dmode_ != DriveMode::NEUTRAL) {
         setDriveMode(DriveMode::NEUTRAL);
     }
 
@@ -832,7 +809,7 @@ void BldcController::pwmInterruptHandler() noexcept {
         status_.duty_v = out.duty_v;
         status_.duty_w = out.duty_w;
         status_.bus_voltage = in.bus_voltage;
-        status_.pll_angle = in.angle_steps;
+        status_.pll_angle = measured_angle;
         status_.current_pi_saturation = out.saturation;
         status_.target_position = in.step;
         status_.i_d = out.i_d;

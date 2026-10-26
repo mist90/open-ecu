@@ -19,6 +19,7 @@
 #include "pi_float_interface.hpp"
 #include "ecu_config.hpp"
 #include "motor_pll.hpp"
+#include "open_loop_phase.hpp"
 #include "current_loop_tuning.hpp"
 #include "hall_monitor.hpp"
 
@@ -256,7 +257,7 @@ public:
     void update() noexcept;
 
     /**
-     * @brief Set target speed for closed-loop control
+     * @brief Set mechanical-RPS demand for velocity control or the open-loop field
      * @param speed_rps Target speed in RPS
      */
     void setTargetSpeed(float speed_rps) noexcept;
@@ -479,6 +480,7 @@ private:
     // Owned components
     HallMonitor hall_monitor_;
     MotorPLL motor_pll_;
+    OpenLoopPhase<Profile, ActiveTiming::CURRENT_HZ> open_loop_;
     PiFloatInterface<ActivePiProfile::SpeedPiTypes, ActiveTiming::SPEED_HZ> pi_speed_controller_;
 
     // Electrical algorithms. Both are constructed and kept alive; only the one
@@ -511,10 +513,6 @@ private:
     // Deferred Hall update (debounce via PWM ISR re-read)
     volatile bool hall_update_pending_;      ///< Set by Hall ISR, processed by PWM ISR
 
-    // Open-loop timing control
-    uint8_t open_loop_step_;                 ///< Current step in open-loop mode (0-5)
-    uint32_t open_loop_last_step_time_us_;   ///< Timestamp of last step change
-
     /**
      * @brief Voltage-mode duty request, 0.0 to 1.0
      *
@@ -543,7 +541,7 @@ private:
      */
     void holdVelocityLoop() noexcept;
 
-    /// @brief Reseed from physical Hall after virtual commutation/parking; caller holds CriticalSection.
+    /// @brief Refresh physical Hall after a mode change/parking; caller holds CriticalSection.
     void synchronizeHallPosition(bool discard_tracking = false) noexcept;
 
     /**
@@ -557,12 +555,6 @@ private:
      */
     Speed applyAccelerationLimit(Speed target_speed) noexcept;
 
-    /**
-     * @brief Calculate step interval from target speed for open-loop control
-     * @param speed_rps Target speed in RPS
-     * @return Step interval in microseconds
-     */
-    uint32_t calculateOpenLoopStepInterval(Speed speed_rps) noexcept;
 };
 
 } // namespace libecu

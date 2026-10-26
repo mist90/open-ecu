@@ -8,6 +8,9 @@ namespace ihm08 {
 constexpr uint32_t TIMER_CLOCK_HZ = 100000000;
 constexpr uint32_t UART_BAUD = 115200;
 constexpr uint16_t DEAD_TIME_NS = 500;
+// CKD=DIV2, IC1F=1111: fDTS/32, N=8 at fDTS=50 MHz -> 5.12 us.
+// The 1.6 us setting admitted PWM-correlated pulses on this motor cable.
+constexpr uint32_t HALL_FILTER = 0x0F;
 constexpr float NOMINAL_BUS_VOLTAGE = 31.3f;
 constexpr float MIN_BUS_VOLTAGE = 10.0f;
 // 10 us all-low window at 20 kHz: 2.5 us settling, 3.24 us U/V/W scan.

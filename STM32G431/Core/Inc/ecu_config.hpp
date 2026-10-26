@@ -21,14 +21,14 @@ inline constexpr const char* CONTROL_PROFILE_NAME = "float";
 using ActivePiProfile = FixedProfile;
 inline constexpr const char* PI_PROFILE_NAME = "fixed";
 #ifdef ECU_FIXED_NUMERIC
-inline constexpr const char* PI_FIRMWARE_VERSION = "1.1.0-control-fixed";
+inline constexpr const char* PI_FIRMWARE_VERSION = "1.2.0-control-fixed";
 #else
-inline constexpr const char* PI_FIRMWARE_VERSION = "1.0.0-pi-fixed";
+inline constexpr const char* PI_FIRMWARE_VERSION = "1.2.0-pi-fixed";
 #endif
 #else
 using ActivePiProfile = FloatProfile;
 inline constexpr const char* PI_PROFILE_NAME = "float";
-inline constexpr const char* PI_FIRMWARE_VERSION = "1.1.0-control-float";
+inline constexpr const char* PI_FIRMWARE_VERSION = "1.2.0-control-float";
 #endif
 } // namespace libecu
 
