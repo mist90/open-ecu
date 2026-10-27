@@ -7,6 +7,7 @@
 #include "motor_samples.hpp"
 #include "profile_math.hpp"
 #include "control_optimization.hpp"
+#include "current_feedback_filter.hpp"
 
 namespace libecu {
 
@@ -21,6 +22,8 @@ struct FocParamsT {
     typename P::Flux flux_linkage_wb{};
     typename P::Fraction anti_windup_kb = number<typename P::Fraction>(1);
     bool low_side_clamped_pwm = false;
+    CurrentFilterCoefficients<P> current_filter{};
+    typename P::Current current_noise_floor{};
 };
 
 /** @brief Pure, allocation-free electrical FOC loop with profile-owned math. */
@@ -44,8 +47,24 @@ public:
     using Output = MotorAlgorithmOutputT<Profile>;
     inline static constexpr Angle RAD_PER_STEP = number<Angle>(10471975511966LL, 10000000000000LL);
 
-    void setParams(const Params& params) noexcept { params_ = params; }
+    void setParams(const Params& params) noexcept {
+        params_ = params;
+        filter_d_.reset();
+        filter_q_.reset();
+        zero_current_idle_ = false;
+    }
     const Params& getParams() const noexcept { return params_; }
+    /** @brief Set precomputed feedback coefficients, resetting both axes' histories. */
+    void setCurrentFilter(const CurrentFilterCoefficients<Profile>& coefficients) noexcept {
+        params_.current_filter = coefficients;
+        filter_d_.reset();
+        filter_q_.reset();
+        zero_current_idle_ = false;
+    }
+    /** @brief Feedback values; the main output retains unfiltered dq measurements. */
+    DqVectorT<Current> filteredCurrents() const noexcept {
+        return zero_current_idle_ ? DqVectorT<Current>{} : DqVectorT<Current>{filter_d_.value(), filter_q_.value()};
+    }
     void setCurrentPiGains(Gain kp, Gain ki) noexcept {
         kp_ = kp;
         ki_ = ki;
@@ -53,9 +72,17 @@ public:
         integral_d_ = integral_q_ = Integral{};
     }
     void getCurrentPiGains(Gain& kp, Gain& ki) const noexcept { kp = kp_; ki = ki_; }
-    void setAngleOffset(Angle angle) noexcept { params_.angle_offset_rad = angle; }
+    void setAngleOffset(Angle angle) noexcept {
+        params_.angle_offset_rad = angle;
+        filter_d_.reset();
+        filter_q_.reset();
+        zero_current_idle_ = false;
+    }
     void reset() noexcept {
         integral_d_ = integral_q_ = Integral{};
+        filter_d_.reset();
+        filter_q_.reset();
+        zero_current_idle_ = false;
         const Duty zero = params_.low_side_clamped_pwm ? Duty{} : number<Duty>(1, 2);
         previous_ = {zero, zero, zero};
     }
@@ -71,18 +98,37 @@ public:
         else if (previous_.v >= previous_.w) v = -(u + w);
         else w = -(u + v);
         const auto dq = Transforms::park(Transforms::clarkeZeroSum(u, v, w), sine, cosine);
+        const Current filtered_d = filter_d_.update(dq.d, params_.current_filter);
+        const Current filtered_q = filter_q_.update(dq.q, params_.current_filter);
         const bool reverse = in.drive_mode == DriveMode::REVERSE;
         const Current measured_current = reverse ? -dq.q : dq.q;
         const Voltage limit = multiplyTo<Voltage>(params_.max_modulation, Transforms::voltageLimit(in.bus_voltage));
         const bool current_mode = in.electric_mode == ElectricMode::CURRENT_MODE;
+        // Only the zero-demand standstill state suppresses feedback. At speed,
+        // even Iq*=0 needs voltage to reject back-EMF; small nonzero demands must
+        // also retain a real feedback path instead of winding up into a dead band.
+        const bool idle_candidate = current_mode && params_.current_noise_floor > Current{} &&
+            in.target_current == Current{} && params_.id_target == Current{} &&
+            numericAbs(in.speed_steps_s) <= number_v<typename Profile::PllSpeed, 1, 10>;
+        if (idle_candidate) {
+            const Current threshold = zero_current_idle_
+                ? multiplyTo<Current>(params_.current_noise_floor, number_v<Unit, 3, 2>)
+                : params_.current_noise_floor;
+            zero_current_idle_ = numericAbs(filtered_d) <= threshold && numericAbs(filtered_q) <= threshold;
+        } else {
+            zero_current_idle_ = false;
+        }
+        const Current feedback_d = zero_current_idle_ ? Current{} : filtered_d;
+        const Current feedback_q = zero_current_idle_ ? Current{} : filtered_q;
+        if (zero_current_idle_) integral_d_ = integral_q_ = Integral{};
         Current error_d{}, error_q{};
         Request requested_d{}, requested_q{};
         if (current_mode) {
-            error_d = params_.id_target - dq.d;
-            error_q = (reverse ? -in.target_current : in.target_current) - dq.q;
+            error_d = params_.id_target - feedback_d;
+            error_q = (reverse ? -in.target_current : in.target_current) - feedback_q;
             requested_d = multiplyTo<Request>(kp_, error_d) + numberCast<Request>(integral_d_);
             requested_q = multiplyTo<Request>(kp_, error_q) + numberCast<Request>(integral_q_);
-            if (params_.use_decoupling) {
+            if (params_.use_decoupling && !zero_current_idle_) {
                 const auto omega = multiplyTo<typename Profile::PllSpeed>(in.speed_steps_s, RAD_PER_STEP);
                 const Gain omega_l = multiplyTo<Gain>(omega, params_.l_phase_h);
                 requested_d -= multiplyTo<Request>(omega_l, dq.q);
@@ -156,6 +202,8 @@ private:
     Gain kp_{}, ki_{};
     StepGain ki_step_{};
     Integral integral_d_{}, integral_q_{};
+    CurrentFeedbackFilter<Profile> filter_d_, filter_q_;
+    bool zero_current_idle_ = false;
     PhaseDutiesT<Duty> previous_{number<Duty>(1, 2), number<Duty>(1, 2), number<Duty>(1, 2)};
 };
 

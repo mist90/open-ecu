@@ -153,6 +153,13 @@ struct FocParams {
 
     /// @brief Clamp the lowest phase duty to zero (DPWMMIN), preserving line voltages.
     bool low_side_clamped_pwm = false;
+
+    /// @brief dq feedback filtering; raw currents remain available in the output.
+    CurrentFilterOrder current_filter_order = CurrentFilterOrder::OFF;
+    /// @brief Digital -3 dB cutoff; coefficients are designed outside the fast loop.
+    float current_filter_cutoff_hz = 2000.0f;
+    /// @brief dq noise floor in amperes for zero-demand standstill; zero disables it.
+    float current_noise_floor_a = 0.0f;
 };
 
 /**

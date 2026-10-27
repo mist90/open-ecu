@@ -206,6 +206,7 @@ Additional host regressions:
 - `tests/test_profile_math/run.sh` — LUT/transforms, voltage limits and Cortex-M0 helper audit
 - `tests/test_numeric_adc/run.sh` — full-range current, bus, NTC and PWM comparisons
 - `tests/test_foc/run.sh float|fixed` — closed-loop motor model and anti-windup recovery
+- `tests/test_current_filter/run.sh` — dq filters, delayed-loop stability and zero-current noise suppression
 - `tests/test_control/run.sh float|numeric-fixed` — commands, native I/O, protection, ramp and OSC
 
 Host tests live under `tests/`; each directory has a standalone `run.sh`.
@@ -254,6 +255,9 @@ open-ecu/
 ```
 
 ## Adding New Platforms
+
+See [the porting guide](docs/PORTING_GUIDE.md) for MCU peripheral requirements,
+PWM/ADC timing contracts, acquisition scaling and hardware bring-up findings.
 
 To port libecu to a different microcontroller:
 

@@ -16,12 +16,16 @@ bool FocAlgorithm::setParams(const FocParams& params) noexcept {
         !tryNumber(params.angle_offset_rad, typed.angle_offset_rad) ||
         !tryNumber(params.id_target, typed.id_target) || !tryNumber(params.l_phase_h, typed.l_phase_h) ||
         !tryNumber(params.flux_linkage_wb, typed.flux_linkage_wb) ||
-        !tryNumber(params.anti_windup_kb, typed.anti_windup_kb)) return false;
+        !tryNumber(params.anti_windup_kb, typed.anti_windup_kb) ||
+        !tryNumber(params.current_noise_floor_a, typed.current_noise_floor)) return false;
     if (params.max_modulation < 0.0f || params.max_modulation > 1.0f ||
         params.max_duty_cycle < 0.5f || params.max_duty_cycle > 1.0f ||
-        params.anti_windup_kb < 0.0f || params.anti_windup_kb > 1.0f) return false;
+        params.anti_windup_kb < 0.0f || params.anti_windup_kb > 1.0f ||
+        params.current_noise_floor_a < 0.0f) return false;
     typed.use_decoupling = params.use_decoupling;
     typed.low_side_clamped_pwm = params.low_side_clamped_pwm;
+    if (!makeCurrentFilterCoefficients(params.current_filter_order, params.current_filter_cutoff_hz,
+                                       ActiveTiming::CURRENT_HZ, typed.current_filter)) return false;
     core_.setParams(typed);
     params_ = params;
     return true;
