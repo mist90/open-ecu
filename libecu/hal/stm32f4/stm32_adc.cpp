@@ -73,25 +73,78 @@ bool Stm32Adc::initializeHardware() noexcept {
     return HAL_ADCEx_InjectedStart_IT(&adc_) == HAL_OK;
 }
 
-void Stm32Adc::captureInjected() noexcept {
+bool Stm32Adc::captureInjected(uint32_t irq_started_cycles) noexcept {
+#if STM32F4_ADC_SOFTWARE_X2
+    latest_[0] = ADC1->JDR1;
+    latest_[1] = ADC1->JDR2;
+    latest_[2] = ADC1->JDR3;
+    latest_[3] = ADC1->JDR4;
+    if (second_pending_) {
+        second_pending_ = false;
+        for (unsigned i = 0; i < 4; ++i) injected_[i] = first_[i] + latest_[i];
+        MODIFY_REG(ADC1->CR2, ADC_CR2_JEXTEN, ADC_EXTERNALTRIGINJECCONVEDGE_FALLING);
+    } else {
+        frame_started_cycles_ = irq_started_cycles;
+        const uint32_t period = TIM1->ARR;
+        uint32_t highest = TIM1->CCR1;
+        if (TIM1->CCR2 > highest) highest = TIM1->CCR2;
+        if (TIM1->CCR3 > highest) highest = TIM1->CCR3;
+        const uint32_t ceiling = period * 3 / 5;
+        constexpr uint32_t scan_budget_ticks =
+            uint64_t(ihm08::TIMER_CLOCK_HZ) * 4500 / 1000000000;
+        // Scan A starts before the peak, where the previous duty can still be
+        // active. Require a wide window for both the old and current PWM frame.
+        // Scan B's final current aperture closes within 3 us of software start;
+        // reserve 4.5 us for start instructions, ADC sync and aperture closure.
+        const bool room = previous_period_ == period && previous_max_compare_ < ceiling &&
+                          highest < ceiling && TIM1->PSC == 0 &&
+                          (TIM1->CR1 & (TIM_CR1_CEN | TIM_CR1_DIR)) == (TIM_CR1_CEN | TIM_CR1_DIR) &&
+                          TIM1->CNT > highest + scan_budget_ticks;
+        previous_max_compare_ = highest;
+        previous_period_ = period;
+        if (room) {
+            for (unsigned i = 0; i < 4; ++i) first_[i] = latest_[i];
+            second_pending_ = true;
+            CLEAR_BIT(ADC1->CR2, ADC_CR2_JEXTEN);
+            SET_BIT(ADC1->CR2, ADC_CR2_JSWSTART);
+            return false;
+        }
+        // Fallback retains the same sum-of-two scaling and physical current/
+        // voltage units, without discarding half-LSB information in paired scans.
+        for (unsigned i = 0; i < 4; ++i) injected_[i] = INJECTED_SAMPLE_SUM * latest_[i];
+    }
+#else
+    frame_started_cycles_ = irq_started_cycles;
     injected_[0] = ADC1->JDR1;
     injected_[1] = ADC1->JDR2;
     injected_[2] = ADC1->JDR3;
     injected_[3] = ADC1->JDR4;
+#endif
     ++samples_;
+    return true;
+}
+uint32_t Stm32Adc::getRawProtectionCurrent(PwmChannel phase) const noexcept {
+    const unsigned index = static_cast<unsigned>(phase);
+#ifdef PWM_TIMING_BENCH
+    return index < 3 ? INJECTED_SAMPLE_SUM * f410_bench_inputs.phase_adc[index] : 0;
+#elif STM32F4_ADC_SOFTWARE_X2
+    return index < 3 ? INJECTED_SAMPLE_SUM * latest_[index] : 0;
+#else
+    return index < 3 ? injected_[index] : 0;
+#endif
 }
 void Stm32Adc::startRegular() noexcept { SET_BIT(ADC1->CR2, ADC_CR2_SWSTART); }
 uint32_t Stm32Adc::getRawAdcValue(PwmChannel phase) {
     const unsigned index = static_cast<unsigned>(phase);
 #ifdef PWM_TIMING_BENCH
-    return index < 3 ? f410_bench_inputs.phase_adc[index] : 0;
+    return index < 3 ? INJECTED_SAMPLE_SUM * f410_bench_inputs.phase_adc[index] : 0;
 #else
     return index < 3 ? injected_[index] : 0;
 #endif
 }
 uint32_t Stm32Adc::getRawAdcValue() {
 #ifdef PWM_TIMING_BENCH
-    return f410_bench_inputs.bus_adc;
+    return INJECTED_SAMPLE_SUM * f410_bench_inputs.bus_adc;
 #else
     return injected_[3];
 #endif
@@ -102,7 +155,7 @@ bool Stm32Adc::offsetsPlausible() const noexcept {
 #else
     // Expected ~1.71 V / 2122 counts. Reject an unpowered op-amp or missing FOC bias.
     for (unsigned i = 0; i < 3; ++i) {
-        if (injected_[i] < 1600 || injected_[i] > 2600) return false;
+        if (injected_[i] < INJECTED_SAMPLE_SUM * 1600 || injected_[i] > INJECTED_SAMPLE_SUM * 2600) return false;
     }
     return true;
 #endif

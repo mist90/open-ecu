@@ -10,6 +10,7 @@ endif()
 
 option(ENABLE_THROTTLE_BRAKE_CONTROL "Use IHM08M1 potentiometer and Nucleo B1 brake" OFF)
 option(ENABLE_PWM_TIMING_BENCH "Synthetic sensors with MOE permanently OFF for ISR timing" OFF)
+option(ENABLE_ADC_SOFTWARE_X2 "Window-qualified injected ADC x2 sampling in the F410 HAL" ON)
 set(NUMERIC_PROFILE "float" CACHE STRING "Control arithmetic: float or fixed")
 set_property(CACHE NUMERIC_PROFILE PROPERTY STRINGS float fixed)
 if(NOT NUMERIC_PROFILE MATCHES "^(float|fixed)$")
@@ -53,6 +54,7 @@ target_include_directories(open-ecu.elf PRIVATE
     ${DRIVERS}/CMSIS/Include ${ECU}/include ${ECU}/hal/stm32f4
     ThirdParty/nanoprintf ThirdParty/fast_float/include)
 target_compile_definitions(open-ecu.elf PRIVATE STM32F410Rx USE_HAL_DRIVER MOTOR_1
+    STM32F4_ADC_SOFTWARE_X2=$<BOOL:${ENABLE_ADC_SOFTWARE_X2}>
     $<$<BOOL:${ENABLE_THROTTLE_BRAKE_CONTROL}>:THROTTLE_BRAKE_CONTROL>
     $<$<BOOL:${ENABLE_PWM_TIMING_BENCH}>:PWM_TIMING_BENCH>
     $<$<STREQUAL:${NUMERIC_PROFILE},fixed>:ECU_FIXED_NUMERIC>)

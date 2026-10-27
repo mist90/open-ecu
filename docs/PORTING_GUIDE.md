@@ -110,15 +110,15 @@ frame is valid and seed digital filters from a valid frame.
 
 ### Current hardware configurations
 
-| Property | STM32G431 | STM32F410 baseline |
+| Property | STM32G431 | STM32F410 |
 |---|---|---|
 | Current conversion | Two ADCs, simultaneous injected mode | One ADC, sequential injected scan |
 | ADC clock | 42.5 MHz | 25 MHz |
 | Sampling time | 6.5 ADC cycles | 15 ADC cycles |
 | Injected ranks | ADC1: U, Vbus; ADC2: V, W | U, V, W, Vbus |
-| Oversampling | Hardware x2, no right shift | No G4-style hardware oversampling |
+| Oversampling | Hardware x2, no right shift | Window-qualified software x2, enabled by default |
 | Trigger | TIM1 OC4REF/TRGO2, rising near the peak | TIM1 OC4REF/TRGO, falling 1 us before the peak |
-| Fast-loop entry | Timer update callback in current code | JEOC after the complete scan |
+| Fast-loop entry | Timer update callback in current code | JEOC after the complete one- or two-scan frame |
 
 On F410, each conversion takes `(15+12)/25 MHz = 1.08 us`.
 The complete four-rank scan takes about **4.32 us**, plus trigger
@@ -158,6 +158,8 @@ conversions. Set `CurrentSensorCalibration::injected_sample_sum` accordingly.
 
 - G431 retains a sum of two conversions; its injected current and bus scaling
   include the factor of two.
+- F410 also uses sums of two with software x2 enabled; a single-scan fallback
+  publishes `2*raw`. Disabling x2 restores single-conversion units.
 - Regular temperature/throttle channels remain single-conversion values.
 - Zero offsets, plausibility checks and raw-count protection thresholds must
   use the same units as the samples to which they are applied.
@@ -167,7 +169,7 @@ conversions. Set `CurrentSensorCalibration::injected_sample_sum` accordingly.
 - Keep current polarity explicit. Here positive shunt current is out of the
   phase into the low-side shunt; FOC negates it before its transforms.
 
-### F410 software x2 experiment
+### F410 software x2 in the HAL
 
 RM0401 Rev 4, chapter 11, provides no hardware oversampling accumulator.
 Injected sequences are limited to **four** conversions; regular sequences
@@ -175,8 +177,18 @@ allow sixteen and support DMA. Repeated channels are explicitly supported
 in a sequence (§11.3.3). Writing a sequence register during conversion resets
 the current conversion, so sequence changes need a defined idle boundary.
 
-The tested prototype preserves U/V/W/Vbus and performs **two complete injected
-scans within one PWM period**:
+`libecu/hal/stm32f4/stm32_adc.hpp` defines `STM32F4_ADC_SOFTWARE_X2` as `1`
+unless overridden. CMake exposes the default-ON `ENABLE_ADC_SOFTWARE_X2`
+option. For example, build the original single-scan mode with:
+
+```sh
+cmake -S STM32F410 -B STM32F410/build-adc-x1 -DCMAKE_BUILD_TYPE=Release \
+  -DENABLE_ADC_SOFTWARE_X2=OFF
+cmake --build STM32F410/build-adc-x1 -j
+```
+
+The HAL preserves U/V/W/Vbus and performs **two complete injected scans
+within one PWM period**:
 
 1. The normal PWM trigger starts scan A.
 2. Its JEOC handler stores the four raw values and, if the window permits,
@@ -187,11 +199,22 @@ scans within one PWM period**:
 4. If the window is insufficient, execute one scan and publish `2*raw` to
    retain the same sum-of-two scaling contract.
 
-The extra scan is enabled only below 60% maximum duty, while counting down,
-with more than 450 timer ticks remaining before the largest compare. At
-100 MHz this reserves 4.5 us from the decision point for software start,
-synchronization and the last current aperture. A delayed first IRQ can thus
-fall back to one scan. This threshold is specific to the tested timing.
+The extra scan requires both previous and current maximum duties below 60%,
+an unchanged timer period, PSC=0, a running down-counter, and more than 450
+timer ticks remaining before the largest compare. At 100 MHz this reserves
+4.5 us from the decision point for software start, synchronization and the
+last current aperture. The first frame, a high-to-low duty transition or a
+delayed first IRQ can thus fall back to one scan. This threshold is specific
+to the F410/IHM08M1 timing.
+
+Pairing state, trigger switching, window qualification and the first-JEOC
+timestamp live in `Stm32Adc`. `captureInjected()` returns false after starting
+scan B and true only after publishing a complete frame. The board routes one
+control update per frame and gets calibration/protection units from
+`Stm32Adc::INJECTED_SAMPLE_SUM`; the portable controller has no x2 branches.
+The unaveraged current of **each** scan is checked for overcurrent, including
+scan A before frame completion, so averaging cannot conceal a current peak.
+Regular NTC/pot conversions keep their original single-sample units.
 
 At standstill the mode produced one control frame per 50 us and two real scans
 for every requested x2 frame. It reduced raw Iq standard deviation from about
@@ -207,7 +230,7 @@ CPU execution time. Measured CCR writes with first-order filtering occurred
 by approximately **38.6 us after the timer peak**, before the next peak at
 50 us. Verify the Hall-update and other worst-case branches separately.
 
-#### Float versus fixed timing with software x2
+#### Earlier prototype timing: float versus fixed
 
 The subsequent comparison included the zero-current noise floor described
 below. Both F410 builds used 100 MHz, Release `-O2`, 20-kHz PWM, first-order
@@ -235,19 +258,50 @@ Raw timing data and the measurement script are under
 `/tmp/opencode/ecu-pwm-acoustics/timing-float-fixed-x2-idle/` and
 `/tmp/opencode/ecu-pwm-acoustics/profile_float_fixed_x2.py`.
 
-The software x2 implementation remains in the experimental F410 image, not
-the baseline F4 HAL. It passed a subsequent 0.5-RPS rotation check with Hall
-processing; modulation transitions, high speed and load still need validation
-before adoption as a production sampling policy.
+Those measurements describe the diagnostic tuning and full-Clarke policy.
+The main F410 HAL now includes software x2; the main application's optional
+feedback filters and noise floor retain their own independent defaults.
+The prototype source is retained under
+`/tmp/opencode/ecu-pwm-acoustics/diagnostic-src/` for comparison.
 
-The tested source is retained under
-`/tmp/opencode/ecu-pwm-acoustics/diagnostic-src/`:
+#### Main HAL validation
 
-- `libecu/hal/stm32f4/stm32_adc.cpp`: `captureInjected()` manages both scans,
-  the sampling-window check and sum-of-two results.
-- `libecu/hal/stm32f4/stm32_adc.hpp`: pending-scan state and sample scaling.
-- `STM32F410/Core/Src/board.cpp`: JEOC routing, once-per-frame feedback,
-  calibration, protection scaling and timing measurements.
+The integrated Release firmware was built and run in all four combinations
+of float/fixed and software x1/x2. Each stationary, zero-current-demand capture
+contained 100000 control frames, with active OSC/telemetry and runtime PI gains
+0.549775/516.792. The main application's feedback filter and noise floor were
+disabled:
+
+| Numeric profile | Acquisition | Mean window | Maximum window |
+|---|---|---:|---:|
+| fixed | x1 | 26.65 us | 29.15 us |
+| fixed | x2 | 33.58 us | 37.98 us |
+| float | x1 | 21.53 us | 23.73 us |
+| float | x2 | 28.45 us | 31.46 us |
+
+All four maintained 20 kHz with zero overruns and board faults. Measured Vbus
+was about 40.8 V in every build; calibrated current zeros changed from roughly
+2122/2129/2140 counts to 4244/4256/4282 with x2. SWD observation confirmed that
+the HAL suppresses the external trigger during the second software scan.
+These windows start at the first JEOC; add the first 4.32-us scan and interrupt
+latency when budgeting the complete trigger-to-control path.
+
+A subsequent fixed/x2 0.5-RPS start was stopped by the test script's 1.5-A
+current guard: measured current tracked the rising reference, while Hall
+speed stayed zero. The integrated firmware's rotation timing was therefore
+not validated in this run. The earlier prototype rotation results above use
+different control settings.
+
+After the automated run, the user confirmed successful motor rotation with
+the installed main firmware on 2026-10-27. The timing table above remains the
+stationary capture.
+
+The final installed image is the main float/x2 build, with its startup-default
+PI gains and the bridge parked: `1.2.0-f410-float`, BIN SHA-256
+`c431869a8e57318b533eaa3bc690e874c03e9102f7272892ee2b30f6dd2eaadd`.
+Builds and captures are under
+`/tmp/opencode/ecu-pwm-acoustics/main-hal-x2-builds/`,
+`main-hal-x2-hardware-authorized/` and `main-hal-x2-hardware-idle/`.
 
 ## 5. Analog front end
 
@@ -402,6 +456,9 @@ Relevant host suites:
   hysteresis/zero-vector behavior without masking real demands, float and fixed.
 - `tests/test_foc/run.sh float|fixed`: transforms, PWM, current signs and FOC.
 - `tests/test_f410_sampling/run.sh`: retained-shunt aperture margins.
+- `tests/test_f410_adc_x2/run.sh`: actual HAL against anonymous fake MMIO;
+  paired frames, window transitions, half-LSB scaling, per-scan protection and
+  timestamp wrap, in float/fixed and enabled/disabled builds.
 - `tests/test_adc_scaling/run.sh float|fixed`: injected sums and regular-channel
   isolation; also use `tests/test_numeric_adc/run.sh` when changing formats.
 - Hall/open-loop/control suites described in the README for those interfaces.

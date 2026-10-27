@@ -8,6 +8,8 @@ The firmware implements FOC and 6-step trapezoidal commutation with Hall sensor 
 
 - **STM32G431** (b-g431b-esc1 board) - Primary target
 - **STM32F410** (NUCLEO-F410RB + X-NUCLEO-IHM08M1) — MOTOR_1, ST-LINK USB VCP.
+  Window-qualified software ADC x2 is enabled by default in the HAL
+  (`STM32F4_ADC_SOFTWARE_X2=1`; CMake `ENABLE_ADC_SOFTWARE_X2=OFF` disables it).
   [Wiring, signal paths, jumpers and bring-up](docs/NUCLEO_F410RB_IHM08M1.md).
 - Additional platforms can be added following the platform abstraction pattern
 
@@ -201,6 +203,7 @@ Additional host regressions:
 - `tests/test_open_loop/run.sh float|fixed` — PWM-clocked field speed, direction and independent Hall feedback
 - `tests/test_f410_console/run.sh` — heapless console formatting and parsing
 - `tests/test_f410_sampling/run.sh` — retained-shunt ADC timing across the F410 modulation range
+- `tests/test_f410_adc_x2/run.sh` — actual F410 ADC HAL, paired scans/fallback/protection, float/fixed and x1/x2
 - `tests/test_adc_scaling/run.sh` — injected ADC sums, zero calibration and regular-channel isolation
 - `tests/test_numeric_pll/run.sh` — paired float/fixed traces at 10/20/40 kHz
 - `tests/test_profile_math/run.sh` — LUT/transforms, voltage limits and Cortex-M0 helper audit

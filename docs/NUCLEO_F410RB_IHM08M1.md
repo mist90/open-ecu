@@ -196,6 +196,11 @@ Vzero = 3.3 × 680/(6800+680) × 5.7 ≈ 1.710 V ≈ 2122 counts
 I = (raw - zero) × 3.3 / (4095 × 0.010 × G)
 ```
 
+These formulas use single-conversion counts. With the default software x2,
+the HAL publishes sums of two (`0..8190`), including `2*raw` for a single-scan
+fallback. Calibration, physical current/Vbus conversion and software
+protection account for that factor automatically. NTC and pot remain `0..4095`.
+
 At startup the firmware averages the real zero of every phase with the
 bridge off. A zero far from mid-scale is rejected, which catches an
 unpowered amplifier, a wrong JP1 position or a broken analog connection. On
@@ -325,9 +330,18 @@ inputs to the XOR only and are never enabled as outputs.
 The ADC is triggered **once per full PWM period**, by the falling OC4REF
 while counting up, 1 µs before the CNT peak. The three current conversions
 take about 3×(15+12)/25 MHz = **3.24 µs**, all four injected channels
-**4.32 µs**, plus a small trigger synchronization. The control ISR runs
-from **JEOC after the whole sequence**, so it always reads a fresh,
-consistent JDR1–JDR4 set.
+**4.32 µs**, plus a small trigger synchronization. Software x2 is enabled by
+default: the first JEOC snapshots U/V/W/Vbus and starts another injected
+scan when the low-side window permits. The second JEOC publishes their sums
+and runs the controller once. There is still one control frame per 50 µs.
+
+Pairing and trigger switching are entirely inside `Stm32Adc`. Both previous
+and current duties must be below 60%, the timer period must be unchanged,
+and TIM1 must be running down with PSC=0 and more than 450 ticks left before
+the largest compare. Otherwise one scan publishes `2*raw`, keeping identical
+scaling. The first frame and high-to-low duty transitions also use this
+fallback. Overcurrent checks inspect each unaveraged scan before the control
+update.
 
 Unlike the G431, the currents are sampled sequentially, with no internal
 PGA and no hardware oversampling. Each current's sample-and-hold aperture
@@ -367,9 +381,10 @@ loop; the virtual field never overwrites them.
 
 `f410_diagnostics` is reachable over SWD:
 
-* `samples`: number of injected sequences;
-* `max_current_loop_cycles`: ISR body maximum, including OSC capture;
-* `overruns`: ISR bodies exceeding the 5000-cycle period, or a new JEOC
+* `samples`: number of complete control frames, not individual injected scans;
+* `max_current_loop_cycles`: maximum first-JEOC-to-controller/OSC completion
+  interval, including the second-scan gap when software x2 is used;
+* `overruns`: those intervals exceeding the 5000-cycle period, or a new JEOC
   pending on exit;
 * `faults`: bitmask — 1=BKIN, 2=|I|>25 A, 4=Vbus<10 V, 8=ADC/DMA/stale,
   16=ISR overrun, 32=out-of-range NTC while driving, 64=current-input
@@ -410,7 +425,17 @@ From the repository root:
 # Debug uses -Og rather than -O0; check real-time behavior on hardware:
 ./build.sh --platform STM32F410 --debug
 ./flash.sh --platform STM32F410 --debug --verify
+
+# Optional single-scan build (software x2 is ON by default):
+cmake -S STM32F410 -B STM32F410/build-adc-x1 -DCMAKE_BUILD_TYPE=Release \
+  -DENABLE_ADC_SOFTWARE_X2=OFF
+cmake --build STM32F410/build-adc-x1 -j
 ```
+
+The HAL's compile-time switch is `STM32F4_ADC_SOFTWARE_X2=1`; CMake sets it
+from `ENABLE_ADC_SOFTWARE_X2`. Setting it to `0` removes the pairing state and
+restores single-scan acquisition and calibration units. Apply the define
+consistently to all translation units that include `stm32_adc.hpp`.
 
 Release uses **`-O2 -mfpu=fpv4-sp-d16 -mfloat-abi=hard`** with the CPU at
 100 MHz and float arithmetic by default. Artifacts land in

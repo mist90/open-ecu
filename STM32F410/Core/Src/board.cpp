@@ -32,7 +32,8 @@ uint32_t interrupt_depth = 0;
 uint32_t saved_primask = 0;
 int32_t zero_counts[3]{};
 constexpr int32_t CURRENT_TRIP_COUNTS =
-    static_cast<int32_t>(25.0f * ihm08::SHUNT_OHMS * ihm08::CURRENT_GAIN * 4095.0f / ihm08::ADC_REFERENCE);
+    static_cast<int32_t>(libecu::Stm32Adc::INJECTED_SAMPLE_SUM * 25.0f * ihm08::SHUNT_OHMS *
+                         ihm08::CURRENT_GAIN * 4095.0f / ihm08::ADC_REFERENCE);
 enum Fault : uint32_t {
     BREAK = 1, OVERCURRENT = 2, UNDERVOLTAGE = 4, ADC_FAILURE = 8,
     LOOP_OVERRUN = 16, NTC_FAILURE = 32, ADC_CALIBRATION = 64
@@ -115,8 +116,8 @@ bool configureConsole() {
 }
 } // namespace
 
-// Accessible through SWD, including in optimized builds. Cycle counts include
-// the current controller and OSC capture, but exclude exception entry/exit.
+// Accessible through SWD, including in optimized builds. Cycle counts span the
+// first JEOC through the current controller/OSC, including any second ADC scan.
 extern "C" {
 struct F410Diagnostics {
     uint32_t samples;
@@ -223,7 +224,17 @@ extern "C" void board_adc_interrupt() {
     }
     if (!(flags & ADC_SR_JEOC)) return;
     ADC1->SR = ~(ADC_SR_JEOC | ADC_SR_JSTRT);
-    adc_driver.captureInjected();
+    const bool frame_ready = adc_driver.captureInjected(started);
+    // Inspect every conversion, including the first scan of an x2 frame:
+    // averaging must not hide a short overcurrent pulse from software protection.
+    if (controller && controller->getDriveMode() != libecu::DriveMode::NEUTRAL) {
+        for (unsigned phase = 0; phase < 3; ++phase) {
+            const int32_t delta = int32_t(adc_driver.getRawProtectionCurrent(static_cast<libecu::PwmChannel>(phase)))
+                                - zero_counts[phase];
+            if (delta > CURRENT_TRIP_COUNTS || delta < -CURRENT_TRIP_COUNTS) trip(OVERCURRENT);
+        }
+    }
+    if (!frame_ready) return;
     ++f410_diagnostics.samples;
     if (!controller) return;
 #ifdef PWM_TIMING_BENCH
@@ -236,11 +247,6 @@ extern "C" void board_adc_interrupt() {
     }
 #endif
     if (controller->getDriveMode() != libecu::DriveMode::NEUTRAL) {
-        for (unsigned phase = 0; phase < 3; ++phase) {
-            const int32_t delta = int32_t(adc_driver.getRawAdcValue(static_cast<libecu::PwmChannel>(phase)))
-                                - zero_counts[phase];
-            if (delta > CURRENT_TRIP_COUNTS || delta < -CURRENT_TRIP_COUNTS) trip(OVERCURRENT);
-        }
         if (adc_driver.readNativeBusVoltage() <
             libecu::constant<libecu::ActiveNumericProfile::Voltage>(ihm08::MIN_BUS_VOLTAGE)) trip(UNDERVOLTAGE);
     }
@@ -248,7 +254,7 @@ extern "C" void board_adc_interrupt() {
         controller->setDriveMode(libecu::DriveMode::NEUTRAL);
     controller->pwmInterruptHandler();
     console->captureNativeOscSample(controller->getNativeStatus());
-    const uint32_t cycles = DWT->CYCCNT - started;
+    const uint32_t cycles = DWT->CYCCNT - adc_driver.frameStartedCycles();
     if (cycles > f410_diagnostics.max_current_loop_cycles) f410_diagnostics.max_current_loop_cycles = cycles;
     const bool overrun = cycles >= SystemCoreClock / libecu::ActiveTiming::CURRENT_HZ || (ADC1->SR & ADC_SR_JEOC);
     if (f410_timing_capture.remaining) {
@@ -354,6 +360,7 @@ public:
                  ihm08::DEAD_TIME_NS, pwm_driver.getActualDeadTimeNs(), ihm08::MAX_DUTY,
                  ihm08::MAX_MODULATION, ihm08::MAX_BUS_VOLTAGE, ihm08::LOW_SIDE_CLAMPED_PWM};
         CurrentSensorCalibration calibration{ihm08::SHUNT_OHMS, ihm08::CURRENT_GAIN, ihm08::ADC_REFERENCE, 12};
+        calibration.injected_sample_sum = Stm32Adc::INJECTED_SAMPLE_SUM;
         VoltageSensorParameters voltage{float(ihm08::BUS_R_UP), float(ihm08::BUS_R_DOWN)};
         TemperatureSensorParameters temperature{4700.0f, 10000.0f, 3435.0f};
         if (!adc_driver.initialize(calibration, voltage, temperature) || !adc_driver.initializeHardware() ||
@@ -367,9 +374,13 @@ public:
         }
         const auto& offsets = adc_driver.getCalibration();
         const float values[3] = {offsets.offset_voltage_u, offsets.offset_voltage_v, offsets.offset_voltage_w};
-        for (unsigned i = 0; i < 3; ++i) zero_counts[i] = int32_t(values[i] * 4095.0f / ihm08::ADC_REFERENCE + 0.5f);
+        for (unsigned i = 0; i < 3; ++i)
+            zero_counts[i] = int32_t(values[i] * Stm32Adc::INJECTED_SAMPLE_SUM *
+                                    4095.0f / ihm08::ADC_REFERENCE + 0.5f);
         printf("PWM %lu Hz, dead time %u ns, DPWMMIN duty <=95%%; ADC zeros %.3f %.3f %.3f V\n",
-               (unsigned long)info_.pwm_frequency_hz, info_.actual_dead_time_ns, values[0], values[1], values[2]);
+                (unsigned long)info_.pwm_frequency_hz, info_.actual_dead_time_ns, values[0], values[1], values[2]);
+        printf("ADC: software sampling x%u, injected sum %u\n",
+               Stm32Adc::INJECTED_SAMPLE_SUM, Stm32Adc::INJECTED_SAMPLE_SUM);
         return true;
     }
     const BoardInfo& info() const noexcept override { return info_; }
