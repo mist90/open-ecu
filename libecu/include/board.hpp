@@ -7,7 +7,7 @@
  * consists of one translation unit that:
  *
  *   1. derives from Board and builds the concrete PwmInterface,
- *      HallInterface, AdcInterface and AtCommandProcessor,
+ *      HallInterface, AdcInterface and CommandProcessor,
  *   2. implements createBoard() to return the single instance of it,
  *   3. implements the free functions the library expects from the platform:
  *      time_us() (adc_interface.hpp) and disable_interrupts() /
@@ -28,7 +28,7 @@
 
 namespace libecu {
 
-class AtCommandProcessor;
+class CommandProcessor;
 class BldcController;
 
 /**
@@ -78,23 +78,25 @@ public:
     virtual AdcInterface* adc() noexcept = 0;
 
     /**
-     * @brief Build the console the AT command protocol talks over
+     * @brief Compose the board's selected command protocol and byte transport
      * @param controller Controller the commands act on
      * @return Reference to the board-owned processor
      */
-    virtual AtCommandProcessor& createConsole(BldcController& controller) noexcept = 0;
+    virtual CommandProcessor& createConsole(BldcController& controller) noexcept = 0;
 
     /**
      * @brief Route the hardware interrupts and arm the current loop
      *
      * After this the commutation and current-control ISRs run at
      * BoardInfo::pwm_frequency_hz against the given controller, and every PWM
-     * cycle is offered to the console for oscilloscope capture.
+     * cycle is offered for capture only when console.wantsCurrentSample() is
+     * true. Pass getNativeStatus() to console.captureCurrentSample(); keep
+     * formatting and byte output in foreground context.
      *
      * @return true on success
      */
     virtual bool startCurrentLoop(BldcController& controller,
-                                  AtCommandProcessor& console) noexcept = 0;
+                                  CommandProcessor& console) noexcept = 0;
 
     /**
      * @brief Arm the periodic control tick at BoardInfo::control_frequency_hz

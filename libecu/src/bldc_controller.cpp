@@ -517,6 +517,11 @@ HallMonitor::Info BldcController::getHallInfo() const noexcept {
     return hall_monitor_.getInfo();
 }
 
+HallFault BldcController::getHallFault() const noexcept {
+    CriticalSection cs;
+    return hall_monitor_.faultCause();
+}
+
 void BldcController::clearHallFault() noexcept {
     CriticalSection cs;
     hall_monitor_.clearFault();

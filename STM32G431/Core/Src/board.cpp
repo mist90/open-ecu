@@ -65,7 +65,7 @@ static libecu::HallGpioConfig hall_config{A__GPIO_Port, A__Pin, B__Pin, Z__Pin};
 static libecu::Stm32TimHallSensor hall_sensor(hall_config);
 static libecu::Stm32Adc adc_driver;
 static libecu::BldcController* motor_controller = nullptr;
-static libecu::AtCommandProcessor* g_at_processor = nullptr;
+static libecu::CommandProcessor* command_processor = nullptr;
 static volatile bool control_tick = false;
 
 #ifdef BENCH_PROFILING
@@ -216,7 +216,9 @@ extern "C" void motor_controller_pwm_interrupt_handler(void)
 #endif
     if (motor_controller != nullptr) {
         motor_controller->pwmInterruptHandler();
-        g_at_processor->captureNativeOscSample(motor_controller->getNativeStatus());
+        if (command_processor->wantsCurrentSample()) {
+            command_processor->captureCurrentSample(motor_controller->getNativeStatus());
+        }
     }
 #ifdef BENCH_PROFILING
     if (pwm_bench_profile.remaining != 0) {
@@ -358,17 +360,17 @@ public:
     HallInterface& hall() noexcept override { return hall_sensor; }
     AdcInterface*  adc() noexcept override  { return &adc_driver; }
 
-    AtCommandProcessor& createConsole(BldcController& controller) noexcept override
+    CommandProcessor& createConsole(BldcController& controller) noexcept override
     {
         static UartAtBridge at_processor(&controller);
         return at_processor;
     }
 
     bool startCurrentLoop(BldcController& controller,
-                          AtCommandProcessor& console) noexcept override
+                          CommandProcessor& console) noexcept override
     {
         motor_controller = &controller;
-        g_at_processor = &console;
+        command_processor = &console;
 
         /* Configure interrupt priorities for real-time control
          * Lower preempt priority number = higher priority (can preempt higher numbers)

@@ -108,6 +108,11 @@ cd STM32G431
     simulated PMSM (202 checks)
   - `tests/test_hall_monitor/run.sh`
   - `tests/test_motor_pll/run.sh` (also plots, needs numpy/matplotlib)
+  - `tests/test_command_processor/run.sh` — real shared main with a non-AT
+    processor, lifecycle/default silence, float/fixed and manual input on/off
+  - `tests/test_control/run.sh float|fixed|numeric-fixed` — controller and AT
+    integration, including fragmented CRC and protocol lifecycle/capture hooks;
+    `LIBECU_OSC_BUFFER_SIZE=256` exercises a smaller AT capture buffer
 - **Python simulations** in `tests/` (`sim_current.py`, `sim_3phase_current.py`) model current dynamics; they are not firmware tests
 - Hardware testing on the b-g431b-esc1 + BLDC rig via `utility/` scripts
   (`pll_sweep.py`, `fang_sweep.py`, `capture_osc.py`). **Always leave the drive
@@ -313,7 +318,7 @@ if (HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1) != HAL_OK) {
 supplies one translation unit (`<platform>/Core/Src/board.cpp` on STM32G431)
 that:
 1. derives from `libecu::Board` and builds the concrete `PwmInterface`,
-   `HallInterface`, `AdcInterface` and `AtCommandProcessor`,
+   `HallInterface`, `AdcInterface` and `CommandProcessor`,
 2. implements `libecu::createBoard()` returning that instance,
 3. implements `time_us()`, `disable_interrupts()` and `enable_interrupts()`,
 4. fills `BoardInfo` with the facts the ECU cannot know: PWM and control loop
@@ -323,6 +328,25 @@ Motor properties (poles, limits, electrical model, loop tuning) stay in
 `libecu/include/motor_config.hpp`; board properties (shunt, divider, NTC,
 dead time, loop rates, DC link) stay in the port. Nothing above `board.hpp`
 includes a vendor HAL, and nothing below it knows which motor is attached.
+
+### Selecting a command protocol
+`Board::createConsole()` returns a board-owned `CommandProcessor&` combining
+the selected protocol with the UART's `read()` / length-delimited `write()`.
+`AtCommandProcessor` is the default for existing STM32 ports; their UART
+bridges are templates over the processor. Framing and telemetry live in the
+processor, not in the shared main or the transport.
+
+The foreground calls `onStarted()` once, `onControlTick()` on slow ticks and
+`process()` / `processOutput()` on every iteration. Default optional hooks
+are silent. The current ISR calls `captureCurrentSample(getNativeStatus())`
+only when `wantsCurrentSample()` is true; neither ISR hook may transmit.
+AT owns its capture storage (`LIBECU_OSC_BUFFER_SIZE`, default 1024 samples,
+12 bytes each). A different protocol inherits no AT parser or buffer.
+Define the buffer size consistently across a target's translation units.
+
+Keep diagnostic `printf` routing in the board port separate from any binary
+command UART. A protocol that owns drive inputs must build without
+`THROTTLE_BRAKE_CONTROL`; its foreground tick then owns input arbitration.
 
 ## Key Conventions
 - **HAL drivers**: All STM32 peripherals configured via HAL (not bare metal)

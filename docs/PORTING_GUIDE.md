@@ -29,6 +29,44 @@ See [board.hpp](../libecu/include/board.hpp) and the
 The current application requires an ADC interface even for its PWM-rate
 voltage-mode path; returning `nullptr` does not provide a working motor loop.
 
+### Command protocol and transport
+
+`Board::createConsole(BldcController&)` returns a statically allocated
+`CommandProcessor&`; `startCurrentLoop()` accepts that same generic reference.
+The default STM32 processor is `AtCommandProcessor`, with the existing CRC16
+commands and telemetry. A board may select another processor without changing
+`libecu/src/main.cpp` or the motor controller.
+
+The processor keeps the byte API: `read()` returns 0..255 or -1 without waiting;
+`write(const char*, size_t)` transmits the specified bytes, including NUL.
+Implement transport once as a template deriving from the selected processor,
+forward its controller/configuration arguments, and override only byte I/O.
+The existing STM32 `UartCommandBridge` implementations default to AT. No heap,
+RTTI or exceptions are needed.
+
+The shared application calls:
+
+| Hook | Context and contract |
+|---|---|
+| `onStarted()` | Once, after the controller and both loops start. Default is silent; AT emits its existing greeting. |
+| `onControlTick()` | Foreground slow tick. The processor obtains only the status snapshots it needs, in native or float units. AT owns the motor/PLL/Hall telemetry switches. |
+| `process()` | Every foreground iteration. Consume available input and poll any protocol deadlines; never wait for a complete frame. |
+| `processOutput()` | Every foreground iteration. Drain deferred output; AT sends one buffered OSC sample per call. Default is silent. |
+| `wantsCurrentSample()` | Current-loop ISR, before obtaining a snapshot. Default false. |
+| `captureCurrentSample(const NativeMotorStatus&)` | ISR, only on request. Bounded capture with no formatting or transmission. Default no-op. |
+
+The base stores only the controller pointer and has no parser or capture
+buffer. AT owns the 12-byte samples; `LIBECU_OSC_BUFFER_SIZE` defaults to 1024
+and can be defined target-wide (for example, 256 for a smaller-RAM board).
+Every translation unit using the AT class must see the same value.
+An inactive or full AT capture buffer stops requesting ISR snapshots.
+
+Keep all `printf` diagnostics routed away from a binary command UART, including
+messages emitted by board initialization or fault reporting. The shared main
+does not format or transmit protocol text. If the selected protocol owns
+throttle/brake arbitration, build without `THROTTLE_BRAKE_CONTROL` and implement
+that policy in its foreground tick using board callbacks.
+
 ## 2. MCU peripheral requirements
 
 | Resource | Required capability / acceptance criterion |
@@ -54,8 +92,9 @@ accelerate some operations; software fallbacks have different costs. MCU MHz
 alone is not a sufficient performance criterion.
 
 The present targets have 128 KiB Flash and 32 KiB RAM. A 16-KiB target needs a
-separate RAM budget, particularly for the 1024-sample console oscilloscope and
-the stack. The filter/ADC diagnostic F410 image used about 29.7 KiB including
+separate RAM budget, particularly for AT's default 1024-sample oscilloscope and
+the stack. Reduce `LIBECU_OSC_BUFFER_SIZE` when appropriate; a non-AT processor
+does not carry this buffer. The filter/ADC diagnostic F410 image used about 29.7 KiB including
 its additional trace buffer and reserved stack; this is not the minimum size
 of a production port. Check the linker map and stack-usage files.
 
@@ -451,6 +490,13 @@ about 0.634 A, no Hall faults/overruns, and a maximum processing window of
 
 Relevant host suites:
 
+- `tests/test_command_processor/run.sh`: the real shared main linked without
+  AT/CRC, generic lifecycle ordering and silent defaults, float/fixed and
+  manual throttle on/off.
+- `tests/test_control/run.sh float|fixed|numeric-fixed`: AT framing split at
+  every byte/CRC boundary, malformed CRC recovery, default telemetry and
+  generic lifecycle/capture dispatch. Set `LIBECU_OSC_BUFFER_SIZE=256` to check
+  the smaller capture-buffer configuration as well.
 - `tests/test_current_filter/run.sh`: measured gain/phase, DC initialization,
   reset, delayed-loop step/reversal/saturation recovery, and noise-floor
   hysteresis/zero-vector behavior without masking real demands, float and fixed.

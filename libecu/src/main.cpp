@@ -10,12 +10,10 @@
 
 #include "../include/board.hpp"
 #include "../include/bldc_controller.hpp"
-#include "../include/at_command_processor.hpp"
+#include "../include/command_processor.hpp"
 #include "../include/critical_section.hpp"
 #include "../include/current_loop_tuning.hpp"
 #include "../include/motor_config.hpp"
-
-#include <cstdio>
 
 namespace {
 
@@ -207,9 +205,9 @@ int main(void)
         board.fail();
     }
 
-    libecu::AtCommandProcessor& at_processor = board.createConsole(motor_controller);
+    libecu::CommandProcessor& console = board.createConsole(motor_controller);
 
-    if (!board.startCurrentLoop(motor_controller, at_processor)) {
+    if (!board.startCurrentLoop(motor_controller, console)) {
         board.fail();
     }
 
@@ -219,13 +217,12 @@ int main(void)
         board.fail();
     }
 
-    printf("ECU started, control: %s, PI: %s\n", libecu::CONTROL_PROFILE_NAME, libecu::PI_PROFILE_NAME);
+    console.onStarted();
     while (1) {
         // motor control loop
         if (board.takeControlTick()) {
-            // Update motor controller status
-            const libecu::MotorStatus status = motor_controller.getStatus();
 #ifdef THROTTLE_BRAKE_CONTROL
+            const libecu::ControlMode control_mode = motor_controller.getNativeStatus().control_mode;
             // Reads the throttle sampled during the last control tick, not the
             // hardware. The board port owns ADC scheduling, including any
             // sharing of the regular group with the NTC. See Board::readThrottle().
@@ -236,10 +233,10 @@ int main(void)
 
             // The throttle is a velocity demand, so the controller is held in
             // closed-loop velocity for as long as this input owns the drive -
-            // including back out of any mode set over AT. setControlMode()
-            // ignores a no-op itself; testing the snapshot we already hold
-            // saves even the critical section.
-            if (status.control_mode != libecu::ControlMode::CLOSED_LOOP_VELOCITY) {
+            // including back out of any mode set by commands. setControlMode()
+            // ignores a no-op itself; reading only the mode avoids converting
+            // a full status snapshot or entering a critical section.
+            if (control_mode != libecu::ControlMode::CLOSED_LOOP_VELOCITY) {
                 motor_controller.setControlMode(libecu::ControlMode::CLOSED_LOOP_VELOCITY);
             }
 
@@ -271,19 +268,10 @@ int main(void)
             }
 #endif
 
-            if (at_processor.isTelemetryEnabled()) {
-                at_processor.sendTelemetry(status);
-            }
-            if (at_processor.isPllTelemetryEnabled()) {
-                libecu::MotorPLL::PllInfo pll_info = motor_controller.getPllInfo();
-                at_processor.sendPllTelemetry(pll_info);
-            }
-            if (at_processor.isHallTelemetryEnabled()) {
-                at_processor.sendHallTelemetry(motor_controller.getHallInfo());
-            }
+            console.onControlTick();
         }
 
-        at_processor.process();
-        at_processor.processOscOutput();
+        console.process();
+        console.processOutput();
     }
 }

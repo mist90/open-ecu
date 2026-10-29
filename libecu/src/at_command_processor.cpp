@@ -22,7 +22,7 @@ bool parsePiGains(const char* text, float& kp, float& ki) noexcept {
 } // namespace
 
 AtCommandProcessor::AtCommandProcessor(BldcController* controller) noexcept
-    : controller_(controller),
+    : CommandProcessor(controller),
       state_(ParseState::Idle),
       command_buffer_{},
       cmd_index_(0),
@@ -36,6 +36,31 @@ AtCommandProcessor::AtCommandProcessor(BldcController* controller) noexcept
       osc_sample_counter_(0),
       crc_index_(0),
       received_crc_(0) {
+}
+
+void AtCommandProcessor::onStarted() noexcept {
+    char buffer[96];
+    const int length = std::snprintf(buffer, sizeof(buffer), "ECU started, control: %s, PI: %s\n",
+                                     CONTROL_PROFILE_NAME, PI_PROFILE_NAME);
+    if (length > 0 && static_cast<std::size_t>(length) < sizeof(buffer)) {
+        write(buffer, static_cast<std::size_t>(length));
+    }
+}
+
+void AtCommandProcessor::onControlTick() noexcept {
+    if (isTelemetryEnabled()) {
+        sendTelemetry(controller_->getStatus());
+    }
+    if (isPllTelemetryEnabled()) {
+        sendPllTelemetry(controller_->getPllInfo());
+    }
+    if (isHallTelemetryEnabled()) {
+        sendHallTelemetry(controller_->getHallInfo());
+    }
+}
+
+bool AtCommandProcessor::wantsCurrentSample() const noexcept {
+    return osc_streaming_ && osc_phase_ == OscPhase::Accumulating;
 }
 
 void AtCommandProcessor::process() noexcept {
@@ -697,6 +722,7 @@ void AtCommandProcessor::startOscilloscope() noexcept {
 }
 
 void AtCommandProcessor::stopOscilloscope() noexcept {
+    CriticalSection cs;
     osc_streaming_ = false;
     osc_phase_ = OscPhase::Accumulating;
 }
@@ -742,7 +768,7 @@ void AtCommandProcessor::captureOscSample(const MotorStatus& status) noexcept {
 }
 
 void AtCommandProcessor::captureNativeOscSample(const NativeMotorStatus& status) noexcept {
-    if (osc_phase_ != OscPhase::Accumulating)
+    if (!wantsCurrentSample())
         return;
 
     if (osc_write_index_ >= OSC_BUFFER_SIZE)

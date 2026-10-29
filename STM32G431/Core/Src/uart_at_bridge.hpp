@@ -12,10 +12,12 @@ extern "C" {
 
 namespace libecu {
 
-class UartAtBridge : public AtCommandProcessor {
+/** @brief Compose the USART2 byte transport with the selected command protocol. */
+template<class Processor = AtCommandProcessor>
+class UartCommandBridge : public Processor {
 public:
-    explicit UartAtBridge(BldcController* controller) noexcept
-        : AtCommandProcessor(controller) {}
+    explicit UartCommandBridge(BldcController* controller) noexcept
+        : Processor(controller) {}
 
     int32_t read() override {
         return static_cast<int32_t>(__io_getchar());
@@ -29,6 +31,9 @@ public:
             HAL_MAX_DELAY);
     }
 };
+
+// Existing boards and applications retain the AT protocol by default.
+using UartAtBridge = UartCommandBridge<>;
 
 } // namespace libecu
 

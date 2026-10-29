@@ -9,21 +9,22 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "command_processor.hpp"
 #include "motor_pll.hpp"
 #include "hall_monitor.hpp"
 
+#ifndef LIBECU_OSC_BUFFER_SIZE
+#define LIBECU_OSC_BUFFER_SIZE 1024
+#endif
+
 namespace libecu {
 
-// Forward declarations
-class BldcController;
-template<class P> struct MotorStatusT;
 using MotorStatus = MotorStatusT<FloatProfile>;
-using NativeMotorStatus = MotorStatusT<ActiveNumericProfile>;
 
 /**
  * @brief AT command processor for serial communication with motor controller
  */
-class AtCommandProcessor {
+class AtCommandProcessor : public CommandProcessor {
 public:
     /**
      * @brief Parse state for command processing
@@ -45,26 +46,30 @@ public:
     /**
      * @brief Virtual destructor
      */
-    virtual ~AtCommandProcessor() noexcept = default;
-
-    /**
-     * @brief Read a character from the communication interface
-     * @return Character value or -1 if no data available
-     */
-    virtual int32_t read() = 0;
-
-    /**
-     * @brief Write data to the communication interface
-     * @param str String to write
-     * @param len Length of string
-     */
-    virtual void write(const char* str, std::size_t len) = 0;
+    ~AtCommandProcessor() noexcept override = default;
 
     /**
      * @brief Process incoming commands (non-blocking)
      * Should be called in main loop
      */
-    void process() noexcept;
+    void process() noexcept override;
+
+    /// @brief Emit the AT console's startup banner
+    void onStarted() noexcept override;
+
+    /// @brief Emit the enabled motor, PLL and Hall telemetry on a foreground tick
+    void onControlTick() noexcept override;
+
+    /// @brief Drain one buffered OSC sample from foreground context
+    void processOutput() noexcept override { processOscOutput(); }
+
+    /// @brief Request ISR snapshots only while an OSC buffer is being filled
+    bool wantsCurrentSample() const noexcept override;
+
+    /// @brief Pack a native ISR snapshot into the AT-owned OSC buffer
+    void captureCurrentSample(const NativeMotorStatus& status) noexcept override {
+        captureNativeOscSample(status);
+    }
 
     /**
      * @brief Send telemetry data
@@ -155,7 +160,9 @@ public:
 
     // Configuration constants
     static constexpr std::size_t MAX_COMMAND_LENGTH = 64;
-    static constexpr std::size_t OSC_BUFFER_SIZE = 1024;
+    // Define consistently for every translation unit in a smaller-RAM target.
+    static constexpr std::size_t OSC_BUFFER_SIZE = LIBECU_OSC_BUFFER_SIZE;
+    static_assert(LIBECU_OSC_BUFFER_SIZE > 0, "OSC capture needs at least one sample");
 
 private:
     /**
@@ -212,12 +219,11 @@ private:
     bool isHexChar(char c) const noexcept;
 
     // Member variables
-    BldcController* controller_;
     ParseState state_;
     char command_buffer_[MAX_COMMAND_LENGTH];
     std::size_t cmd_index_;
     bool telemetry_enabled_;
-    bool osc_streaming_;
+    volatile bool osc_streaming_;
     bool pll_telemetry_enabled_;
     bool hall_telemetry_enabled_;
 

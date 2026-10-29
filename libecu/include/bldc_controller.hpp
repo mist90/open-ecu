@@ -391,6 +391,9 @@ public:
      */
     HallMonitor::Info getHallInfo() const noexcept;
 
+    /// @brief Atomic Hall fault only, without telemetry conversion or floating-point work
+    HallFault getHallFault() const noexcept;
+
     /// @brief Release a latched Hall fault
     void clearHallFault() noexcept;
 

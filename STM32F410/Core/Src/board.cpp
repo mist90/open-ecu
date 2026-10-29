@@ -24,7 +24,7 @@ DMA_HandleTypeDef console_rx_dma{};
 alignas(4) volatile uint8_t rx_buffer[256]{};
 uint16_t rx_index = 0;
 libecu::BldcController* controller = nullptr;
-libecu::AtCommandProcessor* console = nullptr;
+libecu::CommandProcessor* console = nullptr;
 volatile bool control_enabled = false;
 volatile bool control_tick = false;
 bool uart_ready = false;
@@ -253,7 +253,9 @@ extern "C" void board_adc_interrupt() {
     if (pwm_driver.faulted() && controller->getDriveMode() != libecu::DriveMode::NEUTRAL)
         controller->setDriveMode(libecu::DriveMode::NEUTRAL);
     controller->pwmInterruptHandler();
-    console->captureNativeOscSample(controller->getNativeStatus());
+    if (console->wantsCurrentSample()) {
+        console->captureCurrentSample(controller->getNativeStatus());
+    }
     const uint32_t cycles = DWT->CYCCNT - adc_driver.frameStartedCycles();
     if (cycles > f410_diagnostics.max_current_loop_cycles) f410_diagnostics.max_current_loop_cycles = cycles;
     const bool overrun = cycles >= SystemCoreClock / libecu::ActiveTiming::CURRENT_HZ || (ADC1->SR & ADC_SR_JEOC);
@@ -316,9 +318,10 @@ extern "C" void Error_Handler() {
 
 namespace libecu {
 namespace {
-class UartAtBridge final : public AtCommandProcessor {
+template<class Processor = AtCommandProcessor>
+class UartCommandBridge final : public Processor {
 public:
-    explicit UartAtBridge(BldcController* motor) noexcept : AtCommandProcessor(motor) {}
+    explicit UartCommandBridge(BldcController* motor) noexcept : Processor(motor) {}
     int32_t read() override { return board_console_read(); }
     void write(const char* data, std::size_t length) override { board_console_write(data, int(length)); }
 };
@@ -387,11 +390,11 @@ public:
     PwmInterface& pwm() noexcept override { return pwm_driver; }
     HallInterface& hall() noexcept override { return hall_sensor; }
     AdcInterface* adc() noexcept override { return &adc_driver; }
-    AtCommandProcessor& createConsole(BldcController& motor) noexcept override {
-        static UartAtBridge bridge(&motor);
+    CommandProcessor& createConsole(BldcController& motor) noexcept override {
+        static UartCommandBridge<> bridge(&motor);
         return bridge;
     }
-    bool startCurrentLoop(BldcController& motor, AtCommandProcessor& processor) noexcept override {
+    bool startCurrentLoop(BldcController& motor, CommandProcessor& processor) noexcept override {
         CriticalSection lock;
         console = &processor;
         controller = &motor;

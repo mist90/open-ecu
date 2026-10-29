@@ -66,12 +66,24 @@ public:
         input_ = std::string(text) + suffix;
         position_ = 0;
         output_.clear();
-        process();
+        CommandProcessor& processor = *this;
+        processor.process();
         return output_;
     }
+    std::string feed(const std::string& bytes) {
+        input_ = bytes;
+        position_ = 0;
+        output_.clear();
+        CommandProcessor& processor = *this;
+        processor.process();
+        return output_;
+    }
+    const std::string& output() const { return output_; }
+    void clearOutput() { output_.clear(); }
     std::string drainOsc() {
         output_.clear();
-        for (unsigned i = 0; i < OSC_BUFFER_SIZE; ++i) processOscOutput();
+        CommandProcessor& processor = *this;
+        for (unsigned i = 0; i < OSC_BUFFER_SIZE; ++i) processor.processOutput();
         return output_;
     }
 private:
@@ -199,6 +211,90 @@ static void testCommands() {
 #endif
 }
 
+static void testFragmentedCommands() {
+    Pwm pwm;
+    Hall hall;
+    BldcController controller(pwm, hall, makeParams());
+    Console console(controller);
+    const char* text = "AT+SPID=0.25,2.5";
+    const auto crc = crc16_compute(reinterpret_cast<const uint8_t*>(text), std::strlen(text));
+    char suffix[8];
+    std::snprintf(suffix, sizeof(suffix), "*%04X", crc);
+    const std::string frame = std::string(text) + suffix;
+
+    // Every possible UART-buffer boundary, including each of the four CRC digits.
+    for (std::size_t split = 1; split < frame.size(); ++split) {
+        controller.setSpeedPi(0.5f, 3.0f);
+        check(console.feed(frame.substr(0, split)).empty(), "partial AT frame has no response");
+        float kp, ki;
+        controller.getSpeedPiGains(kp, ki);
+        check(kp == 0.5f && ki == 3.0f, "partial AT frame does not change the controller");
+        check(console.feed(frame.substr(split)) == "OK\r\n", "fragmented CRC completes once");
+        controller.getSpeedPiGains(kp, ki);
+        check(kp == 0.25f && ki == 2.5f, "fragmented command reaches the controller");
+    }
+    for (std::size_t i = 0; i < frame.size(); ++i) {
+        const std::string response = console.feed(frame.substr(i, 1));
+        check(response == (i + 1 == frame.size() ? "OK\r\n" : ""),
+              "one-byte UART fragments preserve the CRC accumulator");
+    }
+    std::string bad = frame;
+    bad.back() = bad.back() == '0' ? '1' : '0';
+    controller.setSpeedPi(0.5f, 3.0f);
+    check(console.feed(bad) == "ERROR\r\n", "bad CRC is rejected");
+    float kp, ki;
+    controller.getSpeedPiGains(kp, ki);
+    check(kp == 0.5f && ki == 3.0f, "bad CRC cannot change gains");
+    check(console.feed(frame + "\r\n" + frame + "\r\n") == "OK\r\nOK\r\n",
+          "parser recovers after bad CRC and handles concatenated frames");
+}
+
+static void testAtLifecycle() {
+    Pwm pwm;
+    Hall hall;
+    BldcController controller(pwm, hall, makeParams());
+    Console console(controller);
+    CommandProcessor& processor = console;
+    check(console.isTelemetryEnabled() && !console.isPllTelemetryEnabled() &&
+          !console.isHallTelemetryEnabled(), "AT telemetry defaults are retained");
+    check(!processor.wantsCurrentSample(), "AT capture is opt-in");
+    processor.onStarted();
+    const std::string greeting = std::string("ECU started, control: ") + CONTROL_PROFILE_NAME +
+                                 ", PI: " + PI_PROFILE_NAME + "\n";
+    check(console.output() == greeting, "generic startup hook preserves the AT greeting");
+    console.clearOutput();
+    processor.onControlTick();
+    const std::string default_output = console.output();
+    check(default_output.find("+TM:") == 0 && default_output.find("+PLL:") == std::string::npos &&
+          default_output.find("+HSTATUS:") == std::string::npos, "default tick sends only motor telemetry");
+    console.setTelemetryEnabled(false);
+    console.clearOutput();
+    processor.onControlTick();
+    check(console.output().empty(), "disabled telemetry leaves a silent control tick");
+    console.setPllTelemetryEnabled(true);
+    console.setHallTelemetryEnabled(true);
+    processor.onControlTick();
+    check(console.output().find("+PLL:") == 0 && console.output().find("+HSTATUS:") != std::string::npos &&
+          console.output().find("+TM:") == std::string::npos, "PLL and Hall tick output remains independently enabled");
+
+    console.clearOutput();
+    console.startOscilloscope();
+    check(processor.wantsCurrentSample(), "OSC start requests native ISR samples");
+    NativeMotorStatus sample{};
+    for (std::size_t i = 0; i < Console::OSC_BUFFER_SIZE; ++i) processor.captureCurrentSample(sample);
+    check(console.output().empty(), "ISR capture never transmits");
+    check(!processor.wantsCurrentSample(), "full OSC buffer stops requesting snapshots");
+    const std::string capture = console.drainOsc();
+    check(capture.find("+OSC:0,") == 0 && capture.substr(capture.size() - 7) == "+OSC:\r\n",
+          "generic output hook drains the configured-size OSC buffer");
+    check(processor.wantsCurrentSample(), "drained OSC buffer resumes capture");
+    console.stopOscilloscope();
+    console.clearOutput();
+    processor.captureCurrentSample(sample);
+    processor.processOutput();
+    check(!processor.wantsCurrentSample() && console.output().empty(), "OSC stop disables capture and output");
+}
+
 static void testHallDuration() {
     HallMonitor monitor;
     auto params = monitor.getParameters();
@@ -312,6 +408,8 @@ int main() {
     testSpeedClock();
     testSlewClock();
     testCommands();
+    testFragmentedCommands();
+    testAtLifecycle();
     testHallDuration();
     testNativePath();
 #if defined(ECU_FIXED_PI) || defined(ECU_FIXED_NUMERIC)
