@@ -90,14 +90,13 @@ public:
     /** @brief Run one sample. Voltages and current magnitudes are physical SI values. */
     LIBECU_HOT_LOOP Output update(const Input& in) noexcept {
         const Angle angle = multiplyTo<Angle>(in.angle_steps, RAD_PER_STEP) + params_.angle_offset_rad;
-        Unit sine{}, cosine{};
-        Math::sinCos(angle, sine, cosine);
+        const auto rotation = Transforms::rotation(angle);
 
         Current u = -in.i_u, v = -in.i_v, w = -in.i_w;
         if (previous_.u >= previous_.v && previous_.u >= previous_.w) u = -(v + w);
         else if (previous_.v >= previous_.w) v = -(u + w);
         else w = -(u + v);
-        const auto dq = Transforms::park(Transforms::clarkeZeroSum(u, v, w), sine, cosine);
+        const auto dq = Transforms::park(Transforms::clarkeZeroSum(u, v, w), rotation);
         const Current filtered_d = filter_d_.update(dq.d, params_.current_filter);
         const Current filtered_q = filter_q_.update(dq.q, params_.current_filter);
         const bool reverse = in.drive_mode == DriveMode::REVERSE;
@@ -162,7 +161,7 @@ public:
             integral_q_ = numericClamp(integral_q_, -bound, bound);
         }
 
-        const auto voltage = Transforms::invPark(DqVectorT<Voltage>{v_d, v_q}, sine, cosine);
+        const auto voltage = Transforms::invPark(DqVectorT<Voltage>{v_d, v_q}, rotation);
         auto duty = Transforms::svpwm(voltage.alpha, voltage.beta, in.bus_voltage,
                                      params_.low_side_clamped_pwm);
         const Duty low = params_.low_side_clamped_pwm ? Duty{} : number_v<Duty, 1> - params_.max_duty_cycle;

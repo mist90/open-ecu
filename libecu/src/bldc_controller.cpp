@@ -543,7 +543,8 @@ bool BldcController::setPllGains(float kp, float ki) noexcept {
 }
 
 DriveMode BldcController::getDriveMode() const noexcept {
-    CriticalSection cs;
+    // One volatile scalar load is atomic on every supported Cortex-M. Callers
+    // committing several values already hold their own transaction mask.
     return dmode_;
 }
 

@@ -84,6 +84,8 @@ int main() {
     for (float speed : {-4800.0f, -480.0f, -48.0f, 0.0f, 48.0f, 480.0f, 4800.0f}) trace<20000>(speed);
     trace<10000>(480.0f);
     trace<40000>(-480.0f);
+    trace<8000>(480.0f);
+    trace<16000>(-480.0f);
     overslew();
     std::printf("Numerical PLL: %d failures\n", failures);
     return failures != 0;

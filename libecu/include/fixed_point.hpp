@@ -17,6 +17,53 @@ constexpr uint64_t magnitude(int64_t value) noexcept {
     return value < 0 ? uint64_t(-(value + 1)) + 1u : uint64_t(value);
 }
 
+template<unsigned Shift, typename Storage>
+[[gnu::always_inline]] constexpr auto roundedShift(Storage value) noexcept {
+    static_assert(Shift > 0 && Shift <= std::numeric_limits<Storage>::digits, "Invalid rounding shift");
+    static_assert((int64_t(-1) >> 1) == -1, "Fixed point requires arithmetic right shift");
+    // Rounding can produce +2^(digits-Shift), so keep one sign bit above it.
+    using Signed = std::conditional_t<(std::numeric_limits<Storage>::digits - Shift < 31), int32_t, int64_t>;
+    if constexpr (sizeof(Storage) < sizeof(Signed)) {
+        // Small inputs have enough headroom for the bias in a native word.
+        constexpr Signed half = Signed(1) << (Shift - 1u);
+        return (Signed(value) + half - Signed(value < 0)) >> Shift;
+    } else {
+        // Round the discarded bits, not the full input: even INT64_MAX needs
+        // no overflowing bias or special case. The unsigned sum is at most
+        // 3 * 2^(Shift-1) - 1; shifts below 32 only need a 32-bit remainder.
+        using Remainder = std::conditional_t<(Shift < 32), uint32_t, uint64_t>;
+        constexpr Remainder half = Remainder(1) << (Shift - 1u);
+        constexpr Remainder mask = (Remainder(1) << Shift) - 1u;
+        const Remainder remainder = Remainder(value) & mask;
+        using Unsigned = std::make_unsigned_t<Storage>;
+        const Remainder negative = Unsigned(value) >> std::numeric_limits<Storage>::digits;
+        // At a negative tie, keep the floor quotient instead of incrementing it.
+        const Remainder increment = (remainder + half - negative) >> Shift;
+        return Signed(value >> Shift) + Signed(increment);
+    }
+}
+
+template<unsigned Shift, typename SA, typename SB>
+[[gnu::always_inline]] constexpr auto roundedProduct(SA a, SB b) noexcept {
+    constexpr unsigned product_bits = std::numeric_limits<SA>::digits + std::numeric_limits<SB>::digits;
+    static_assert(sizeof(SA) <= 4 && sizeof(SB) <= 4, "Multiply operands must fit in 32 bits");
+    static_assert(Shift > 0 && Shift <= product_bits, "Invalid product rounding shift");
+    // |a*b| <= 2^product_bits. One extra signed digit also accommodates
+    // the bias, whose maximum is 2^(product_bits-1).
+    using Product = std::conditional_t<(product_bits < 31), int32_t, int64_t>;
+    const Product product = Product(a) * b;
+    if constexpr (Shift <= 32) {
+        // A native-word bias needs only one wide addition on 32-bit targets.
+        using Unsigned = std::make_unsigned_t<Product>;
+        const uint32_t negative = Unsigned(product) >> std::numeric_limits<Product>::digits;
+        const uint32_t bias = (uint32_t(1) << (Shift - 1u)) - negative;
+        return (product + Product(bias)) >> Shift;
+    } else {
+        constexpr Product half = Product(1) << (Shift - 1u);
+        return (product + half - Product(product < 0)) >> Shift;
+    }
+}
+
 constexpr int64_t roundedDivide(int64_t numerator, int64_t denominator) noexcept {
     if (denominator == 0) {
         return numerator == 0 ? 0 : (numerator < 0 ? INT64_MIN : INT64_MAX);
@@ -83,17 +130,20 @@ public:
             raw_ = static_cast<Storage>(value * factor);
         } else if constexpr (FractionBits < OtherBits) {
             constexpr unsigned shift = OtherBits - FractionBits;
-            constexpr int64_t half = int64_t(1) << (shift - 1u);
-            static_assert((int64_t(-1) >> 1) == -1, "Fixed point requires arithmetic right shift");
-            // The signed bias rounds ties away from zero. Only a wide positive
-            // input near INT64_MAX can overflow the bias addition.
-            if constexpr (sizeof(OtherStorage) == sizeof(int64_t)) {
-                if (value > INT64_MAX - half) {
-                    raw_ = fromWideRaw((value >> shift) + 1).raw();
-                    return;
+            if constexpr (std::numeric_limits<OtherStorage>::digits - shift ==
+                          std::numeric_limits<Storage>::digits) {
+                // The rounded range is exactly [min, max+1]. Check its sole
+                // overflowing endpoint before adding the bias; all remaining
+                // inputs fit both the source addition and destination storage.
+                constexpr OtherStorage half = OtherStorage(1) << (shift - 1u);
+                if (value > std::numeric_limits<OtherStorage>::max() - half) {
+                    raw_ = std::numeric_limits<Storage>::max();
+                } else {
+                    raw_ = static_cast<Storage>((other.raw() + half - OtherStorage(value < 0)) >> shift);
                 }
+            } else {
+                raw_ = fromWideRaw(fixed_detail::roundedShift<shift>(other.raw())).raw();
             }
-            raw_ = fromWideRaw((value + half - int64_t(value < 0)) >> shift).raw();
         } else {
             raw_ = fromWideRaw(value).raw();
         }
@@ -112,7 +162,8 @@ public:
         // For a 32-bit result this is one sign-extension comparison on ARM,
         // instead of two signed 64-bit range comparisons.
         if (int64_t(narrowed) == raw) return fromRaw(narrowed);
-        return fromRaw(raw < 0 ? std::numeric_limits<Storage>::min() : std::numeric_limits<Storage>::max());
+        // XOR with the sign mask selects either endpoint without a sign branch.
+        return fromRaw(static_cast<Storage>(std::numeric_limits<Storage>::max() ^ (raw >> 63)));
     }
 
     /** @brief Integer input without routing a sample through rational long division. */
@@ -233,6 +284,17 @@ public:
             if (!__builtin_is_constant_evaluated()) return fromRaw(__builtin_arm_qadd(raw_, rhs.raw_));
         }
 #endif
+#if defined(__GNUC__) && __GNUC__ >= 5
+        if constexpr (sizeof(Storage) == sizeof(int32_t)) {
+            // Cortex-M3 has no QADD: use the ADD overflow flag instead of
+            // several sign/range branches. The builtin also works in constexpr.
+            Storage result{};
+            if (__builtin_add_overflow(raw_, rhs.raw_, &result))
+                return fromRaw(raw_ < 0 ? std::numeric_limits<Storage>::min()
+                                        : std::numeric_limits<Storage>::max());
+            return fromRaw(result);
+        }
+#endif
         if (rhs.raw_ > 0 && raw_ > std::numeric_limits<Storage>::max() - rhs.raw_)
             return fromRaw(std::numeric_limits<Storage>::max());
         if (rhs.raw_ < 0 && raw_ < std::numeric_limits<Storage>::min() - rhs.raw_)
@@ -245,6 +307,15 @@ public:
             if (!__builtin_is_constant_evaluated()) return fromRaw(__builtin_arm_qsub(raw_, rhs.raw_));
         }
 #endif
+#if defined(__GNUC__) && __GNUC__ >= 5
+        if constexpr (sizeof(Storage) == sizeof(int32_t)) {
+            Storage result{};
+            if (__builtin_sub_overflow(raw_, rhs.raw_, &result))
+                return fromRaw(raw_ < 0 ? std::numeric_limits<Storage>::min()
+                                        : std::numeric_limits<Storage>::max());
+            return fromRaw(result);
+        }
+#endif
         if (rhs.raw_ < 0 && raw_ > std::numeric_limits<Storage>::max() + rhs.raw_)
             return fromRaw(std::numeric_limits<Storage>::max());
         if (rhs.raw_ > 0 && raw_ < std::numeric_limits<Storage>::min() + rhs.raw_)
@@ -255,7 +326,11 @@ public:
     constexpr FixedPointType& operator-=(FixedPointType rhs) noexcept { return *this = *this - rhs; }
     constexpr FixedPointType operator*(FixedPointType rhs) const noexcept {
         static_assert(sizeof(Storage) <= 4, "Use an explicit widened product for accumulator operands");
-        return FixedPointType(FixedPointType<2 * FractionBits, int64_t>::fromRaw(int64_t(raw_) * rhs.raw_));
+        if constexpr (FractionBits > 0) {
+            return fromWideRaw(fixed_detail::roundedProduct<FractionBits>(raw_, rhs.raw_));
+        } else {
+            return fromWideRaw(int64_t(raw_) * rhs.raw_);
+        }
     }
     constexpr FixedPointType operator/(FixedPointType rhs) const noexcept {
         static_assert(sizeof(Storage) <= 4, "Division operands must fit in 32 bits");
@@ -289,14 +364,11 @@ private:
 template<class Out, unsigned A, typename SA, unsigned B, typename SB>
 [[gnu::always_inline]] constexpr Out multiplyTo(FixedPointType<A, SA> a, FixedPointType<B, SB> b) noexcept {
     static_assert(sizeof(SA) <= 4 && sizeof(SB) <= 4, "Multiply operands must fit in 32 bits");
-    const int64_t product = int64_t(a.raw()) * b.raw();
     if constexpr (A + B > Out::FRACTION_BITS) {
         constexpr unsigned shift = A + B - Out::FRACTION_BITS;
-        constexpr int64_t half = int64_t(1) << (shift - 1u);
-        // A signed 32x32 product is at most 2^62 in magnitude. Adding the
-        // rounding bias (at most 2^61) is therefore always representable.
-        return Out::fromWideRaw((product + half - int64_t(product < 0)) >> shift);
+        return Out::fromWideRaw(fixed_detail::roundedProduct<shift>(a.raw(), b.raw()));
     } else {
+        const int64_t product = int64_t(a.raw()) * b.raw();
         return Out(FixedPointType<A + B, int64_t>::fromRaw(product));
     }
 }
@@ -327,7 +399,9 @@ template<class Out, uint32_t Divisor, unsigned Bits, typename Storage>
             return count;
         }();
         // Extra fractional bits encode division without losing small remainders.
-        return Out(FixedPointType<Bits + log2, int64_t>::fromRaw(value.raw()));
+        using Encoded = std::conditional_t<(Bits + log2 <= std::numeric_limits<Storage>::digits),
+                                          Storage, int64_t>;
+        return Out(FixedPointType<Bits + log2, Encoded>::fromRaw(value.raw()));
     } else {
         return divideByInteger<Out>(value, Divisor);
     }
