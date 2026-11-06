@@ -33,24 +33,8 @@ public:
         cosine = Fraction(FixedPointType<30>::fromRaw(interpolate(index + 64u, fraction)));
     }
 
-    /** @brief d-priority circular voltage limit, rounded inward. */
-    static Voltage qVoltageLimit(Voltage d, Voltage limit) noexcept {
-        if (limit <= Voltage{}) return Voltage{};
-        d = numericClamp(d, -limit, limit);
-        const uint64_t room = uint64_t(int64_t(limit.raw()) * limit.raw()) -
-                              uint64_t(int64_t(d.raw()) * d.raw());
-        return Voltage::fromWideRaw(integerSqrt(room));
-    }
     static Voltage voltageMagnitude(Voltage d, Voltage q) noexcept {
         return Voltage::fromWideRaw(integerSqrt(squared(d.raw(), q.raw())));
-    }
-    static bool voltageLimitExceeded(Request d, Request q, Voltage limit) noexcept {
-        static_assert(Voltage::FRACTION_BITS >= Request::FRACTION_BITS,
-                      "Unclamped requests require at least the applied voltage's range");
-        if (limit <= Voltage{}) return d != Request{} || q != Request{};
-        constexpr unsigned shift = 2u * (Voltage::FRACTION_BITS - Request::FRACTION_BITS);
-        const uint64_t limit_sq = uint64_t(int64_t(limit.raw()) * limit.raw());
-        return squared(d.raw(), q.raw()) > (limit_sq >> shift);
     }
 
     /** @brief Exact rounded Q30 reciprocal of a Q18 bus voltage, using 32-bit division. */
@@ -72,7 +56,10 @@ public:
         const uint32_t initial = reciprocal << (16u - shift);
         constexpr uint64_t numerator = uint64_t(1) << 48;
         const int64_t error = int64_t(uint64_t(initial) * divisor) - int64_t(numerator);
-        const int32_t correction = static_cast<int32_t>((error * reciprocal) >> (32u + shift));
+        // The product is bounded by 2^50. Split off its high word before the
+        // variable shift, avoiding a general 64-bit shift on 32-bit targets.
+        const int32_t correction_high = static_cast<int32_t>((error * reciprocal) >> 32);
+        const int32_t correction = correction_high >> shift;
         uint32_t quotient = static_cast<uint32_t>(int32_t(initial) - correction);
         uint64_t product = uint64_t(quotient) * divisor;
         if (product > numerator) { --quotient; product -= divisor; }
@@ -166,6 +153,20 @@ struct FocTransforms {
         Rotation(Unit sine, Unit cosine) noexcept : sine_(sine), cosine_(cosine) {}
         Unit sine_, cosine_;
     };
+    /** @brief Prepared SVPWM bus normalization, reusable while the bus value is unchanged. */
+    class ModulationBus {
+        friend struct FocTransforms;
+    public:
+        ModulationBus() noexcept = default;
+    private:
+        ModulationBus(Unit inverse, bool active) noexcept : inverse_(inverse), active_(active) {}
+        Unit inverse_{};
+        bool active_ = false;
+    };
+    static ModulationBus modulationBus(Voltage bus) noexcept {
+        if (bus <= number_v<Voltage, 1>) return {};
+        return ModulationBus(Profile::Math::inverseBusVoltage(bus), true);
+    }
     /** @brief Evaluate one angle, retaining the coefficient bounds for both transforms. */
     static Rotation rotation(Angle angle) noexcept {
         Unit sine{}, cosine{};
@@ -219,6 +220,11 @@ struct FocTransforms {
     static Voltage voltageLimit(Voltage bus) noexcept { return multiplyTo<Voltage>(bus, INV_SQRT3); }
     static PhaseDutiesT<Duty> svpwm(Voltage alpha, Voltage beta, Voltage bus,
                                   bool low_side_clamped = false) noexcept {
+        return svpwm(alpha, beta, modulationBus(bus), low_side_clamped);
+    }
+    /** @brief SVPWM using exactly the same precomputed reciprocal as the direct bus overload. */
+    static PhaseDutiesT<Duty> svpwm(Voltage alpha, Voltage beta, ModulationBus bus,
+                                  bool low_side_clamped = false) noexcept {
         const Voltage a = alpha;
         const Voltage half_alpha = divideByConstant<Voltage, 2>(alpha);
         const Voltage beta_component = multiplyTo<Voltage>(beta, SQRT3_OVER2);
@@ -229,12 +235,11 @@ struct FocTransforms {
         // Move only the common mode: DPWMMIN holds one low side continuously
         // on, removing the all-high zero vector and extending shunt sampling.
         const Voltage common = low_side_clamped ? lowest : divideByConstant<Voltage, 2>(highest + lowest);
-        const Duty zero = low_side_clamped ? Duty{} : number<Duty>(1, 2);
-        if (bus <= number_v<Voltage, 1>) return {zero, zero, zero};
-        const Unit inverse_bus = Profile::Math::inverseBusVoltage(bus);
-        return {zero + multiplyTo<Duty>(a - common, inverse_bus),
-                zero + multiplyTo<Duty>(b - common, inverse_bus),
-                zero + multiplyTo<Duty>(c - common, inverse_bus)};
+        const Duty zero = low_side_clamped ? Duty{} : number_v<Duty, 1, 2>;
+        if (!bus.active_) return {zero, zero, zero};
+        return {zero + multiplyTo<Duty>(a - common, bus.inverse_),
+                zero + multiplyTo<Duty>(b - common, bus.inverse_),
+                zero + multiplyTo<Duty>(c - common, bus.inverse_)};
     }
 
 private:
@@ -246,10 +251,11 @@ private:
         // Only Rotation can reach here: interpolation stays between Q30 table
         // endpoints in [-1, 1]. Thus each product has magnitude <=2^61, and the
         // sum plus rounding bias fits int64_t for the FULL public scalar range.
-        // Keep that wide sum until the final rounding/saturation; this removes
-        // two intermediate narrowings and lets ARM use SMULL + SMLAL per axis.
+        // Keep that wide sum until the final rounding/saturation, using two
+        // native signed products without intermediate narrowings.
         constexpr unsigned shift = Unit::FRACTION_BITS;
-        const int64_t sum = int64_t(a.raw()) * c.raw() + int64_t(b.raw()) * s.raw();
+        const int64_t sum = fixed_detail::wideProduct(a.raw(), c.raw()) +
+                            fixed_detail::wideProduct(b.raw(), s.raw());
         const uint32_t negative = uint64_t(sum) >> 63;
         const uint32_t bias = (uint32_t(1) << (shift - 1u)) - negative;
         return Scalar::fromWideRaw((sum + bias) >> shift);

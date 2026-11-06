@@ -148,17 +148,25 @@ inline constexpr auto SQRT_UPPER = [] {
     return table;
 }();
 
-// Newton quotient for a radicand <2^62 and a divisor close to its root.
-// Normalize to 16 significant bits so both reciprocal products fit uint64_t.
-// The quotient may differ by a few counts; square comparisons below make the
-// final root exact. No software 64-bit division is needed in either iteration.
-constexpr uint32_t sqrtQuotient(uint64_t numerator, uint32_t divisor) noexcept {
-    const unsigned shift = bitWidth(divisor) - 16u;
-    const uint32_t reciprocal = UINT32_MAX / (divisor >> shift);
-    const uint32_t estimate = static_cast<uint32_t>(((numerator >> shift) * reciprocal) >> 32);
-    const int64_t error = int64_t(uint64_t(estimate) * divisor) - int64_t(numerator);
-    const int64_t correction = ((error >> shift) * reciprocal) >> 32;
-    return static_cast<uint32_t>(int64_t(estimate) - correction);
+// For every table bin, the seed's maximum error e satisfies e^2/(2*seed)<1.
+// Verify the bound at compile time, using floor(sqrt(bin start)) conservatively.
+static_assert([] {
+    for (unsigned i = 0; i < SQRT_UPPER.size(); ++i) {
+        const uint32_t seed = uint32_t(SQRT_UPPER[i]) + 1u;
+        const uint32_t lower = restoringSqrt(uint64_t(i + 64u) << 24);
+        const uint32_t error = seed - lower;
+        if (error * error >= 2u * seed) return false;
+    }
+    return true;
+}(), "One normalized Newton step must be within one count of the exact root");
+
+// Exact floor sqrt for a normalized radicand in [2^30, 2^32). One 32-bit
+// division leaves either the exact floor or its successor; check its square.
+constexpr uint32_t normalizedSqrt(uint32_t value) noexcept {
+    uint32_t root = uint32_t(SQRT_UPPER[(value >> 24) - 64u]) + 1u;
+    root = (root + value / root) / 2u;
+    if (root * root > value) --root; // After Newton, root <=65535: the square fits.
+    return root;
 }
 } // namespace numeric_detail
 
@@ -178,11 +186,17 @@ constexpr uint32_t integerSqrt(uint64_t value) noexcept {
         const unsigned bits = 32u + numeric_detail::bitWidth(static_cast<uint32_t>(value >> 32));
         const unsigned scale = (bits + 1u) / 2u - 16u;
         const uint32_t normalized = static_cast<uint32_t>(value >> (2u * scale));
-        uint32_t root = (uint32_t(numeric_detail::SQRT_UPPER[(normalized >> 24) - 64u]) + 1u) << scale;
-        root = static_cast<uint32_t>((uint64_t(root) + numeric_detail::sqrtQuotient(value, root)) >> 1);
-        root = static_cast<uint32_t>((uint64_t(root) + numeric_detail::sqrtQuotient(value, root)) >> 1);
-        while (uint64_t(root) * root > value) --root;
-        while (uint64_t(root + 1u) * (root + 1u) <= value) ++root;
+        const uint32_t high_root = numeric_detail::normalizedSqrt(normalized);
+        const uint32_t coarse = high_root << scale;
+        const uint64_t remainder = value - uint64_t(coarse) * coarse;
+        // coarse <=sqrt(value)<coarse+2^scale, high_root is in [32768,65535],
+        // and scale<=15. Thus remainder>>scale fits uint32, and this division
+        // is EXACTLY floor(remainder/(2*coarse)), with no wide quotient work.
+        const uint32_t correction = static_cast<uint32_t>(remainder >> scale) / (2u * high_root);
+        uint32_t root = coarse + correction;
+        // Newton from below overshoots sqrt(value) by e^2/(2*coarse)<1/2.
+        // Its floor cannot undershoot, and at most one decrement is required.
+        if (uint64_t(root) * root > value) --root;
         return root;
     }
     return numeric_detail::restoringSqrt(value);
@@ -191,9 +205,17 @@ constexpr uint32_t integerSqrt(uint64_t value) noexcept {
 /** @brief Map normalized duty to a timer compare, using integer arithmetic for fixed point. */
 template<class T>
 uint32_t dutyToCompare(T duty, uint32_t period) noexcept {
-    duty = numericClamp(duty, T{}, number<T>(1));
-    if constexpr (std::is_same<T, float>::value) return static_cast<uint32_t>(duty * period);
-    else return static_cast<uint32_t>(uint64_t(duty.raw()) * period / T::SCALE);
+    if constexpr (std::is_same<T, float>::value) {
+        return static_cast<uint32_t>(numericClamp(duty, T{}, number<T>(1)) * period);
+    } else {
+        // Keep the upper clamp unsigned too: signed clamping followed by a
+        // cast can still generate sign-extension multiplies on 32-bit targets.
+        using Unsigned = std::make_unsigned_t<typename T::StorageType>;
+        Unsigned raw = duty < T{} ? Unsigned{} : static_cast<Unsigned>(duty.raw());
+        constexpr Unsigned maximum = static_cast<Unsigned>(number<T>(1).raw());
+        if (raw > maximum) raw = maximum;
+        return static_cast<uint32_t>(uint64_t(raw) * period / T::SCALE);
+    }
 }
 
 } // namespace libecu

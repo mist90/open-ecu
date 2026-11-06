@@ -95,7 +95,7 @@ MotorAlgorithmOutput FocAlgorithm::update(const MotorAlgorithmInput& in) noexcep
     return out;
 }
 
-FocAlgorithm::Core::Output FocAlgorithm::updateNative(const Core::Input& input) noexcept {
+LIBECU_HOT_LOOP FocAlgorithm::Core::Output FocAlgorithm::updateNative(const Core::Input& input) noexcept {
     const auto output = core_.update(input);
     pwm_interface_.updateNativeDutyCycle(output.duty_u, output.duty_v, output.duty_w);
     return output;

@@ -63,6 +63,148 @@ static float angleDelta(float next, float previous) {
     return result;
 }
 
+template<class Profile, uint32_t Frequency, unsigned Column>
+static void testPreparedRate() {
+    using Phase = OpenLoopPhase<Profile, Frequency>;
+    using Speed = typename Profile::Speed;
+    using Rate = typename Profile::PllSpeed;
+    using Angle = typename Profile::Angle;
+    // Independently pinned old DDS outputs: Q16 inputs use exact rational
+    // rounding; float inputs include binary32 rounding at each old operation.
+    // In particular, float's +0.5 differs from fixed's rounded division at 2 RPS.
+    struct Vector { float speed; uint8_t poles; uint32_t floating[3], fixed[3]; };
+    const Vector vectors[] = {
+        {0.0f, 40, {0, 0, 0}, {0, 0, 0}},
+        {1.0f / 65536, 40, {82, 66, 41}, {82, 66, 41}},
+        {0.125f, 8, {134218, 107374, 67109}, {134218, 107374, 67109}},
+        {2.0f, 40, {10737420, 8589934, 5368710}, {10737418, 8589935, 5368709}},
+        {3.0f, 40, {16106128, 12884902, 8053064}, {16106127, 12884902, 8053064}},
+        {12.0f, 40, {64424512, 51539608, 32212256}, {64424509, 51539608, 32212255}},
+        {200.0f, 8, {214748368, 171798688, 107374184}, {214748365, 171798692, 107374182}},
+        {799.0f, 40, {4289598720u, 3431678720u, 2144799360u},
+                     {4289598587u, 3431678870u, 2144799293u}}
+    };
+    typename Phase::PreparedRate prepared;
+    for (const auto& vector : vectors) {
+        check(Phase::prepareSpeed(numberCast<Speed>(vector.speed), vector.poles, prepared),
+              "prepared DDS accepts previously representable rates");
+        const uint32_t increment = std::is_same<Speed, float>::value
+                                 ? vector.floating[Column] : vector.fixed[Column];
+        check(prepared.increment == increment, "prepared DDS increment equals independent old-rate fixture");
+        check(prepared.electrical_rate == numberCast<Rate>(vector.speed * vector.poles * 3),
+              "prepared electrical steps per second retain mechanical pole scaling");
+    }
+
+    const auto previous = prepared;
+    for (const uint8_t poles : {0, 1, 3, 255})
+        check(!Phase::prepareSpeed(number_v<Speed, 1>, poles, prepared), "invalid poles reject preparation");
+    check(!Phase::prepareSpeed(number_v<Speed, -1>, 40, prepared), "negative DDS magnitude rejects preparation");
+    check(!Phase::prepareSpeed(number<Speed>(Frequency / 20), 40, prepared),
+          "one electrical revolution per sample is outside DDS range");
+    check(prepared.increment == previous.increment && prepared.electrical_rate == previous.electrical_rate,
+          "failed standalone conversion retains the prior prepared rate");
+    if constexpr (std::is_same<Speed, float>::value) {
+        for (const float bad : {std::numeric_limits<float>::quiet_NaN(),
+                                std::numeric_limits<float>::infinity(),
+                                -std::numeric_limits<float>::infinity()})
+            check(!Phase::prepareSpeed(bad, 40, prepared), "nonfinite DDS speed rejects preparation");
+    }
+
+    Phase phase;
+    phase.seed(number_v<Angle, 23, 4>);
+    check(phase.setSpeed(number_v<Speed, 2>, 40), "old rate starts the phase");
+    const Angle before = phase.angle();
+    check(Phase::prepareSpeed(number_v<Speed, 3>, 40, prepared), "next rate prepares independently of phase");
+    for (unsigned tick = 0; tick < 100; ++tick) phase.advance(DriveMode::FORWARD);
+    const Angle advanced = phase.angle();
+    check(advanced != before, "phase has advanced while the prepared command waited");
+    phase.applyPreparedRate(prepared);
+    check(phase.angle() == advanced && phase.speed(DriveMode::FORWARD) == number_v<Rate, 360> &&
+          phase.speed(DriveMode::REVERSE) == number_v<Rate, -360> && phase.speed(DriveMode::NEUTRAL) == Rate{},
+          "publishing a prepared rate preserves the advanced phase and direction semantics");
+    phase.advance(DriveMode::FORWARD);
+    float delta = numberCast<float>(phase.angle()) - numberCast<float>(advanced);
+    if (delta < 0) delta += 6;
+    check(std::abs(delta - 360.0f / Frequency) < 0.000002f, "next PWM sample uses the new rate");
+    const Angle held = phase.angle();
+    phase.advance(DriveMode::NEUTRAL);
+    check(phase.angle() == held, "neutral still holds phase after a prepared-rate commit");
+}
+
+static void testPreparedRateBounds() {
+    using Slow = OpenLoopPhase<FixedProfile, 1>;
+    Slow::PreparedRate rate;
+    check(Slow::prepareSpeed(FixedProfile::Speed::fromRaw(65535), 2, rate) && rate.increment == 4294901760u,
+          "minimum PWM frequency accepts the last sub-turn Q16 rate");
+    check(!Slow::prepareSpeed(number_v<FixedProfile::Speed, 1>, 2, rate),
+          "minimum PWM frequency rejects a whole turn");
+    using Fast = OpenLoopPhase<FixedProfile, 1000000>;
+    Fast::PreparedRate fast;
+    check(!Fast::prepareSpeed(number_v<FixedProfile::Speed, 2000>, 40, fast),
+          "electrical-rate saturation rejects even when the DDS increment fits");
+    check(!Fast::prepareSpeed(FixedProfile::Speed::fromRaw(INT32_MAX), 2, fast),
+          "maximum native magnitude cannot saturate the electrical rate silently");
+    using FloatSlow = OpenLoopPhase<FloatProfile, 1>;
+    FloatSlow::PreparedRate floating;
+    check(FloatSlow::prepareSpeed(std::nextafter(1.0f, 0.0f), 2, floating) &&
+          floating.increment == 4294967040u, "binary32 rate just below a whole turn stays representable");
+    check(!FloatSlow::prepareSpeed(1.0f, 2, floating), "binary32 rate at a whole turn remains invalid");
+}
+
+static void testPreparedController(DriveMode direction) {
+    Pwm pwm;
+    Hall hall;
+    Adc adc;
+    auto configuration = params();
+    configuration.algorithm = DriveAlgorithm::FOC;
+    BldcController motor(pwm, hall, configuration, &adc);
+    check(motor.initialize(), "prepared-command controller initializes");
+    motor.start();
+    motor.setControlMode(ControlMode::OPEN_LOOP);
+    motor.setElectricMode(ElectricMode::VOLTAGE_MODE);
+    motor.setDriveMode(direction);
+    motor.setTargetSpeed(2.0f);
+    for (unsigned tick = 0; tick < 100; ++tick) motor.pwmInterruptHandler();
+    const float before = motor.getStatus().angle_e_rad;
+    BldcController::PreparedTargetSpeed prepared;
+    check(motor.prepareNativeTargetSpeed(number_v<BldcController::Speed, 3>, prepared),
+          "controller prepares rate without changing target");
+    check(motor.getStatus().target_speed_rps == 2.0f, "preparation leaves the live target alone");
+    for (unsigned tick = 0; tick < 100; ++tick) motor.pwmInterruptHandler();
+    const float advanced = motor.getStatus().angle_e_rad;
+    check(advanced != before && motor.commitNativeTargetSpeed(prepared),
+          "controller accepts prepared target after intervening PWM interrupts");
+    motor.pwmInterruptHandler();
+    const float sign = direction == DriveMode::FORWARD ? 1.0f : -1.0f;
+    check(std::abs(angleDelta(motor.getStatus().angle_e_rad, advanced) -
+                   sign * FOC_TWO_PI * 20 * 3 / ActiveTiming::CURRENT_HZ) < 0.00001f,
+          "real FOC uses current phase plus new increment, never a stale prepared phase");
+
+    for (float speed : {0.0f, 3.0f, 100.0f}) {
+        check(motor.prepareNativeTargetSpeed(numberCast<BldcController::Speed>(speed), prepared) &&
+              motor.commitNativeTargetSpeed(prepared), "native requests retain zero and maximum clamping");
+        check(motor.getStatus().target_speed_rps == (speed > 12 ? 12 : speed),
+              "prepared target retains the configured maximum");
+    }
+    check(!motor.prepareNativeTargetSpeed(number_v<BldcController::Speed, -1>, prepared) &&
+          !motor.commitNativeTargetSpeed(prepared) && motor.getStatus().target_speed_rps == 12.0f,
+          "failed preparation invalidates an older command without changing the live target");
+    motor.setTargetSpeed(std::numeric_limits<float>::quiet_NaN());
+    motor.setTargetSpeed(std::numeric_limits<float>::infinity());
+    check(motor.getStatus().target_speed_rps == 12.0f, "legacy float setter still ignores nonfinite inputs");
+#ifndef ECU_FIXED_NUMERIC
+    check(!motor.prepareNativeTargetSpeed(std::numeric_limits<float>::quiet_NaN(), prepared) &&
+          !motor.commitNativeTargetSpeed(prepared), "native float NaN remains rejected");
+    check(motor.prepareNativeTargetSpeed(std::numeric_limits<float>::infinity(), prepared) &&
+          motor.commitNativeTargetSpeed(prepared) && motor.getStatus().target_speed_rps == 12.0f,
+          "native positive infinity preserves the old finite-limit clamping semantics");
+#endif
+    motor.setDriveMode(DriveMode::NEUTRAL);
+    motor.setNativeTargetSpeed(number_v<BldcController::Speed, 3>);
+    check(!pwm.enabled && motor.getStatus().target_speed_rps == 0.0f,
+          "legacy native setter still ignores requests in NEUTRAL");
+}
+
 static void testRate(uint8_t poles, float rps, DriveMode direction, unsigned seconds = 1) {
     Pwm pwm;
     Hall hall;
@@ -218,7 +360,15 @@ static void testInvalidHall() {
 }
 
 int main() {
+    testPreparedRate<FloatProfile, 16000, 0>();
+    testPreparedRate<FloatProfile, 20000, 1>();
+    testPreparedRate<FloatProfile, 32000, 2>();
+    testPreparedRate<FixedProfile, 16000, 0>();
+    testPreparedRate<FixedProfile, 20000, 1>();
+    testPreparedRate<FixedProfile, 32000, 2>();
+    testPreparedRateBounds();
     for (DriveMode direction : {DriveMode::FORWARD, DriveMode::REVERSE}) {
+        testPreparedController(direction);
         for (float speed : {0.5f, 3.0f, 12.0f}) testRate(40, speed, direction);
         testRate(40, 1.0f / 240.0f, direction, 5); // The slow 0.5 commutations/s bench case.
         testRate(8, 200.0f, direction);

@@ -89,7 +89,7 @@ public:
             if (!invalid_counted_ && invalid_run_ >= need) {
                 invalid_counted_ = true;
                 ++invalid_events_;
-                if (accumulate) invalid_score_ += number_v<State, 1>;
+                if (accumulate) addEvent(invalid_score_);
             }
         } else {
             last_invalid_ = false;
@@ -100,14 +100,16 @@ public:
                 have_last_ = true;
                 last_position_ = position;
             } else if (position != last_position_) {
-                int delta = (int(position) - last_position_ + 6) % 6;
-                if (delta > 3) delta -= 6;
+                // Both positions are in [0, 5], so one correction replaces
+                // modulo-six division while retaining the positive half-turn.
+                int delta = int(position) - last_position_;
+                if (delta < 0) delta += 6;
                 last_position_ = position;
                 ++edges_;
-                const int8_t sign = delta > 0 ? 1 : -1;
+                const int8_t sign = delta <= 3 ? 1 : -1;
                 if (accumulate) {
-                    edges_accum_ += number_v<State, 1>;
-                    if (last_sign_ && last_sign_ != sign) reversals_accum_ += number_v<State, 1>;
+                    addEvent(edges_accum_);
+                    if (last_sign_ && last_sign_ != sign) addEvent(reversals_accum_);
                 }
                 last_sign_ = sign;
             }
@@ -134,12 +136,12 @@ public:
     HallFault faultCause() const noexcept { return fault_; }
     const Params& getParameters() const noexcept { return params_; }
     Info getInfo() const noexcept {
-        const Count edges = numberCast<Count>(edges_accum_);
-        const Count reversals = numberCast<Count>(reversals_accum_);
+        const Count edges = toCount(edges_accum_);
+        const Count reversals = toCount(reversals_accum_);
         const Fraction erratic = edges > Count{} && edges >= params_.erratic_min_edges
                                ? divideTo<Fraction>(reversals, edges) : Fraction{};
-        return {numberCast<Count>(invalid_score_), erratic, edges,
-                numberCast<Count>(reversals_accum_), invalid_events_, invalid_run_,
+        return {toCount(invalid_score_), erratic, edges,
+                reversals, invalid_events_, invalid_run_,
                 Clock::ticksToUs(invalid_ticks_), edges_, last_position_, fault_};
     }
 
@@ -149,13 +151,47 @@ private:
         else return uint64_t(FrequencyHz) <=
                     2u * (uint64_t(std::numeric_limits<typename Count::StorageType>::max()) / Count::SCALE);
     }
+    static Count toCount(State state) noexcept {
+        if constexpr (std::is_same<State, float>::value || std::is_same<Count, float>::value) {
+            return numberCast<Count>(state);
+        } else if constexpr (State::FRACTION_BITS > Count::FRACTION_BITS) {
+            // Hall scores are nonnegative. An unsigned bias cannot overflow,
+            // even at the signed accumulator limit; retain public saturation
+            // rather than assuming the configured decay bounds the state.
+            using Raw = typename Count::StorageType;
+            using Wide = std::make_unsigned_t<typename State::StorageType>;
+            constexpr unsigned shift = State::FRACTION_BITS - Count::FRACTION_BITS;
+            constexpr Wide half = Wide(1) << (shift - 1u);
+            const Wide biased = Wide(state.raw()) + half;
+            constexpr unsigned limit_bit = shift + std::numeric_limits<Raw>::digits;
+            if constexpr (limit_bit < std::numeric_limits<Wide>::digits) {
+                if (biased >> limit_bit) return Count::fromRaw(std::numeric_limits<Raw>::max());
+            }
+            return Count::fromRaw(Raw(biased >> shift));
+        } else {
+            return numberCast<Count>(state);
+        }
+    }
+    static void addEvent(State& state) noexcept {
+        if constexpr (std::is_same<State, float>::value) {
+            state += number_v<State, 1>;
+        } else {
+            using Raw = typename State::StorageType;
+            using Unsigned = std::make_unsigned_t<Raw>;
+            // The sum of two nonnegative signed values fits unsigned storage.
+            // This also preserves saturation at the full accumulator limit.
+            const Unsigned sum = Unsigned(state.raw()) + Unsigned(number_v<State, 1>.raw());
+            constexpr Raw maximum = std::numeric_limits<Raw>::max();
+            state = State::fromRaw(sum > Unsigned(maximum) ? maximum : Raw(sum));
+        }
+    }
     void decay(State& state) noexcept {
         if constexpr (std::is_same<State, float>::value) {
             state *= keep_;
         } else {
             if (state == State{}) return;
             // Retain fractional leakage below the public count format's LSB.
-            const State leak = multiplyTo<State>(alpha_, numberCast<Count>(state));
+            const State leak = multiplyTo<State>(alpha_, toCount(state));
             // Both operands are nonnegative, so their signed difference cannot
             // overflow. Avoid generic saturating 64-bit subtraction here.
             state = State::fromRaw(state.raw() - leak.raw());
@@ -167,13 +203,22 @@ private:
         if (params_.invalid_threshold > Count{} &&
             invalid_score_ >= numberCast<State>(params_.invalid_threshold)) fault_ = HallFault::INVALID_CODE;
         else if (params_.erratic_fraction > Fraction{}) {
-            const Count edges = numberCast<Count>(edges_accum_);
-            const Count reversals = numberCast<Count>(reversals_accum_);
-            if (edges < params_.erratic_min_edges || edges <= Count{} || reversals <= Count{}) return;
+            const Count reversals = toCount(reversals_accum_);
+            // The usual unidirectional trace has no reversals. Avoid narrowing
+            // its wide edge accumulator on every PWM tick in that case.
+            if (reversals <= Count{}) return;
+            const Count edges = toCount(edges_accum_);
+            if (edges < params_.erratic_min_edges || edges <= Count{}) return;
             // Cross products keep fault detection exact without a division in every ISR.
             bool erratic = false;
             if constexpr (std::is_same<Count, float>::value) {
                 erratic = reversals >= params_.erratic_fraction * edges;
+            } else if constexpr (sizeof(typename Count::StorageType) <= 4 &&
+                                 sizeof(typename Fraction::StorageType) <= 4) {
+                // The guards above make every operand positive. Use the native
+                // word product to avoid sign-word products on 32-bit CPUs.
+                erratic = uint64_t(uint32_t(reversals.raw())) * Fraction::SCALE >=
+                           uint64_t(fixed_detail::wideProduct(params_.erratic_fraction.raw(), edges.raw()));
             } else {
                 erratic = int64_t(reversals.raw()) * int64_t(Fraction::SCALE) >=
                            int64_t(params_.erratic_fraction.raw()) * edges.raw();
@@ -198,7 +243,9 @@ private:
     bool have_last_ = false;
     bool last_invalid_ = false;
     bool invalid_counted_ = false;
-    HallFault fault_ = HallFault::NONE;
+    // A single-byte latch is also read by foreground drive-inhibit checks.
+    // Compound score snapshots still require the controller's critical section.
+    volatile HallFault fault_ = HallFault::NONE;
 };
 
 } // namespace libecu

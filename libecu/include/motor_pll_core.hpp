@@ -11,6 +11,11 @@
 
 namespace libecu {
 
+#if defined(LIBECU_PLL_DIAGNOSTICS) && LIBECU_PLL_DIAGNOSTICS
+/** @brief Optional board-owned event counter; called only on an internal phase reseed. */
+void recordPllPhaseReset(bool lost_sync) noexcept;
+#endif
+
 /** @brief Hall-sector PLL; one electrical revolution is six step units. */
 template<class Profile, uint32_t FrequencyHz>
 class MotorPLLCore {
@@ -48,23 +53,39 @@ public:
 
     /** @brief Advance exactly one sample of the PLL. */
     LIBECU_HOT_LOOP void updateTick() noexcept {
-        Angle error = number<Angle>(hall_) - getAngle();
-        if (error > number_v<Angle, 3>) error -= ANGLE_MAX;
-        else if (error < -number_v<Angle, 3>) error += ANGLE_MAX;
-        error = numericClamp(error, -LIMIT_ANGLE_ERROR, LIMIT_ANGLE_ERROR);
+        const Angle error = phaseError();
 
         const Fraction alpha = numericClamp(
             multiplyTo<Fraction>(numericAbs(speed_), number_v<Fraction, 1, 6u * FrequencyHz>),
             number_v<Fraction, 1, 10000>, number_v<Fraction, 1, 20>);
-        lock_error_ += multiplyTo<Angle>(alpha, numericAbs(error) - lock_error_);
+        if constexpr (std::is_same<Profile, FixedProfile>::value) {
+            // error and the low-pass state are in [0, 0.5] after abs(). With
+            // alpha in [0.0001, 0.05], their rounded convex update stays there.
+            // Neither this difference nor the final sum can saturate.
+            const int32_t absolute_error = error.raw() < 0 ? -error.raw() : error.raw();
+            const int32_t delta = absolute_error - lock_error_.raw();
+            const int32_t increment = static_cast<int32_t>(
+                fixed_detail::roundedProduct<Fraction::FRACTION_BITS>(alpha.raw(), delta));
+            lock_error_ = Angle::fromRaw(lock_error_.raw() + increment);
+        } else {
+            lock_error_ += multiplyTo<Angle>(alpha, numericAbs(error) - lock_error_);
+        }
         bool reset_angle = false;
         if (synchronized_) {
             if (lock_error_ >= number_v<Angle, 2, 5>) {
                 synchronized_ = false;
                 reset_angle = true;
+#if defined(LIBECU_PLL_DIAGNOSTICS) && LIBECU_PLL_DIAGNOSTICS
+                recordPllPhaseReset(true);
+#endif
             }
         } else {
-            if (numericAbs(error) == LIMIT_ANGLE_ERROR) reset_angle = true;
+            if (numericAbs(error) == LIMIT_ANGLE_ERROR) {
+                reset_angle = true;
+#if defined(LIBECU_PLL_DIAGNOSTICS) && LIBECU_PLL_DIAGNOSTICS
+                recordPllPhaseReset(false);
+#endif
+            }
             else if (numericAbs(speed_) > number_v<Speed, 5>) synchronized_ = true;
         }
 
@@ -150,6 +171,23 @@ public:
     }
 
 private:
+    Angle phaseError() const noexcept {
+        if constexpr (std::is_same<Profile, FixedProfile>::value) {
+            static_assert(Angle::FRACTION_BITS + 3 <= 31, "One electrical turn must fit int32");
+            // Only valid sectors enter hall_, and getAngle() is in [0,6).
+            // Native subtraction/wrapping is therefore exact over [-6,6].
+            int32_t raw = int32_t(hall_) * int32_t(Angle::SCALE) - getAngle().raw();
+            if (raw > number_v<Angle, 3>.raw()) raw -= ANGLE_MAX.raw();
+            else if (raw < -number_v<Angle, 3>.raw()) raw += ANGLE_MAX.raw();
+            return Angle::fromRaw(numericClamp(raw, -LIMIT_ANGLE_ERROR.raw(), LIMIT_ANGLE_ERROR.raw()));
+        } else {
+            Angle error = number<Angle>(hall_) - getAngle();
+            if (error > number_v<Angle, 3>) error -= ANGLE_MAX;
+            else if (error < -number_v<Angle, 3>) error += ANGLE_MAX;
+            return numericClamp(error, -LIMIT_ANGLE_ERROR, LIMIT_ANGLE_ERROR);
+        }
+    }
+
     uint8_t hall_ = 0;
     bool inverse_ = false;
     bool synchronized_ = false;

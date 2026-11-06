@@ -27,12 +27,21 @@ public:
     using Angle = typename Profile::Angle;
 
     /**
-     * @brief Set mechanical RPS without changing the present phase
+     * @brief Converted rate only; deliberately contains no live phase state
+     */
+    struct PreparedRate {
+        uint32_t increment = 0;
+        Rate electrical_rate{};
+    };
+
+    /**
+     * @brief Convert mechanical RPS before entering a rate-publication critical section
      * @param speed Nonnegative mechanical revolutions per second
      * @param poles Even, nonzero number of motor poles
-     * @return false on invalid/unrepresentable rate; the previous rate is retained
+     * @param prepared Output rate, unchanged on failure
+     * @return false on invalid/unrepresentable rate
      */
-    bool setSpeed(Speed speed, uint8_t poles) noexcept {
+    static bool prepareSpeed(Speed speed, uint8_t poles, PreparedRate& prepared) noexcept {
         if (!poles || (poles & 1) || speed < Speed{}) return false;
         uint32_t increment = 0;
         if constexpr (std::is_same<Speed, float>::value) {
@@ -53,8 +62,30 @@ public:
         if constexpr (!std::is_same<Rate, float>::value) {
             if (rate.raw() == std::numeric_limits<typename Rate::StorageType>::max()) return false;
         }
-        increment_ = increment;
-        speed_steps_s_ = rate;
+        prepared.increment = increment;
+        prepared.electrical_rate = rate;
+        return true;
+    }
+
+    /**
+     * @brief Publish a successfully prepared rate without overwriting an advancing phase
+     * @param prepared Rate returned by prepareSpeed(); caller synchronizes with advance()
+     */
+    void applyPreparedRate(const PreparedRate& prepared) noexcept {
+        increment_ = prepared.increment;
+        speed_steps_s_ = prepared.electrical_rate;
+    }
+
+    /**
+     * @brief Set mechanical RPS without changing the present phase
+     * @param speed Nonnegative mechanical revolutions per second
+     * @param poles Even, nonzero number of motor poles
+     * @return false on invalid/unrepresentable rate; the previous rate is retained
+     */
+    bool setSpeed(Speed speed, uint8_t poles) noexcept {
+        PreparedRate prepared;
+        if (!prepareSpeed(speed, poles, prepared)) return false;
+        applyPreparedRate(prepared);
         return true;
     }
 

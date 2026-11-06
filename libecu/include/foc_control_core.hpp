@@ -6,6 +6,7 @@
 
 #include "motor_samples.hpp"
 #include "profile_math.hpp"
+#include "polygon_voltage_limit.hpp"
 #include "control_optimization.hpp"
 #include "current_feedback_filter.hpp"
 
@@ -42,6 +43,7 @@ public:
     using StepGain = typename Profile::FocStepGain;
     using Math = typename Profile::Math;
     using Transforms = FocTransforms<Profile>;
+    using VoltageLimiter = PolygonVoltageLimit<Profile>;
     using Params = FocParamsT<Profile>;
     using Input = MotorAlgorithmInputT<Profile>;
     using Output = MotorAlgorithmOutputT<Profile>;
@@ -49,6 +51,10 @@ public:
 
     void setParams(const Params& params) noexcept {
         params_ = params;
+        const Duty ceiling = VoltageLimiter::modulationCeiling(params_.max_duty_cycle,
+                                                               params_.low_side_clamped_pwm);
+        modulation_ = params_.max_modulation < ceiling ? params_.max_modulation : ceiling;
+        bus_valid_ = false;
         filter_d_.reset();
         filter_q_.reset();
         zero_current_idle_ = false;
@@ -101,7 +107,16 @@ public:
         const Current filtered_q = filter_q_.update(dq.q, params_.current_filter);
         const bool reverse = in.drive_mode == DriveMode::REVERSE;
         const Current measured_current = reverse ? -dq.q : dq.q;
-        const Voltage limit = multiplyTo<Voltage>(params_.max_modulation, Transforms::voltageLimit(in.bus_voltage));
+        // Auxiliary ADC samples commonly span several current-loop ticks. Keep
+        // their derived values exact, and recompute before using ANY changed
+        // bus sample (including a collapse) or changed modulation parameters.
+        if (!bus_valid_ || in.bus_voltage != cached_bus_) {
+            cached_bus_ = in.bus_voltage;
+            voltage_limiter_.prepare(multiplyTo<Voltage>(modulation_, Transforms::voltageLimit(cached_bus_)));
+            modulation_bus_ = Transforms::modulationBus(cached_bus_);
+            bus_valid_ = true;
+        }
+        const Voltage limit = voltage_limiter_.inradius();
         const bool current_mode = in.electric_mode == ElectricMode::CURRENT_MODE;
         // Only the zero-demand standstill state suppresses feedback. At speed,
         // even Iq*=0 needs voltage to reject back-EMF; small nonzero demands must
@@ -140,13 +155,9 @@ public:
             integral_d_ = integral_q_ = Integral{};
         }
 
-        const bool limited = Math::voltageLimitExceeded(requested_d, requested_q, limit);
-        const Voltage v_d = numericClamp(numberCast<Voltage>(requested_d), -limit, limit);
-        Voltage v_q = numberCast<Voltage>(requested_q);
-        if (limited) {
-            const Voltage room = Math::qVoltageLimit(v_d, limit);
-            v_q = numericClamp(v_q, -room, room);
-        }
+        const auto applied = voltage_limiter_.apply(requested_d, requested_q);
+        const bool limited = applied.limited;
+        const Voltage v_d = applied.d, v_q = applied.q;
         if (current_mode) {
             addIntegral(integral_d_, multiplyTo<Integral>(ki_step_, error_d));
             addIntegral(integral_q_, multiplyTo<Integral>(ki_step_, error_q));
@@ -162,7 +173,7 @@ public:
         }
 
         const auto voltage = Transforms::invPark(DqVectorT<Voltage>{v_d, v_q}, rotation);
-        auto duty = Transforms::svpwm(voltage.alpha, voltage.beta, in.bus_voltage,
+        auto duty = Transforms::svpwm(voltage.alpha, voltage.beta, modulation_bus_,
                                      params_.low_side_clamped_pwm);
         const Duty low = params_.low_side_clamped_pwm ? Duty{} : number_v<Duty, 1> - params_.max_duty_cycle;
         duty.u = numericClamp(duty.u, low, params_.max_duty_cycle);
@@ -198,10 +209,15 @@ private:
     }
 
     Params params_{};
+    Duty modulation_ = VoltageLimiter::modulationCeiling(number<Duty>(95, 100), false);
     Gain kp_{}, ki_{};
     StepGain ki_step_{};
     Integral integral_d_{}, integral_q_{};
     CurrentFeedbackFilter<Profile> filter_d_, filter_q_;
+    Voltage cached_bus_{};
+    VoltageLimiter voltage_limiter_{};
+    typename Transforms::ModulationBus modulation_bus_{};
+    bool bus_valid_ = false;
     bool zero_current_idle_ = false;
     PhaseDutiesT<Duty> previous_{number<Duty>(1, 2), number<Duty>(1, 2), number<Duty>(1, 2)};
 };

@@ -32,9 +32,20 @@ static void frequencyResponse() {
     for (float value : {-20.0f, 0.0f, 0.25f, 18.0f}) {
         const Current input = numberCast<Current>(value);
         check(filter.update(input, c) == input, "bypass preserves raw current exactly");
+        check(filter.value() == input, "bypass publishes the latest raw sample through value()");
     }
 
     for (auto order : {CurrentFilterOrder::FIRST_ORDER, CurrentFilterOrder::BUTTERWORTH_SECOND_ORDER}) {
+        CurrentFilterCoefficients<P> enabled, bypass;
+        check(makeCurrentFilterCoefficients(order, 2000, 16000, enabled), "bypass transition setup");
+        for (unsigned tick = 0; tick < 20; ++tick)
+            filter.update(number<Current>(int(tick % 5) - 2), enabled);
+        const auto raw = number<Current>(-7, 4);
+        check(filter.update(raw, bypass) == raw && filter.value() == raw,
+              "disabling bypasses old histories and preserves observable value");
+        const auto seed = number<Current>(3, 2);
+        check(filter.update(seed, enabled) == seed && filter.value() == seed,
+              "re-enabling after bypass reseeds from the first sample without an explicit reset");
         for (uint32_t fs : {10000U, 20000U, 40000U}) {
             for (float fc : {1500.0f, 2000.0f, 2500.0f}) {
                 check(makeCurrentFilterCoefficients(order, fc, fs, c), "design valid coefficients");

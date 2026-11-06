@@ -13,6 +13,32 @@
 namespace libecu {
 
 namespace fixed_detail {
+#if defined(__arm__) && defined(__ARM_ARCH) && __ARM_ARCH >= 7 && \
+    defined(__GNUC__) && __GNUC__ >= 9 && !defined(__clang__)
+[[gnu::always_inline]] inline int64_t signedWordProduct(int32_t a, int32_t b) noexcept {
+    int64_t product;
+    // GCC sometimes propagates the sign words from preceding saturation into
+    // an expanded MUL/MLA/UMULL sequence, even with explicit int32_t operands.
+    // Keep this one signed widening operation intact on ARMv7+; Thumb-1 and
+    // constant evaluation retain the portable expression below.
+    __asm__("smull %Q0, %R0, %1, %2" : "=r"(product) : "r"(a), "r"(b));
+    return product;
+}
+#endif
+
+template<typename SA, typename SB>
+[[gnu::always_inline]] constexpr int64_t wideProduct(SA a, SB b) noexcept {
+    static_assert(std::is_signed<SA>::value && std::is_signed<SB>::value &&
+                  sizeof(SA) <= 4 && sizeof(SB) <= 4, "Signed multiply operands must fit 32 bits");
+#if defined(__arm__) && defined(__ARM_ARCH) && __ARM_ARCH >= 7 && \
+    defined(__GNUC__) && __GNUC__ >= 9 && !defined(__clang__)
+    if constexpr (sizeof(SA) == 4 && sizeof(SB) == 4) {
+        if (!__builtin_is_constant_evaluated()) return signedWordProduct(a, b);
+    }
+#endif
+    return int64_t(a) * b;
+}
+
 constexpr uint64_t magnitude(int64_t value) noexcept {
     return value < 0 ? uint64_t(-(value + 1)) + 1u : uint64_t(value);
 }
@@ -51,7 +77,7 @@ template<unsigned Shift, typename SA, typename SB>
     // |a*b| <= 2^product_bits. One extra signed digit also accommodates
     // the bias, whose maximum is 2^(product_bits-1).
     using Product = std::conditional_t<(product_bits < 31), int32_t, int64_t>;
-    const Product product = Product(a) * b;
+    const Product product = static_cast<Product>(wideProduct(a, b));
     if constexpr (Shift <= 32) {
         // A native-word bias needs only one wide addition on 32-bit targets.
         using Unsigned = std::make_unsigned_t<Product>;
@@ -329,7 +355,7 @@ public:
         if constexpr (FractionBits > 0) {
             return fromWideRaw(fixed_detail::roundedProduct<FractionBits>(raw_, rhs.raw_));
         } else {
-            return fromWideRaw(int64_t(raw_) * rhs.raw_);
+            return fromWideRaw(fixed_detail::wideProduct(raw_, rhs.raw_));
         }
     }
     constexpr FixedPointType operator/(FixedPointType rhs) const noexcept {
@@ -368,7 +394,7 @@ template<class Out, unsigned A, typename SA, unsigned B, typename SB>
         constexpr unsigned shift = A + B - Out::FRACTION_BITS;
         return Out::fromWideRaw(fixed_detail::roundedProduct<shift>(a.raw(), b.raw()));
     } else {
-        const int64_t product = int64_t(a.raw()) * b.raw();
+        const int64_t product = fixed_detail::wideProduct(a.raw(), b.raw());
         return Out(FixedPointType<A + B, int64_t>::fromRaw(product));
     }
 }

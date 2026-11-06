@@ -69,12 +69,20 @@ public:
     Current value() const noexcept { return value_; }
 
     /** @brief Filter one valid dq sample using precomputed coefficients. */
-    Current update(Current input, const Coefficients& c) noexcept {
+    [[gnu::always_inline]] Current update(Current input, const Coefficients& c) noexcept {
         if (c.order == CurrentFilterOrder::OFF) {
             initialized_ = false;
             value_ = input;
             return value_;
         }
+        // Keep bypass cheap even when the complete biquad is too large to
+        // inline. value() still reports this sample, and re-enabling reseeds
+        // the histories exactly as it does after reset().
+        return updateEnabled(input, c);
+    }
+
+private:
+    Current updateEnabled(Current input, const Coefficients& c) noexcept {
         if (!initialized_) {
             initialized_ = true;
             value_ = input;
@@ -92,7 +100,6 @@ public:
         return value_;
     }
 
-private:
     Current value_{}, z1_{}, z2_{};
     bool initialized_ = false;
 };

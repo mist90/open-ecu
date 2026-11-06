@@ -231,6 +231,18 @@ public:
     using Fraction = Profile::Fraction;
     using Temperature = Profile::Temperature;
     using Accumulator = Profile::Accumulator;
+
+    /** @brief Controller-bound rate command; default construction is invalid. */
+    class PreparedTargetSpeed {
+    public:
+        PreparedTargetSpeed() noexcept = default;
+    private:
+        friend class BldcController;
+        const BldcController* owner_ = nullptr;
+        Speed limited_speed_{};
+        OpenLoopPhase<Profile, ActiveTiming::CURRENT_HZ>::PreparedRate rate_{};
+    };
+
     /**
      * @brief Constructor
      * @param pwm_interface PWM interface
@@ -263,6 +275,24 @@ public:
     void setTargetSpeed(float speed_rps) noexcept;
     /** @brief Set a native throttle/speed-loop request without float conversion. */
     void setNativeTargetSpeed(Speed speed_rps) noexcept;
+
+    /**
+     * @brief Clamp and convert a demand without masking interrupts or reading live drive state
+     *
+     * Motor poles and speed limit are immutable, so a successful command may be
+     * cached across gain/mode changes. Preparation neither enables nor changes the drive.
+     * @param speed_rps Native mechanical RPS
+     * @param prepared Controller-bound output; invalidated on failure
+     * @return true if the demand has a representable DDS rate
+     */
+    bool prepareNativeTargetSpeed(Speed speed_rps, PreparedTargetSpeed& prepared) const noexcept;
+
+    /**
+     * @brief Atomically publish a prepared rate and target, preserving the current phase
+     * @param prepared Command produced by this controller
+     * @return false for an invalid/foreign command or a drive currently in NEUTRAL
+     */
+    bool commitNativeTargetSpeed(const PreparedTargetSpeed& prepared) noexcept;
 
     /**
      * @brief Set duty cycle for open-loop control

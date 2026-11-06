@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <limits>
 
 using namespace libecu;
 static int failures = 0;
@@ -19,6 +20,43 @@ AdcCalibrationT<P> calibration(uint16_t samples) {
     c.shunt = number<typename P::ShuntResistance>(3, 1000);
     c.injected_sum = samples;
     return c;
+}
+
+template<class T>
+void pwmReferenceTests() {
+    using Storage = typename T::StorageType;
+    constexpr int64_t low = std::numeric_limits<Storage>::min();
+    constexpr int64_t high = std::numeric_limits<Storage>::max();
+    constexpr int64_t one = int64_t(1) << T::FRACTION_BITS;
+    const uint32_t periods[] = {0, 1, 2, 3, 2250, 4249, 4500, 65535, 65536, INT32_MAX, UINT32_MAX};
+    auto verify = [&](int64_t raw) {
+        const T duty = T::fromRaw(static_cast<Storage>(raw));
+        // Wider integer rational oracle, independent of the fixed operators
+        // and production multiplication/clamping. It also covers Q0/Q31,
+        // where 1.0 is respectively integral or not representable.
+        const __int128 numerator = std::max(int64_t(0), std::min(raw, std::min(one, high)));
+        for (uint32_t period : periods) {
+            const auto expected = static_cast<uint32_t>(numerator * period / one);
+            check(dutyToCompare(duty, period) == expected, "PWM matches the exact integer rational reference");
+        }
+    };
+    if constexpr (sizeof(Storage) <= 2) {
+        for (int64_t raw = low; raw <= high; ++raw) verify(raw);
+    } else {
+        for (int64_t raw : {low, low + 1, int64_t(-1), int64_t(0), int64_t(1), high - 1, high}) verify(raw);
+        for (int64_t raw : {one - 1, one, one + 1}) if (raw <= high) verify(raw);
+        uint32_t random = 0x496fa381u;
+        for (unsigned i = 0; i < 100000; ++i) {
+            random = random * 1664525u + 1013904223u;
+            verify(int64_t(random) - (int64_t(1) << 31));
+        }
+        // Exercise exact compare boundaries and the raw counts either side.
+        for (uint32_t compare = 0; compare <= 4500; ++compare) {
+            const int64_t boundary = int64_t((__int128(compare) * one + 4499) / 4500);
+            for (int64_t raw : {boundary - 1, boundary, boundary + 1})
+                if (raw >= low && raw <= high) verify(raw);
+        }
+    }
 }
 
 int main() {
@@ -75,6 +113,14 @@ int main() {
                                int(dutyToCompare(FixedProfile::Duty::fromFloat(duty), 4249));
         check(std::abs(difference) <= 1, "fixed PWM conversion stays within one timer count of float");
     }
+    pwmReferenceTests<FixedPointType<0, int8_t>>();
+    pwmReferenceTests<FixedPointType<7, int8_t>>();
+    pwmReferenceTests<FixedPointType<12, int16_t>>();
+    pwmReferenceTests<FixedPointType<15, int16_t>>();
+    pwmReferenceTests<FixedPointType<16>>();
+    pwmReferenceTests<FixedProfile::Duty>();
+    pwmReferenceTests<FixedPointType<31>>();
+    pwmReferenceTests<FixedPointType<30, int64_t>>();
     std::printf("ADC profile: current %.8f A, bus %.8f V, temperature %.6f C; %d failures\n",
                 current_error, voltage_error, temperature_error, failures);
     return failures != 0;

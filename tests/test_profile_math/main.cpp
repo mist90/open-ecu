@@ -1,7 +1,8 @@
 /** @file main.cpp
- * @brief Fixed trig, transform accuracy and conservative voltage limiting
+ * @brief Fixed trig, transform accuracy and cached bus normalization
  */
 #include "profile_math.hpp"
+#include "foc_control_core.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -25,6 +26,17 @@ static void testExactIntegerMath() {
         const uint32_t root = integerSqrt(value);
         roots_exact &= __uint128_t(root) * root <= value &&
                        (__uint128_t(root) + 1) * (__uint128_t(root) + 1) > value;
+        // A nearly perfect square exercises the final inward correction,
+        // particularly where the normalized high root loses low phase bits.
+        const uint64_t probe = uint32_t(random) >> 1;
+        const uint64_t square = probe * probe;
+        for (int offset : {-1, 0, 1}) {
+            if (!square && offset < 0) continue;
+            const uint64_t adjacent = square + offset;
+            const uint32_t nearby_root = integerSqrt(adjacent);
+            roots_exact &= __uint128_t(nearby_root) * nearby_root <= adjacent &&
+                (__uint128_t(nearby_root) + 1) * (__uint128_t(nearby_root) + 1) > adjacent;
+        }
         uint32_t divisor = random & INT32_MAX;
         if (divisor < (1u << 18)) divisor += 1u << 18;
         const uint32_t expected = ((uint64_t(1) << 48) + divisor / 2u) / divisor;
@@ -164,11 +176,58 @@ static void testLowSideClamped() {
           "DPWMMIN dead bus produces a non-switching zero vector");
 }
 
+template<class P>
+static void testBusCache() {
+    using Core = FocControlCore<P, 16000>;
+    using V = typename P::Voltage;
+    using C = typename P::Current;
+    using D = typename P::Duty;
+    Core cached, refreshed;
+    FocParamsT<P> params;
+    // With filtering and the idle dead band disabled, reapplying parameters
+    // invalidates only the derived bus values, preserving the PI state.
+    cached.setCurrentPiGains(number<typename P::Gain>(2), number<typename P::Gain>(200));
+    refreshed.setCurrentPiGains(number<typename P::Gain>(2), number<typename P::Gain>(200));
+    MotorAlgorithmInputT<P> in;
+    bool exact = true;
+    for (unsigned tick = 0; tick < 12000; ++tick) {
+        if (tick % 97 == 0) {
+            params.max_modulation = number<D>(1 + (tick / 97) % 9, 10);
+            params.low_side_clamped_pwm = !params.low_side_clamped_pwm;
+            cached.setParams(params);
+        }
+        if (tick % 233 == 0) { cached.reset(); refreshed.reset(); }
+        // Repeated readings, changed readings, collapses, recovery and the
+        // exact 1 V dead-bus threshold all occur while the PI keeps its state.
+        constexpr int buses[] = {0, 48, 48, 24, 0, 1, 2, 60, 12, 8191};
+        in.bus_voltage = number<V>(buses[(tick / 41) % 10]);
+        if (tick % 41 == 40) in.bus_voltage += number<V>(1, 262144);
+        in.angle_steps = number<typename P::Angle>(tick % 600, 100);
+        in.target_current = number<C>(int(tick % 31) - 15);
+        in.i_u = number<C>(int(tick % 17) - 8, 4);
+        in.i_v = number<C>(int(tick % 11) - 5, 4);
+        in.i_w = -in.i_u - in.i_v;
+        in.duty_command = number<D>(int(tick % 9) - 4, 5);
+        in.drive_mode = tick % 3 ? DriveMode::FORWARD : DriveMode::REVERSE;
+        in.electric_mode = tick % 5 ? ElectricMode::CURRENT_MODE : ElectricMode::VOLTAGE_MODE;
+        refreshed.setParams(params);
+        const auto actual = cached.update(in), expected = refreshed.update(in);
+        exact &= actual.duty_u == expected.duty_u && actual.duty_v == expected.duty_v &&
+                 actual.duty_w == expected.duty_w && actual.v_d == expected.v_d && actual.v_q == expected.v_q &&
+                 actual.measured_current == expected.measured_current && actual.i_d == expected.i_d &&
+                 actual.i_q == expected.i_q && actual.angle_e_rad == expected.angle_e_rad &&
+                 actual.saturation == expected.saturation;
+    }
+    check(exact, "cached FOC bus values exactly match recomputation through bus/parameter changes and resets");
+}
+
 int main() {
     testExactIntegerMath();
     testBoundedRotation();
     testLowSideClamped<FloatProfile>();
     testLowSideClamped<FixedProfile>();
+    testBusCache<FloatProfile>();
+    testBusCache<FixedProfile>();
     using P = FixedProfile;
     using M = P::Math;
     using T = FocTransforms<P>;
@@ -208,21 +267,6 @@ int main() {
     check(worst_transform < 0.003f, "transform round-trip stays within LUT interpolation error");
     check(worst_duty < 0.000002f, "fixed SVPWM differs by much less than a PWM timer count");
 
-    for (float limit : {0.1f, 1.0f, 12.0f, 20.0f, 1000.0f}) {
-        const auto bound = P::Voltage::fromFloat(limit);
-        for (int index = -2000; index <= 2000; ++index) {
-            const auto d = multiplyTo<P::Voltage>(bound, P::Fraction::fromRatio(index, 2000));
-            const auto q = M::qVoltageLimit(d, bound);
-            const uint64_t used = uint64_t(int64_t(d.raw()) * d.raw()) + uint64_t(int64_t(q.raw()) * q.raw());
-            const uint64_t available = uint64_t(int64_t(bound.raw()) * bound.raw());
-            check(used <= available, "integer voltage limit always stays inside the circle");
-            const uint64_t next = uint64_t(int64_t(d.raw()) * d.raw()) + uint64_t(int64_t(q.raw() + 1) * (q.raw() + 1));
-            check(next > available, "integer root leaves less than one voltage LSB of unused q headroom");
-        }
-    }
-    check(M::voltageLimitExceeded(P::VoltageRequest::fromRaw(INT32_MIN),
-                                  P::VoltageRequest::fromRaw(INT32_MIN), number<P::Voltage>(20)),
-          "wide squared request detects saturation without signed overflow");
     const auto dead_bus = T::svpwm(number<P::Voltage>(10), number<P::Voltage>(10), P::Voltage{});
     check(dead_bus.u == number<P::Duty>(1, 2) && dead_bus.v == dead_bus.u && dead_bus.w == dead_bus.u,
           "dead bus produces equal duties");

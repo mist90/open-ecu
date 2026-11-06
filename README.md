@@ -78,6 +78,8 @@ port rather than a new main.
 
 ### Key Features
 - **FOC** with Hall sensor position feedback
+- **Root-free voltage limiting** with a d-priority circumscribed 32-gon and
+  consistent anti-windup: [geometry, duty margins and tests](docs/VOLTAGE_LIMIT.md)
 - **6-step trapezoidal control** with Hall sensor position feedback
 - **Closed-loop speed control** using PI algorithm
 - **Safety monitoring** with overcurrent, overtemperature, and undervoltage protection

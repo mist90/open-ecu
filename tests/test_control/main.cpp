@@ -344,8 +344,12 @@ static void testNativePath() {
           "integer ADC sum reaches six-step current telemetry with the right physical scale");
     controller.setAlgorithm(DriveAlgorithm::FOC);
     controller.pwmInterruptHandler();
+    const auto fast = controller.getStatus();
+    const float expected_modulation = std::sqrt(fast.v_d * fast.v_d + fast.v_q * fast.v_q) *
+                                      FOC_SQRT3 / fast.bus_voltage;
     controller.update();
-    check(std::abs(controller.getStatus().duty_cycle - 0.095f) < 0.00003f,
+    check(expected_modulation > 0.08f &&
+          std::abs(controller.getStatus().duty_cycle - expected_modulation) < 0.00003f,
           "FOC modulation telemetry is computed from a slow coherent native snapshot");
     adc.bus = 8190;
     controller.pwmInterruptHandler();

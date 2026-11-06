@@ -96,7 +96,11 @@ public:
 
     /** @return Signed phase current, positive out of the phase into its low-side shunt. */
     float convertAdcToCurrent(uint32_t raw, PwmChannel channel) noexcept {
-        return numberCast<float>(core_.current(raw, static_cast<unsigned>(channel)));
+        return numberCast<float>(convertNativeAdcToCurrent(raw, channel));
+    }
+    /** @return Calibrated phase current in the active numerical profile. */
+    NativeCurrent convertNativeAdcToCurrent(uint32_t raw, PwmChannel channel) const noexcept {
+        return core_.current(raw, static_cast<unsigned>(channel));
     }
     /** @return DC bus voltage in volts. */
     float convertAdcToVoltage(uint32_t raw) noexcept { return numberCast<float>(core_.busVoltage(raw)); }
@@ -114,7 +118,8 @@ public:
 
     NativeVoltage readNativeBusVoltage() noexcept { return core_.busVoltage(getRawAdcValue()); }
     Core::Temperature readNativeTemperature() noexcept { return core_.temperature(getRawTemperatureAdcValue()); }
-    void readNativeCurrents(NativeCurrent& u, NativeCurrent& v, NativeCurrent& w) noexcept {
+    /** @brief Read all phases; ports may batch acquisition using the same calibrated conversions. */
+    virtual void readNativeCurrents(NativeCurrent& u, NativeCurrent& v, NativeCurrent& w) noexcept {
         u = core_.current(getRawAdcValue(PwmChannel::PHASE_U), 0);
         v = core_.current(getRawAdcValue(PwmChannel::PHASE_V), 1);
         w = core_.current(getRawAdcValue(PwmChannel::PHASE_W), 2);

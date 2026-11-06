@@ -16,4 +16,14 @@ if command -v arm-none-eabi-g++ >/dev/null; then
         exit 1
     fi
     echo "Cortex-M0 fixed PI: compiled without floating-point helpers"
+    arm-none-eabi-g++ -std=c++17 -O2 -flto -mcpu=cortex-m3 -mthumb -mfloat-abi=soft \
+        -fno-exceptions -fno-rtti -fno-unwind-tables -Wall -Wextra -Werror -Wno-psabi \
+        -I../../libecu/include -nostdlib -Wl,-Ttext=0x1000,-e,raw_product \
+        arm_products.cpp -lgcc -o "$tmp/products.elf"
+    python=${LIBECU_TEST_ARM_PYTHON:-python3}
+    if "$python" -c 'import unicorn, elftools' >/dev/null 2>&1; then
+        "$python" arm_products.py "$tmp/products.elf"
+    else
+        echo "Cortex-M3 products: compiled; machine-code oracle needs Python unicorn and pyelftools"
+    fi
 fi

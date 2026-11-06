@@ -74,6 +74,81 @@ void overslew() {
     check(std::abs(sum / samples - 4800.0f) < 5.0f, "PLL reacquires after an excessive acceleration");
 }
 
+// Independent rational-integer model: no FixedPointType arithmetic, profile
+// constants, shifts for rounding, or implementation-private state is reused.
+static int64_t roundRatio(__int128 numerator, int64_t denominator) {
+    return numerator < 0 ? -int64_t((-numerator + denominator / 2) / denominator)
+                         : int64_t((numerator + denominator / 2) / denominator);
+}
+static int32_t narrow(int64_t value) {
+    return int32_t(std::clamp<int64_t>(value, INT32_MIN, INT32_MAX));
+}
+
+template<uint32_t Frequency>
+static void exactTrace() {
+    constexpr int64_t angle_scale = 16777216, speed_scale = 16384;
+    constexpr int64_t unit_scale = 1073741824, phase_scale = 4294967296LL;
+    constexpr int64_t period = 6 * phase_scale;
+    const int64_t alpha_gain = roundRatio(unit_scale, 6 * Frequency);
+    const int64_t phase_gain = roundRatio(unit_scale, Frequency);
+    uint64_t random = 0x584db5ca918ef091ULL;
+    bool exact = true;
+    for (int32_t max_speed : {1, int32_t(6000 * speed_scale), INT32_MAX}) {
+        MotorPLLCore<FixedProfile, Frequency> actual(FixedProfile::PllSpeed::fromRaw(max_speed));
+        int64_t phase = 0, integral = 0, lock = 0;
+        int32_t speed = 0, kp = 100 * speed_scale, ki = 5000 * speed_scale;
+        int32_t ki_step = narrow(roundRatio(__int128(ki) * 1024, Frequency));
+        uint8_t hall = 0;
+        bool synchronized = false;
+        for (unsigned tick = 0; tick < 30000; ++tick) {
+            random ^= random << 13; random ^= random >> 7; random ^= random << 17;
+            const uint8_t incoming = tick % 19 ? uint8_t((tick / 11) % 6) : uint8_t(random);
+            actual.updateHall(incoming);
+            if (incoming <= 5) hall = incoming;
+            if (tick % 521 == 0) {
+                const int32_t gains[] = {0, 1, -1, 100 * speed_scale, 5000 * speed_scale, INT32_MIN, INT32_MAX};
+                kp = gains[(tick / 521) % 7];
+                ki = gains[(tick / 521 + 3) % 7];
+                ki_step = narrow(roundRatio(__int128(ki) * 1024, Frequency));
+                actual.setGains(FixedProfile::PllGain::fromRaw(kp), FixedProfile::PllGain::fromRaw(ki));
+            }
+            if (tick % 997 == 0) {
+                actual.reset();
+                phase = hall * phase_scale; integral = lock = 0; speed = 0; synchronized = false;
+            }
+            const auto angle = [&] { return roundRatio(phase, 256) % (6 * angle_scale); };
+            int64_t error = hall * angle_scale - angle();
+            if (error > 3 * angle_scale) error -= 6 * angle_scale;
+            else if (error < -3 * angle_scale) error += 6 * angle_scale;
+            error = std::clamp(error, -angle_scale / 2, angle_scale / 2);
+            const int32_t absolute_speed = narrow(std::abs(int64_t(speed)));
+            const int64_t alpha = std::clamp<int64_t>(narrow(roundRatio(__int128(absolute_speed) * alpha_gain,
+                speed_scale)), roundRatio(unit_scale, 10000), roundRatio(unit_scale, 20));
+            lock += roundRatio(__int128(alpha) * (std::abs(error) - lock), unit_scale);
+            bool reset = false;
+            if (synchronized) {
+                if (lock >= roundRatio(2 * angle_scale, 5)) { synchronized = false; reset = true; }
+            } else if (std::abs(error) == angle_scale / 2) reset = true;
+            else if (absolute_speed > 5 * speed_scale) synchronized = true;
+            integral = std::clamp(integral + roundRatio(__int128(error) * ki_step, angle_scale),
+                                  -int64_t(max_speed) * 1024, int64_t(max_speed) * 1024);
+            speed = narrow(int64_t(narrow(roundRatio(__int128(error) * kp, angle_scale))) +
+                           narrow(roundRatio(integral, 1024)));
+            if (reset) { integral = int64_t(speed) * 1024; phase = hall * phase_scale; }
+            else {
+                phase = (phase + roundRatio(__int128(speed) * phase_gain, 4096)) % period;
+                if (phase < 0) phase += period;
+            }
+            actual.updateTick();
+            const auto info = actual.getInfo();
+            exact &= info.angle.raw() == angle() && info.angle_per_second.raw() == speed &&
+                     info.pll_integral.raw() == narrow(roundRatio(integral, 1024)) &&
+                     info.is_sync == synchronized && info.hall_state_raw == hall;
+        }
+    }
+    check(exact, "PLL exactly matches the independent rational model at full-range gains and state boundaries");
+}
+
 int main() {
     static_assert(integerSqrt(0) == 0 && integerSqrt(1) == 1 && integerSqrt(15) == 3, "integer root");
     static_assert(integerSqrt(UINT64_MAX) == UINT32_MAX, "full-width integer root");
@@ -87,6 +162,10 @@ int main() {
     trace<8000>(480.0f);
     trace<16000>(-480.0f);
     overslew();
+    exactTrace<1>(); // Forces multi-turn wrapping as well as single-turn updates.
+    exactTrace<8000>();
+    exactTrace<16000>();
+    exactTrace<40000>();
     std::printf("Numerical PLL: %d failures\n", failures);
     return failures != 0;
 }

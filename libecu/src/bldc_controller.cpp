@@ -303,16 +303,28 @@ void BldcController::setTargetSpeed(float speed_rps) noexcept
 }
 
 void BldcController::setNativeTargetSpeed(Speed target) noexcept {
-    CriticalSection cs;
+    PreparedTargetSpeed prepared;
+    if (prepareNativeTargetSpeed(target, prepared)) commitNativeTargetSpeed(prepared);
+}
 
-    if (dmode_ == DriveMode::NEUTRAL)
-        return;
-    if (target < Speed{})
-        return;
+bool BldcController::prepareNativeTargetSpeed(Speed target, PreparedTargetSpeed& prepared) const noexcept {
+    prepared = PreparedTargetSpeed{};
+    if (target < Speed{}) return false;
     // Clamp to maximum speed
     const Speed limited = std::min(target, limits_.max_speed);
-    if (!open_loop_.setSpeed(limited, params_.num_poles)) return;
-    status_.target_speed_rps = limited;
+    if (!OpenLoopPhase<Profile, ActiveTiming::CURRENT_HZ>::prepareSpeed(limited, params_.num_poles, prepared.rate_))
+        return false;
+    prepared.limited_speed_ = limited;
+    prepared.owner_ = this;
+    return true;
+}
+
+bool BldcController::commitNativeTargetSpeed(const PreparedTargetSpeed& prepared) noexcept {
+    CriticalSection cs;
+    if (prepared.owner_ != this || dmode_ == DriveMode::NEUTRAL) return false;
+    open_loop_.applyPreparedRate(prepared.rate_);
+    status_.target_speed_rps = prepared.limited_speed_;
+    return true;
 }
 
 void BldcController::setDutyCycle(float duty_cycle) noexcept
@@ -518,7 +530,8 @@ HallMonitor::Info BldcController::getHallInfo() const noexcept {
 }
 
 HallFault BldcController::getHallFault() const noexcept {
-    CriticalSection cs;
+    // The volatile scalar latch is atomic on all supported Cortex-M targets.
+    // Callers checking a larger transaction hold their own snapshot mask.
     return hall_monitor_.faultCause();
 }
 
@@ -684,9 +697,9 @@ BldcController::Speed BldcController::applyAccelerationLimit(Speed target_speed)
 
 void BldcController::hallSensorInterruptHandler() noexcept
 {
-    // Deferred Hall update: set flag, process in PWM ISR.
-    // Hall signal may bounce (1→0→1) due to EMI from power cables.
-    // PWM ISR re-reads stable state 50μs later, hiding bounce from PLL.
+    // Coalesce Hall events until the next PWM ISR. This does not guarantee
+    // a minimum settling time: an edge can arrive immediately before that ISR.
+    // Input pulse rejection belongs to the board's Hall acquisition path.
     hall_update_pending_ = true;
 }
 
@@ -699,14 +712,17 @@ void BldcController::pwmInterruptHandler() noexcept {
     // One snapshot of everything, taken once, handed to whichever algorithm is
     // selected. Neither algorithm reaches into hardware for measurements, so
     // they cannot disagree about what this PWM period looked like.
-    MotorAlgorithmInputT<Profile> in{};
-
     // ADC already converted all injected channels — reading registers adds no
     // latency. All three shunts are read even in six-step, which uses one of
     // them: the cost is two extra register reads and two conversions, and it
     // is what lets the two algorithms share a single input path.
-    adc_interface_->readNativeCurrents(in.i_u, in.i_v, in.i_w);
-    in.bus_voltage = adc_interface_->readNativeBusVoltage();
+    // Only the three measurement locals escape through the virtual ADC call.
+    // Passing fields of a pre-zeroed full input makes GCC materialize/clear
+    // the whole structure before that call, although every other field below
+    // is assigned before the algorithm sees it.
+    Current current_u{}, current_v{}, current_w{};
+    adc_interface_->readNativeCurrents(current_u, current_v, current_w);
+    MotorAlgorithmInputT<Profile> in{current_u, current_v, current_w, adc_interface_->readNativeBusVoltage()};
 
     // Hall health time base. Reads no hardware; it only decays the monitor's
     // accumulators and ages a standing illegal code, both of which have to run
@@ -716,20 +732,17 @@ void BldcController::pwmInterruptHandler() noexcept {
     const bool hall_guard_active = hall_controls_drive && dmode_ != DriveMode::NEUTRAL && status_.is_running;
     hall_monitor_.tick(hall_guard_active);
 
-    // Process deferred Hall update (debounced re-read from stable GPIO state)
+    // Process the board's deferred Hall reading.
     if (hall_update_pending_) {
         hall_update_pending_ = false;
-        // One read, shared by the health monitor and the PLL, so they can never
-        // disagree and the lines are never sampled mid-transition.
+        // Share one decoded sample between the health monitor and the PLL.
+        // This alone does not qualify a raw GPIO transition as stable.
         uint8_t hall_state = hall_interface_.getPosition();
         hall_monitor_.onPosition(hall_state, hall_guard_active);
         if (hall_state <= 5) {
             {
                 CriticalSection cs;
                 status_.measured_position = hall_state;
-            }
-            {
-                CriticalSection cs;
                 motor_pll_.updateHall(hall_state);
             }
         }

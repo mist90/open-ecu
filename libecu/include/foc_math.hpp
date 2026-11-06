@@ -208,16 +208,8 @@ static inline void sinCos(float angle, float& sin_out, float& cos_out) noexcept
     cos_out = c0 + frac * (FOC_SIN_TABLE[ic1] - c0);
 }
 
-    static float qVoltageLimit(float d, float limit) noexcept {
-        if (limit <= 0.0f) return 0.0f;
-        const float remaining = limit * limit - d * d;
-        return remaining > 0.0f ? __builtin_sqrtf(remaining) : 0.0f;
-    }
     static float voltageMagnitude(float d, float q) noexcept { return __builtin_sqrtf(d * d + q * q); }
     static float inverseBusVoltage(float bus) noexcept { return 1.0f / bus; }
-    static bool voltageLimitExceeded(float d, float q, float limit) noexcept {
-        return d * d + q * q > limit * limit;
-    }
     static float logRatio(uint64_t numerator, uint64_t denominator) noexcept {
         return __builtin_logf(float(numerator) / float(denominator));
     }
