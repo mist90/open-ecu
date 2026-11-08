@@ -1,7 +1,9 @@
 #!/bin/bash
 set -euo pipefail
 cd "$(dirname "$0")"
-work=$(mktemp -d "${TMPDIR:-/tmp}/f410-adc-x2.XXXXXX")
+build_root=${BUILD_DIR:-${TMPDIR:-/tmp/opencode}}
+mkdir -p "$build_root"
+work=$(mktemp -d "$build_root/f410-adc-x2.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 drivers=$(realpath ../../STM32F410/Drivers)
 if [[ ! -d "$drivers" ]]; then

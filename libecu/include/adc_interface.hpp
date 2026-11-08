@@ -39,7 +39,8 @@ struct TemperatureSensorParameters {
 /**
  * @brief Raw hardware plus typed current/voltage/temperature conversion
  *
- * Injected current and bus readings share the configured sum scale; regular
+ * Current and bus readings share the configured sum scale; regular Vbus is
+ * scaled by the port at the cached getter boundary. Regular
  * NTC/throttle readings retain the physical ADC resolution. The float-facing
  * methods adapt existing callers; readNative* exposes the conversion core's
  * types directly to a profile-parametric control loop.
@@ -89,9 +90,9 @@ public:
 
     /** @return Injected phase sum, including injected_sample_sum scaling. */
     virtual uint32_t getRawAdcValue(PwmChannel channel) = 0;
-    /** @return Injected DC bus sum at the same scale as phase readings. */
+    /** @return Cached DC bus value at the same sum scale as phase readings. */
     virtual uint32_t getRawAdcValue() = 0;
-    /** @return Regular NTC ADC reading; zero on a failed/open reading. */
+    /** @return Last complete regular NTC sample; the port enforces readiness/freshness. */
     virtual uint32_t getRawTemperatureAdcValue() = 0;
 
     /** @return Signed phase current, positive out of the phase into its low-side shunt. */
@@ -116,7 +117,8 @@ public:
     float convertAdcToThrottle(uint32_t raw) const noexcept { return numberCast<float>(core_.throttle(raw)); }
     Core::Duty convertNativeThrottle(uint32_t raw) const noexcept { return core_.throttle(raw); }
 
-    NativeVoltage readNativeBusVoltage() noexcept { return core_.busVoltage(getRawAdcValue()); }
+    NativeVoltage convertNativeAdcToVoltage(uint32_t raw) const noexcept { return core_.busVoltage(raw); }
+    NativeVoltage readNativeBusVoltage() noexcept { return convertNativeAdcToVoltage(getRawAdcValue()); }
     Core::Temperature readNativeTemperature() noexcept { return core_.temperature(getRawTemperatureAdcValue()); }
     /** @brief Read all phases; ports may batch acquisition using the same calibrated conversions. */
     virtual void readNativeCurrents(NativeCurrent& u, NativeCurrent& v, NativeCurrent& w) noexcept {

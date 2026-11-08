@@ -25,12 +25,19 @@ MotorPLL::PllInfo MotorPLL::getInfo() const noexcept {
             numberCast<float>(state.kp), numberCast<float>(state.ki), state.is_sync};
 }
 
-bool MotorPLL::setGains(float kp, float ki) noexcept {
+LIBECU_SLOW_PATH bool MotorPLL::prepareGains(float kp, float ki, PreparedGains& prepared) noexcept {
     Core::Gain proportional{}, integral{};
     Core::StepGain step{};
     if (!tryNumber(kp, proportional) || !tryNumber(ki, integral) ||
         !tryNumber(numberCast<float>(integral) / ActiveTiming::CURRENT_HZ, step)) return false;
-    core_.setGains(proportional, integral);
+    prepared = Core::prepareGains(proportional, integral);
+    return true;
+}
+
+bool MotorPLL::setGains(float kp, float ki) noexcept {
+    PreparedGains prepared;
+    if (!prepareGains(kp, ki, prepared)) return false;
+    applyPrepared(prepared);
     return true;
 }
 

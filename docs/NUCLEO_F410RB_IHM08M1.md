@@ -213,9 +213,9 @@ the shunt; FOC converts that sign into its own phase-current convention.
 
 | Signal | Path | MCU / use |
 |---|---|---|
-| Vbus | J1.1 → R17 169 kΩ → VBUS_SENS/VBUS; R18 9.31 kΩ to GND, C14 4.7 nF → R51 → CN7.30 | PA1 / ADC1_IN1, injected rank 4 |
-| Temperature | 3.3V → R19 NTC 10 kΩ → temperature feedback → R20 4.7 kΩ → GND; C10 10 nF → R54 → CN7.35 | PC2 / ADC1_IN12, regular rank 1 |
-| Potentiometer | R42 wiper / SPEED → R181 → CN7.32 | PA4 / ADC1_IN4, regular rank 2 |
+| Vbus | J1.1 → R17 169 kΩ → VBUS_SENS/VBUS; R18 9.31 kΩ to GND, C14 4.7 nF → R51 → CN7.30 | PA1 / ADC1_IN1, regular rank 1 |
+| Temperature | 3.3V → R19 NTC 10 kΩ → temperature feedback → R20 4.7 kΩ → GND; C10 10 nF → R54 → CN7.35 | PC2 / ADC1_IN12, regular rank 2 |
+| Potentiometer | R42 wiper / SPEED → R181 → CN7.32 | PA4 / ADC1_IN4, regular rank 3 |
 | Button B1 | VDD → R30 4.7 kΩ → SB17/PC13; B1 shorts to GND | PC13, active LOW |
 
 Vbus = raw × 3.3 / 4095 × (169000+9310)/9310, ratio ≈ 19.153. The BOM NTC
@@ -316,11 +316,11 @@ These matter even with a fixed pin map:
 | APB1 / TIM5CLK | 50 MHz / 100 MHz (doubled because the APB prescaler is 2) |
 | TIM1 | PSC=0, ARR=2500, RCR=0, center-aligned → 20 kHz |
 | TIM1 CH4 | CCR4=2400, PWM1, TRGO=OC4REF, falling edge |
-| ADC1 | APB2/4 = 25 MHz, 12 bit, U/V/W/Vbus injected, 15-cycle sampling |
-| DMA2 Stream0 Channel0 | NTC/pot, circular, two halfwords; regular sequence started once per 10 ms |
+| ADC1 | APB2/4 = 25 MHz, 12 bit, U/V/W injected, 15-cycle sampling |
+| DMA2 Stream0 Channel0 | Vbus/NTC/pot, circular, three halfwords; regular scan started by 1-kHz SysTick |
 | TIM5 | PSC=99, ARR=0xFFFFFFFF, 1 MHz counter; Hall XOR/IC1 with CKD=DIV2, IC1F=0xF |
 | SysTick | 1 kHz HAL tick, divided by 10 for the 100 Hz speed loop |
-| IRQ priorities | BKIN=0; ADC/ADC DMA=1; Hall TIM5=2; SysTick=3 |
+| IRQ priorities | BKIN=0; ADC=1; Hall TIM5=2; SysTick=3; no regular-DMA IRQ |
 
 The TIM5 slave reset is disabled (`SMS=0`): Hall captures do not reset CNT,
 so `time_us()` stays a monotonic 32-bit microsecond counter. CKD divides
@@ -329,9 +329,9 @@ inputs to the XOR only and are never enabled as outputs.
 
 The ADC is triggered **once per full PWM period**, by the falling OC4REF
 while counting up, 1 µs before the CNT peak. The three current conversions
-take about 3×(15+12)/25 MHz = **3.24 µs**, all four injected channels
-**4.32 µs**, plus a small trigger synchronization. Software x2 is enabled by
-default: the first JEOC snapshots U/V/W/Vbus and starts another injected
+take about 3×(15+12)/25 MHz = **3.24 µs**, plus a small trigger synchronization.
+Software x2 is enabled by
+default: the first JEOC snapshots U/V/W and starts another injected
 scan when the low-side window permits. The second JEOC publishes their sums
 and runs the controller once. There is still one control frame per 50 µs.
 
@@ -366,10 +366,12 @@ The voltage-vector limit is applied before modulation, so the current
 regulators' anti-windup uses the same available voltage range as the PWM
 outputs. These settings are supplied by the board through `BoardInfo`.
 
-The NTC and potentiometer use a separate DMA-driven regular sequence with
-144-cycle sampling. The injected group preempts it. No ADC wait happens in
-an ISR — the interface returns cached regular values. The HAL tick stays at
-1 ms, so UART timeouts and `HAL_Delay` are not stretched.
+Vbus, NTC and potentiometer use a separate three-rank DMA regular sequence with
+144-cycle sampling. SysTick collects the previous complete scan and starts the
+next at1 kHz; the injected group preempts it. Readers return coherent cached
+values without waiting. Launch-time freshness is bounded at2500 µs, and a
+missing DMA completion faults at the next tick. The HAL tick stays at1 ms.
+See [the regular-acquisition contract](../STM32F410/ADC_REGULAR.md).
 
 `AT+SPD` specifies mechanical RPS for VELOCITY or the OPEN_LOOP field;
 TORQUE uses the `AT+CUR` current demand. The open-loop field phase is a
@@ -383,9 +385,9 @@ loop; the virtual field never overwrites them.
 
 * `samples`: number of complete control frames, not individual injected scans;
 * `max_current_loop_cycles`: maximum first-JEOC-to-controller/OSC completion
-  interval, including the second-scan gap when software x2 is used;
-* `overruns`: those intervals exceeding the 5000-cycle period, or a new JEOC
-  pending on exit;
+interval, including the second-scan gap when software x2 is used;
+* `overruns`: the whole-frame guard, including recorder bookkeeping, reaches
+  5000 cycles or finds a new JEOC pending on exit;
 * `faults`: bitmask — 1=BKIN, 2=|I|>25 A, 4=Vbus<10 V, 8=ADC/DMA/stale,
   16=ISR overrun, 32=out-of-range NTC while driving, 64=current-input
   calibration failed;
@@ -396,6 +398,39 @@ loop; the virtual field never overwrites them.
 On any hardware fault the console prints `Board fault mask ...`; the bridge
 stays latched off until reset. The 5000-cycle budget is the full 50 µs PWM
 period.
+
+### Measured current-loop timing after the SysTick migration (2026-11-08)
+
+NUCLEO-F410RB, ST-LINK `066EFF535752877167082532`, about40.5 V,95 RPM, FOC,
+current mode, stock F410 gains2.1991/2067.1680 and speed PI2/2. Each variant
+ran15 s; the gated recorder skipped the first60000 enabled frames and then
+measured200000 frames (10 s). SWD was closed throughout rotation. DWT continuity
+was checked against the independent1-MHz TIM5 over every whole trial.
+
+| Profile | ADC | First JEOC → control/OSC end, mean / max µs | PWM peak → control/OSC end, mean / max µs |
+|---|---:|---:|---:|
+| float |×1|20.01 /22.45|23.09 /25.58|
+| float |×2|25.86 /28.73|28.98 /31.89|
+| fixed |×1|21.82 /25.15|24.92 /30.30|
+| fixed |×2|27.35 /31.81|30.40 /34.78|
+
+All four runs had zero board faults/overruns and no Hall fault. Both x2 captures
+contained200000 paired frames, with no single-scan fallback in the measured
+window. PWM period remains50 µs. These are observations at this operating point,
+not a hardware WCET proof. The peak-relative sum is conservative because CNT is
+read after the DWT start; recorder bookkeeping and final exception return follow
+the reported end. The deadline guard runs after bookkeeping.
+
+`F410TimingCapture` now contains15 uint32 words (60 bytes). The first six retain
+their old ABI. Words6/7 are flags and selected frames to skip; flag1 selects MOE
+enabled frames. Words8–10 accumulate first-entry phase, words11–13 peak-to-end,
+and word14 counts paired frames. All totals are32-bit: use bounded captures such
+as200000 frames. Clear the record, set flags/skip, then arm `remaining` last,
+while parked; collect/read after neutral. Validate DWT before interpreting cycles.
+
+The verified fixed×2 image was left on the MCU, with neutral/zero demand and
+capture disabled, as requested. Original Flash backup and complete evidence:
+`/home/ropewalker/ecu-bench/f410-systick-hardware-20261108/`.
 
 ## 5. Code, build and first bring-up
 

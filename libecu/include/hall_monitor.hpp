@@ -194,11 +194,23 @@ struct HallMonitorParams {
  */
 class HallMonitor {
 public:
+    using Core = HallMonitorCore<ActiveNumericProfile, ActiveTiming::CURRENT_HZ>;
+    struct PreparedParameters {
+        HallMonitorParams params;
+        Core::PreparedParameters core;
+    };
     /**
      * @brief Constructor
      */
     HallMonitor() noexcept;
 
+    /** @brief Convert and validate outside the interrupt mask; leave output unchanged on failure. */
+    static bool prepareParameters(const HallMonitorParams& params, PreparedParameters& prepared) noexcept;
+    /** @brief Publish configuration only; caller serializes with the sampling ISR. */
+    void applyPrepared(const PreparedParameters& prepared) noexcept {
+        core_.applyPrepared(prepared.core);
+        params_ = prepared.params;
+    }
     bool setParameters(const HallMonitorParams& params) noexcept;
     const HallMonitorParams& getParameters() const noexcept { return params_; }
 
@@ -252,7 +264,6 @@ public:
     Info getInfo() const noexcept;
 
 private:
-    using Core = HallMonitorCore<ActiveNumericProfile, ActiveTiming::CURRENT_HZ>;
     Core core_;
     HallMonitorParams params_{};
 };

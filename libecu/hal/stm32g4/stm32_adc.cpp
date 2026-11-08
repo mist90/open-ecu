@@ -3,13 +3,12 @@
  * @brief STM32G4 ADC implementation for 3-phase current sensing
  * @note Uses ADC injected channels triggered by TIM1_TRGO2 for PWM-synchronized sampling
  *       ADC1 JDR1: Phase U current (OPAMP1_OUT via VOPAMP1)
- *       ADC1 JDR2: Vbus voltage divider (PA0 = ADC1_IN1)
+ *       ADC1 JDR2: Phase U padding, keeping both injected sequences equal
  *       ADC2 JDR1: Phase V current (OPAMP2_OUT via VOPAMP2)
  *       ADC2 JDR2: Phase W current (OPAMP3_OUT via VOPAMP3_ADC2)
  *
- *       ADC1 also has a regular group, converted on demand from the 100 Hz
- *       loop and shared one channel at a time between the potentiometer
- *       (PB12 = ADC1_IN11) and the NTC thermistor (PB14 = ADC1_IN5).
+ *       ADC1 regular DMA: Vbus (PA0 = IN1), NTC (PB14 = IN5), pot (PB12 = IN11).
+ *       SysTick at 1 kHz is the sole owner of scan launch and publication.
  */
 
 #include "stm32_adc.hpp"
@@ -21,6 +20,7 @@ ADC_HandleTypeDef hadc2;
 OPAMP_HandleTypeDef hopamp1;
 OPAMP_HandleTypeDef hopamp2;
 OPAMP_HandleTypeDef hopamp3;
+static DMA_HandleTypeDef regular_dma;
 
 namespace libecu {
 
@@ -30,15 +30,6 @@ Stm32Adc::Stm32Adc() noexcept {
 bool Stm32Adc::initializeHardware() noexcept {
     GPIO_InitTypeDef GPIO_InitStruct = {0};
     RCC_PeriphCLKInitTypeDef PeriphClkInit = {0};
-
-    PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_ADC12;
-    PeriphClkInit.Adc12ClockSelection = RCC_ADC12CLKSOURCE_SYSCLK;
-    if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK) {
-        Error_Handler();
-    }
-
-    /* Peripheral clock enable */
-    __HAL_RCC_ADC12_CLK_ENABLE();
 
     PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_ADC12;
     PeriphClkInit.Adc12ClockSelection = RCC_ADC12CLKSOURCE_SYSCLK;
@@ -93,6 +84,24 @@ bool Stm32Adc::initializeHardware() noexcept {
         return false;
     }
 
+    __HAL_RCC_DMA1_CLK_ENABLE();
+    __HAL_RCC_DMAMUX1_CLK_ENABLE();
+    regular_dma.Instance = DMA1_Channel1;
+    regular_dma.Init.Request = DMA_REQUEST_ADC1;
+    regular_dma.Init.Direction = DMA_PERIPH_TO_MEMORY;
+    regular_dma.Init.PeriphInc = DMA_PINC_DISABLE;
+    regular_dma.Init.MemInc = DMA_MINC_ENABLE;
+    regular_dma.Init.PeriphDataAlignment = DMA_PDATAALIGN_HALFWORD;
+    regular_dma.Init.MemDataAlignment = DMA_MDATAALIGN_HALFWORD;
+    regular_dma.Init.Mode = DMA_CIRCULAR;
+    regular_dma.Init.Priority = DMA_PRIORITY_HIGH;
+    if (HAL_DMA_Init(&regular_dma) != HAL_OK ||
+        HAL_DMA_Start(&regular_dma, uint32_t(uintptr_t(&ADC1->DR)),
+                      uint32_t(uintptr_t(regular_dma_)), 3) != HAL_OK) return false;
+    // Only injected conversions are dual-mode. Regular ADC1 is independent
+    // (RM0440, injected simultaneous mode), with its own DR DMA request.
+    SET_BIT(ADC1->CFGR, ADC_CFGR_DMAEN);
+
     // Start ADC injected conversions (triggered by TIM1_TRGO2)
     // In dual-mode simultaneous: START SLAVE FIRST, THEN MASTER
     // ADC2 (slave): Phase V (VOPAMP2) + Phase W (VOPAMP3_ADC2)
@@ -129,11 +138,11 @@ void Stm32Adc::initADC1() noexcept {
     hadc1.Init.EOCSelection = ADC_EOC_SEQ_CONV;  // EOC after sequence
     hadc1.Init.LowPowerAutoWait = DISABLE;
     hadc1.Init.ContinuousConvMode = DISABLE;
-    hadc1.Init.NbrOfConversion = 1;
+    hadc1.Init.NbrOfConversion = 3;
     hadc1.Init.DiscontinuousConvMode = DISABLE;
     hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
     hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
-    hadc1.Init.DMAContinuousRequests = DISABLE;
+    hadc1.Init.DMAContinuousRequests = ENABLE;
     hadc1.Init.Overrun = ADC_OVR_DATA_PRESERVED;
     hadc1.Init.OversamplingMode = DISABLE;
     if (HAL_ADC_Init(&hadc1) != HAL_OK)
@@ -151,38 +160,31 @@ void Stm32Adc::initADC1() noexcept {
         Error_Handler();
     }
 
-    /** Configure the regular group.
-     *
-     * Two channels want it - the potentiometer (PB12 = ADC1_IN11) and the NTC
-     * thermistor (PB14 = ADC1_IN5) - but the sequence stays ONE conversion
-     * long and readRegularChannel() re-points rank 1 at whichever is wanted.
-     *
-     * Both are configured here, before the injected group is started, because
-     * that is the only moment SMPRx may be written: from then on JADSTART is
-     * permanently set by the free-running TIM1_TRGO2 trigger, and the
-     * reference manual forbids touching the sampling-time registers while a
-     * conversion is in flight. SQR1 has no such restriction as long as no
-     * *regular* conversion is running, so channel selection at runtime is a
-     * single legal register write.
-     *
-     * 92.5 cycles (2.18 us at 42.5 MHz) covers the NTC divider's worst-case
-     * source impedance - 4.7k in parallel with a cold thermistor, about 4k -
-     * with an order of magnitude to spare, and the potentiometer is happy with
-     * anything this slow.
-     */
+    // Fixed three-rank regular scan. DMA drains every DR result even when
+    // the current IRQ preempts SysTick, so no software read can lose a rank.
+    // 92.5 cycles at 42.5 MHz also gives the high-impedance Vbus divider time
+    // to settle. Configure SMPR/SQR here, before arming injected conversions.
     sConfig.Rank = ADC_REGULAR_RANK_1;
     sConfig.SamplingTime = ADC_SAMPLETIME_92CYCLES_5;
     sConfig.SingleDiff = ADC_SINGLE_ENDED;
     sConfig.OffsetNumber = ADC_OFFSET_NONE;
     sConfig.Offset = 0;
 
-    sConfig.Channel = ADC_CHANNEL_11;  // PB12 potentiometer input
+    sConfig.Channel = ADC_CHANNEL_1;   // PA0 Vbus
     if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
     {
         Error_Handler();
     }
 
+    sConfig.Rank = ADC_REGULAR_RANK_2;
     sConfig.Channel = ADC_CHANNEL_5;   // PB14 NTC thermistor input
+    if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+    {
+        Error_Handler();
+    }
+
+    sConfig.Rank = ADC_REGULAR_RANK_3;
+    sConfig.Channel = ADC_CHANNEL_11;  // PB12 potentiometer input
     if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
     {
         Error_Handler();
@@ -197,7 +199,7 @@ void Stm32Adc::initADC1() noexcept {
     sConfigInjected.InjectedSingleDiff = ADC_SINGLE_ENDED;
     sConfigInjected.InjectedOffsetNumber = ADC_OFFSET_NONE;
     sConfigInjected.InjectedOffset = 0;
-    sConfigInjected.InjectedNbrOfConversion = 2;  // 2 injected channels on ADC1 (Phase U current + Vbus)
+    sConfigInjected.InjectedNbrOfConversion = 2;  // Phase U + U padding, matching ADC2's V/W
     sConfigInjected.InjectedDiscontinuousConvMode = DISABLE;
     sConfigInjected.AutoInjectedConv = DISABLE;
     sConfigInjected.QueueInjectedContext = DISABLE;
@@ -211,25 +213,13 @@ void Stm32Adc::initADC1() noexcept {
         Error_Handler();
     }
 
-    /** Configure Injected Channel 2: Vbus voltage divider (PA0 = ADC1_IN1)
-     */
-    ADC_InjectionConfTypeDef sConfigInjectedVbus = {0};
-    sConfigInjectedVbus.InjectedChannel = ADC_CHANNEL_1;
-    sConfigInjectedVbus.InjectedRank = ADC_INJECTED_RANK_2;
-    sConfigInjectedVbus.InjectedSamplingTime = ADC_SAMPLETIME_6CYCLES_5;
-    sConfigInjectedVbus.InjectedSingleDiff = ADC_SINGLE_ENDED;
-    sConfigInjectedVbus.InjectedOffsetNumber = ADC_OFFSET_NONE;
-    sConfigInjectedVbus.InjectedOffset = 0;
-    sConfigInjectedVbus.InjectedNbrOfConversion = 2;  // 2 injected channels: Phase U current + Vbus
-    sConfigInjectedVbus.InjectedDiscontinuousConvMode = DISABLE;
-    sConfigInjectedVbus.AutoInjectedConv = DISABLE;
-    sConfigInjectedVbus.QueueInjectedContext = DISABLE;
-    sConfigInjectedVbus.ExternalTrigInjecConv = ADC_EXTERNALTRIGINJEC_T1_TRGO2;
-    sConfigInjectedVbus.ExternalTrigInjecConvEdge = ADC_EXTERNALTRIGINJECCONV_EDGE_RISING;
-    sConfigInjectedVbus.InjecOversamplingMode = ENABLE;
-    sConfigInjectedVbus.InjecOversampling = sConfigOversampling;
-
-    if (HAL_ADCEx_InjectedConfigChannel(&hadc1, &sConfigInjectedVbus) != HAL_OK)
+    // RM0440 Rev7 p666: equal sequence lengths (or a trigger interval longer
+    // than both sequences) are required in simultaneous mode. Equal duration
+    // permits one completion point for both ADCs. Keep U/U versus V/W so the
+    // existing current synchronization and x2 timing remain exactly the same;
+    // the padding result is never consumed and Vbus is regular-only.
+    sConfigInjected.InjectedRank = ADC_INJECTED_RANK_2;
+    if (HAL_ADCEx_InjectedConfigChannel(&hadc1, &sConfigInjected) != HAL_OK)
     {
         Error_Handler();
     }
@@ -373,69 +363,47 @@ uint32_t Stm32Adc::getRawAdcValue(PwmChannel channel) {
 }
 
 uint32_t Stm32Adc::getRawAdcValue() {
-    // Vbus voltage is on ADC1_IN1, injected channel rank 2
-    return HAL_ADCEx_InjectedGetValue(&hadc1, ADC_INJECTED_RANK_2);
+    // Preserve the public current/bus sum scale; regular DMA is physical 12-bit.
+    return INJECTED_SAMPLE_SUM * regularFrame().bus;
 }
 
 uint32_t Stm32Adc::getRawTemperatureAdcValue() {
-    // PB14 = ADC1_IN5, regular group. Not injected: this is called from the
-    // 100 Hz loop, and a motor's thermal time constant is measured in tens of
-    // seconds - there is nothing here worth spending injected ranks (and 20 kHz
-    // ISR time) on.
-    return readRegularChannel(ADC_CHANNEL_5);
+    return regularFrame().temperature;
 }
 
-/**
- * @note NOT re-entrant, and the regular group now has an owner.
- *
- * Channel selection and the DR read are two separate steps, so a caller
- * preempted between them gets the other caller's channel back. Temperature is
- * read from BldcController::update(), i.e. the SysTick handler, which preempts
- * the main loop - so the two callers must share a context or one of them will
- * eventually be handed the other's channel.
- *
- * Both now run in the SysTick handler, and SysTick cannot preempt itself:
- * HAL_SYSTICK_Callback() in the board port samples the potentiometer straight
- * after BldcController::update(), and Board::readThrottle() only hands the
- * main loop the cached result. Do not add a caller outside that context; a
- * main-loop read cannot be made safe with a critical section either, because
- * readRegularChannel() spins while injected triggers restart the conversion
- * and would hold off the 20 kHz current loop.
- *
- * The alternative, if the regular group ever needs a third user, is to give
- * the NTC an injected rank of its own and leave this group to the throttle.
- */
-uint32_t Stm32Adc::readRegularChannel(uint32_t channel) noexcept {
-    // One conversion per call, rather than a two-rank scan holding both the
-    // potentiometer and the NTC. A scan would have to read DR twice, and this
-    // runs inside the SysTick handler, which TIM1 (17.6 us worst case) and the
-    // Hall EXTI both preempt: land one of those between the two reads and the
-    // second result is dropped by the overrun policy (ADC_OVR_DATA_PRESERVED).
-    // A single-conversion sequence cannot overrun - hardware clears ADSTART at
-    // the end and nothing else writes DR - so preemption only ever delays the
-    // read.
-    LL_ADC_REG_SetSequencerRanks(ADC1, LL_ADC_REG_RANK_1, channel);
+bool Stm32Adc::serviceRegular(uint32_t now_us) noexcept {
+    const uint32_t dma_flags = DMA1->ISR;
+    if ((dma_flags & DMA_ISR_TEIF1) || (ADC1->ISR & ADC_ISR_OVR) ||
+        !(DMA1_Channel1->CCR & DMA_CCR_EN)) regular_failed_ = true;
+    if (regular_failed_) return false;
 
-    if (HAL_ADC_Start(&hadc1) != HAL_OK) {
-        return 0;
-    }
-
-    // Deliberately not HAL_ADC_PollForConversion(): its timeout is counted in
-    // HAL ticks, and HAL_IncTick() is driven by the very SysTick handler this
-    // runs inside, so uwTick is frozen here - a stalled ADC would spin forever
-    // instead of timing out. The guard is a loop count for that reason.
-    //
-    // It is loose on purpose. The conversion is ~2.5 us, but an injected
-    // trigger aborts and restarts an in-flight regular conversion, and one
-    // arrives every 50 us, so a few restarts are normal.
-    uint32_t guard = 100000;
-    while ((hadc1.Instance->ISR & ADC_FLAG_EOC) == 0U) {
-        if (--guard == 0U) {
-            return 0;
+    if (regular_pending_) {
+        if (!(dma_flags & DMA_ISR_TCIF1)) {
+            // Next scheduled SysTick: timestamp deltas can be slightly below
+            // 1 ms because of IRQ jitter, so the deadline is the call itself.
+            regular_failed_ = true;
+            return false;
         }
+        if ((ADC1->CR & ADC_CR_ADSTART) || DMA1_Channel1->CNDTR != 3 ||
+            uint32_t(now_us - regular_started_us_) > REGULAR_MAX_AGE_US) {
+            regular_failed_ = true;
+            return false;
+        }
+        __atomic_thread_fence(__ATOMIC_ACQUIRE);
+        const uint32_t next = regular_index_ ^ 1U;
+        regular_frames_[next] = {regular_dma_[0], regular_dma_[1], regular_dma_[2], regular_started_us_};
+        __atomic_store_n(&regular_index_, next, __ATOMIC_RELEASE);
+        regular_ready_ = true;
     }
 
-    return hadc1.Instance->DR;  // reading DR clears EOC
+    DMA1->IFCR = DMA_IFCR_CTCIF1 | DMA_IFCR_CHTIF1;
+    ADC1->ISR = ADC_ISR_EOS | ADC_ISR_EOC;
+    regular_started_us_ = now_us;
+    regular_pending_ = true;
+    // ADCs are already enabled by injected-start during initialization. No HAL
+    // enable/poll/stop path belongs in SysTick; this just requests a new scan.
+    SET_BIT(ADC1->CR, ADC_CR_ADSTART);
+    return true;
 }
 
 float Stm32Adc::readPotentiometer(float max_value)
@@ -446,8 +414,7 @@ float Stm32Adc::readPotentiometer(float max_value)
 }
 
 uint32_t Stm32Adc::readRawPotentiometer() {
-    // PB12 = ADC1_IN11, same regular group as the NTC.
-    return readRegularChannel(ADC_CHANNEL_11);
+    return regularFrame().potentiometer;
 }
 
 } // namespace libecu

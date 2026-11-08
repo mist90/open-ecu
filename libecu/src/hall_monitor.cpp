@@ -9,7 +9,8 @@ HallMonitor::HallMonitor() noexcept {
     setParameters(HallMonitorParams{500000, 0.0f, 1, 300, 0.35f, 10.0f, true});
 }
 
-bool HallMonitor::setParameters(const HallMonitorParams& params) noexcept {
+LIBECU_SLOW_PATH
+bool HallMonitor::prepareParameters(const HallMonitorParams& params, PreparedParameters& prepared) noexcept {
     Core::Params typed{};
     typed.decay_time_us = params.decay_time_us;
     typed.invalid_debounce = params.invalid_debounce;
@@ -18,8 +19,16 @@ bool HallMonitor::setParameters(const HallMonitorParams& params) noexcept {
     if (!tryNumber(params.invalid_threshold, typed.invalid_threshold) ||
         !tryNumber(params.erratic_fraction, typed.erratic_fraction) ||
         !tryNumber(params.erratic_min_edges, typed.erratic_min_edges)) return false;
-    if (!core_.setParameters(typed)) return false;
-    params_ = params;
+    Core::PreparedParameters core;
+    if (!Core::prepareParameters(typed, core)) return false;
+    prepared = {params, core};
+    return true;
+}
+
+bool HallMonitor::setParameters(const HallMonitorParams& params) noexcept {
+    PreparedParameters prepared;
+    if (!prepareParameters(params, prepared)) return false;
+    applyPrepared(prepared);
     return true;
 }
 

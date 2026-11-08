@@ -30,6 +30,11 @@ public:
     using Phase = typename Profile::PhaseAccumulator;
     static constexpr Angle ANGLE_MAX = number<Angle>(6);
     static constexpr Angle LIMIT_ANGLE_ERROR = number<Angle>(1, 2);
+    struct PreparedGains {
+        Gain kp;
+        Gain ki;
+        StepGain ki_step;
+    };
 
     struct Info {
         bool use_pll;
@@ -134,11 +139,21 @@ public:
         return static_cast<uint8_t>((next % 6 + 6) % 6);
     }
 
-    /** @brief Change the continuous-time gains and cache the integration coefficient. */
+    /** @brief Calculate the integration coefficient without accessing tracking state. */
+    LIBECU_SLOW_PATH static PreparedGains prepareGains(Gain kp, Gain ki) noexcept {
+        return {kp, ki, divideByInteger<StepGain>(ki, FrequencyHz)};
+    }
+    /** @brief Publish only the three gains, retaining phase, integrator and lock state.
+     *  @note Caller serializes this bounded assignment with the sampling ISR.
+     */
+    void applyPrepared(const PreparedGains& prepared) noexcept {
+        kp_ = prepared.kp;
+        ki_ = prepared.ki;
+        ki_step_ = prepared.ki_step;
+    }
+    /** @brief Convenience for construction or callers already owning the PLL. */
     void setGains(Gain kp, Gain ki) noexcept {
-        kp_ = kp;
-        ki_ = ki;
-        ki_step_ = divideByInteger<StepGain>(ki, FrequencyHz);
+        applyPrepared(prepareGains(kp, ki));
     }
     /** @brief Re-seed tracking from the most recent real/virtual Hall sector. */
     void reset() noexcept {

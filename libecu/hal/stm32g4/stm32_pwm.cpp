@@ -307,6 +307,7 @@ void Stm32Pwm::updateNativeDutyCycle(NativeDuty duty_u, NativeDuty duty_v, Nativ
 }
 
 void Stm32Pwm::enable(bool enable) {
+    if (faulted_) enable = false;
     if (!(enable ^ enabled_))
         return;
 
@@ -340,6 +341,11 @@ void Stm32Pwm::enable(bool enable) {
         HAL_GPIO_DeInit(GPIOB, GPIO_PIN_15);
         HAL_GPIO_DeInit(GPIOA, GPIO_PIN_8|GPIO_PIN_9|GPIO_PIN_10|GPIO_PIN_12);
     }
+}
+
+void Stm32Pwm::trip() noexcept {
+    faulted_ = true;
+    CLEAR_BIT(static_cast<TIM_HandleTypeDef*>(htim_)->Instance->BDTR, TIM_BDTR_MOE);
 }
 
 uint32_t Stm32Pwm::getTimChannel(PwmChannel channel) noexcept {

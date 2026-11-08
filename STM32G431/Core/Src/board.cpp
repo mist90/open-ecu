@@ -67,6 +67,8 @@ static libecu::Stm32Adc adc_driver;
 static libecu::BldcController* motor_controller = nullptr;
 static libecu::CommandProcessor* command_processor = nullptr;
 static volatile bool control_tick = false;
+static volatile bool control_enabled = false;
+static volatile bool adc_running = false;
 
 #ifdef BENCH_PROFILING
 #include "numeric_bench.hpp"
@@ -112,25 +114,6 @@ void bench_pwm_irq_end(uint32_t started) {
 }
 }
 #endif
-
-/* Throttle sampling.
- *
- * The potentiometer on PB12 shares ADC1's regular group with the NTC on PB14,
- * and Stm32Adc::readRegularChannel() selects the channel and reads DR as two
- * separate steps - so the two reads must never interleave. The NTC is read
- * from BldcController::update(), i.e. from HAL_SYSTICK_Callback(), so the
- * potentiometer is sampled from there as well: same context, and SysTick
- * cannot preempt itself. The main loop only ever reads the cached result.
- *
- * Sampling starts on the first readThrottle() call and not before, so a build
- * that never asks for the throttle - which is every build with
- * THROTTLE_BRAKE_CONTROL off - pays no conversion in the control tick.
- *
- * Both are single aligned words, so the ISR/main-loop handoff needs no lock:
- * the main loop sees either the previous sample or the current one.
- */
-static volatile bool  throttle_sampling = false;
-static volatile uint32_t throttle_adc_raw = 0;
 
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
@@ -215,6 +198,11 @@ extern "C" void motor_controller_pwm_interrupt_handler(void)
     const uint32_t started = DWT->CYCCNT;
 #endif
     if (motor_controller != nullptr) {
+        // Check independently of SysTick so its loss cannot leave the bridge
+        // running on stale Vbus. DMA publication carries its launch timestamp.
+        if (!adc_driver.regularFresh(time_us())) pwm_driver.trip();
+        if (pwm_driver.faulted() && motor_controller->getDriveMode() != libecu::DriveMode::NEUTRAL)
+            motor_controller->setDriveMode(libecu::DriveMode::NEUTRAL);
         motor_controller->pwmInterruptHandler();
         if (command_processor->wantsCurrentSample()) {
             command_processor->captureCurrentSample(motor_controller->getNativeStatus());
@@ -233,21 +221,18 @@ extern "C" void motor_controller_pwm_interrupt_handler(void)
 }
 
 /**
- * @brief SysTick interrupt handler - sets control tick flag
- * Frequency: PERIODIC_TIMER_FREQ
+ * @brief 1 kHz auxiliary DMA service, divided down for the speed/control loop
  */
 void HAL_SYSTICK_Callback(void) {
+    static uint32_t divider = 0;
+    if (adc_running && !adc_driver.serviceRegular(time_us())) pwm_driver.trip();
+    if (!control_enabled || ++divider < 1000 / PERIODIC_TIMER_FREQ) return;
+    divider = 0;
     control_tick = true;
     if (motor_controller) {
-        // Update motor controller
+        if (pwm_driver.faulted() && motor_controller->getDriveMode() != libecu::DriveMode::NEUTRAL)
+            motor_controller->setDriveMode(libecu::DriveMode::NEUTRAL);
         motor_controller->update();
-    }
-    // After update(), so the control loop is not held up behind the regular
-    // conversion: an injected trigger aborts and restarts an in-flight regular
-    // conversion, and one arrives every 50 us, so this read can take a few
-    // attempts. Publish a raw integer; the application converts the cached sample.
-    if (throttle_sampling) {
-        throttle_adc_raw = adc_driver.readRawPotentiometer();
     }
 }
 
@@ -338,9 +323,14 @@ public:
         if (HAL_TIM_Base_Start(&htim1) != HAL_OK) {
             return false;
         }
+        adc_running = true;
 
         // Wait for stable ADC readings
         HAL_Delay(100);
+        if (!adc_driver.regularFresh(time_us())) {
+            pwm_driver.trip();
+            return false;
+        }
 
         // Calibrate zero-current offset (motor must be stationary)
         // Must be AFTER ADC is started and TIM1 is generating triggers
@@ -388,12 +378,13 @@ public:
 
     bool startControlLoop() noexcept override
     {
-        // Setup PERIODIC_TIMER_FREQ control loop with SysTick
-        if (HAL_SYSTICK_Config(SystemCoreClock / PERIODIC_TIMER_FREQ) != 0) {
-            return false;
-        }
+        // HAL timeouts and auxiliary DMA keep their 1 ms timebase. Divide only
+        // the controller callback, rather than slowing HAL ticks to 100 Hz.
+        static_assert(PERIODIC_TIMER_FREQ <= 1000 && 1000 % PERIODIC_TIMER_FREQ == 0,
+                      "Control frequency must divide the 1 kHz SysTick");
         // SysTick priority must be lower than TIM1 (higher number = lower priority)
         HAL_NVIC_SetPriority(SysTick_IRQn, 2, 0);
+        control_enabled = true;
         return true;
     }
 
@@ -420,11 +411,8 @@ public:
 
     ActiveNumericProfile::Duty readNativeThrottle() noexcept override
     {
-        // Arms sampling in the control tick; the first call returns 0, which
-        // is the safe direction (no demand), and every later one returns a
-        // sample at most one control period old.
-        throttle_sampling = true;
-        return adc_driver.convertNativeThrottle(throttle_adc_raw);
+        if (pwm_driver.faulted() || !adc_driver.regularFresh(time_us())) return {};
+        return adc_driver.convertNativeThrottle(adc_driver.readRawPotentiometer());
     }
 
     bool brakeEngaged() noexcept override { return readBrakeButton(); }
@@ -497,7 +485,7 @@ static void MX_TIM2_Init(void)
     TIM_OC_InitTypeDef sConfigOC = {0};
 
     htim2.Instance = TIM2;
-    htim2.Init.Prescaler = 170;
+    htim2.Init.Prescaler = SystemCoreClock / 1000000U - 1U;
     htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
     htim2.Init.Period = 4294967295;
     htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;

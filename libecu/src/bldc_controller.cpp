@@ -15,7 +15,7 @@
 
 namespace libecu {
 
-BldcController::BldcController(
+LIBECU_SLOW_PATH BldcController::BldcController(
     PwmInterface& pwm_interface,
     HallInterface& hall_interface,
     const MotorControlParams& params,
@@ -139,7 +139,7 @@ const MotorAlgorithm& BldcController::algorithm() const noexcept
          : static_cast<const MotorAlgorithm&>(six_step_);
 }
 
-bool BldcController::initialize() noexcept
+LIBECU_SLOW_PATH bool BldcController::initialize() noexcept
 {
     pwm_interface_.setNeutral();
     if (!parameters_valid_ || !pi_speed_controller_.isConfigured() || !six_step_.isCurrentPiConfigured())
@@ -154,7 +154,7 @@ bool BldcController::initialize() noexcept
     return true;
 }
 
-void BldcController::update() noexcept
+LIBECU_SLOW_PATH void BldcController::update() noexcept
 {
     // Speed feedback, signed **relative to the commanded direction**: positive
     // when the rotor turns the way dmode_ asks, negative when it turns against
@@ -192,11 +192,9 @@ void BldcController::update() noexcept
     }
 
     // ---- Thermal protection -----------------------------------------------
-    // Sampled here rather than in the PWM ISR on purpose. The NTC is a regular
-    // ADC conversion started on demand - microseconds of polling, and it can be
-    // aborted and restarted by the injected trigger - which has no business in
-    // a 20 kHz loop that already uses a third of its period. 100 Hz is several
-    // orders of magnitude faster than any thermal mass on this board.
+    // Convert the last complete regular-ADC snapshot at the slow-loop rate.
+    // Acquisition is owned by each board's SysTick/DMA pipeline; this read never
+    // starts a conversion or waits for it. The board enforces readiness/freshness.
     //
     // Runs whether or not the motor is running: a drive that has just been
     // stopped hot is exactly when the limit matters, and it is what stops the
@@ -307,6 +305,7 @@ void BldcController::setNativeTargetSpeed(Speed target) noexcept {
     if (prepareNativeTargetSpeed(target, prepared)) commitNativeTargetSpeed(prepared);
 }
 
+LIBECU_SLOW_PATH
 bool BldcController::prepareNativeTargetSpeed(Speed target, PreparedTargetSpeed& prepared) const noexcept {
     prepared = PreparedTargetSpeed{};
     if (target < Speed{}) return false;
@@ -449,7 +448,7 @@ float BldcController::getFocAngleOffsetDeg() const noexcept
     return foc_.getAngleOffsetRad() * (180.0f / FOC_PI);
 }
 
-void BldcController::setDriveMode(DriveMode mode) noexcept
+LIBECU_HOT_LOOP void BldcController::setDriveMode(DriveMode mode) noexcept
 {
     CriticalSection cs;
     const bool was_neutral = dmode_ == DriveMode::NEUTRAL;
@@ -541,8 +540,14 @@ void BldcController::clearHallFault() noexcept {
 }
 
 bool BldcController::setHallMonitorParams(const HallMonitorParams& params) noexcept {
+    HallMonitor::PreparedParameters prepared;
+    if (!HallMonitor::prepareParameters(params, prepared)) return false;
+    // Materialize the whole bundle before masking, including under LTO: pure
+    // coefficient arithmetic must not be sunk into the publication section.
+    __asm__ volatile("" : : "m"(prepared) : "memory");
     CriticalSection cs;
-    return hall_monitor_.setParameters(params);
+    hall_monitor_.applyPrepared(prepared);
+    return true;
 }
 
 MotorPLL::PllInfo BldcController::getPllInfo() const noexcept {
@@ -551,11 +556,15 @@ MotorPLL::PllInfo BldcController::getPllInfo() const noexcept {
 }
 
 bool BldcController::setPllGains(float kp, float ki) noexcept {
+    MotorPLL::PreparedGains prepared;
+    if (!MotorPLL::prepareGains(kp, ki, prepared)) return false;
+    __asm__ volatile("" : : "m"(prepared) : "memory"); // Keep coefficient calculation before the mask under LTO.
     CriticalSection cs;
-    return motor_pll_.setGains(kp, ki);
+    motor_pll_.applyPrepared(prepared);
+    return true;
 }
 
-DriveMode BldcController::getDriveMode() const noexcept {
+LIBECU_HOT_LOOP DriveMode BldcController::getDriveMode() const noexcept {
     // One volatile scalar load is atomic on every supported Cortex-M. Callers
     // committing several values already hold their own transaction mask.
     return dmode_;
@@ -695,7 +704,7 @@ BldcController::Speed BldcController::applyAccelerationLimit(Speed target_speed)
     return numberCast<Speed>(limited_target_speed_);
 }
 
-void BldcController::hallSensorInterruptHandler() noexcept
+LIBECU_HOT_LOOP void BldcController::hallSensorInterruptHandler() noexcept
 {
     // Coalesce Hall events until the next PWM ISR. This does not guarantee
     // a minimum settling time: an edge can arrive immediately before that ISR.
@@ -703,7 +712,7 @@ void BldcController::hallSensorInterruptHandler() noexcept
     hall_update_pending_ = true;
 }
 
-void BldcController::pwmInterruptHandler() noexcept {
+LIBECU_HOT_LOOP void BldcController::pwmInterruptHandler() noexcept {
     // Check if current controller and ADC are available
     if (!adc_interface_) {
         return;

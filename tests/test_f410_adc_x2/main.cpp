@@ -59,15 +59,14 @@ static void checkAcquisition() {
     check(adc.samples() == 2 && adc.frameStartedCycles() == 100, "two IRQs are one control frame");
     check(adc.getRawAdcValue(PwmChannel::PHASE_U) == 4245 &&
           adc.getRawAdcValue(PwmChannel::PHASE_V) == 4241 &&
-          adc.getRawAdcValue(PwmChannel::PHASE_W) == 4261 && adc.getRawAdcValue() == 4057,
-          "all four sums retain odd half-LSB results");
+          adc.getRawAdcValue(PwmChannel::PHASE_W) == 4261,
+          "all three current sums retain odd half-LSB results");
+    check(adc.getRawAdcValue() == 0, "obsolete JDR4 voltage data cannot leak into the regular cache");
     check((ADC1->CR2 & ADC_CR2_JEXTEN) == ADC_EXTERNALTRIGINJECCONVEDGE_FALLING,
           "PWM trigger is restored after the second scan");
     const float expected_current = 0.5f*3.3f/(4095.0f*ihm08::SHUNT_OHMS*ihm08::CURRENT_GAIN);
     check(std::fabs(adc.readPhaseCurrent(PwmChannel::PHASE_U)-expected_current) < .001f,
           "half-count current is converted with the correct physical gain");
-    const float expected_bus = 2028.5f*3.3f/4095.0f*(ihm08::BUS_R_UP+ihm08::BUS_R_DOWN)/ihm08::BUS_R_DOWN;
-    check(std::fabs(adc.readBusVoltage()-expected_bus) < .002f, "Vbus uses the same sum scale");
 
     raw(4000);
     check(!adc.captureInjected(1000), "overcurrent example starts a paired frame");
@@ -88,7 +87,7 @@ static void checkAcquisition() {
 
     timer(1700); raw();
     check(adc.captureInjected(2000), "high duty skips the second scan");
-    check(adc.getRawAdcValue() == 2028*sum, "high-duty fallback preserves bus scale");
+    check(adc.getRawAdcValue() == 0, "high-duty fallback leaves regular voltage alone");
     timer(500); raw();
     check(adc.captureInjected(3000), "high-to-low transition also requires the previous window to be valid");
     check(!adc.captureInjected(4000), "next low-duty frame can use two scans");
@@ -117,8 +116,8 @@ static void checkAcquisition() {
         timer(n%2 ? 1700 : 500); raw(2123,2121,2131,2029);
         check(adc.captureInjected(100+n), "disabled x2 publishes on every JEOC");
         check(adc.frameStartedCycles() == 100+n, "disabled x2 keeps the current IRQ timestamp");
-        check(adc.getRawAdcValue(PwmChannel::PHASE_U) == 2123 && adc.getRawAdcValue() == 2029,
-              "disabled x2 preserves 12-bit samples");
+        check(adc.getRawAdcValue(PwmChannel::PHASE_U) == 2123 && adc.getRawAdcValue() == 0,
+              "disabled x2 preserves 12-bit current samples and leaves regular voltage alone");
         check(!(ADC1->CR2 & ADC_CR2_JSWSTART), "disabled x2 never requests a second scan");
     }
     check(adc.samples() == 7, "disabled x2 frame counter advances once per conversion sequence");

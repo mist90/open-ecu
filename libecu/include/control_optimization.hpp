@@ -9,8 +9,11 @@
 // builds retain -O0; other compilers use their selected optimization policy.
 #if defined(__GNUC__) && !defined(__clang__) && defined(__OPTIMIZE__)
 #define LIBECU_HOT_LOOP [[gnu::optimize("O2")]]
+// Configuration and slow-loop work need not inflate the protected firmware image.
+#define LIBECU_SLOW_PATH [[gnu::optimize("Os")]]
 #else
 #define LIBECU_HOT_LOOP
+#define LIBECU_SLOW_PATH
 #endif
 
 #endif // LIBECU_CONTROL_OPTIMIZATION_HPP

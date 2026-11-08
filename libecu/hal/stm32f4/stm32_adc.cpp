@@ -4,6 +4,7 @@
 #include "stm32_adc.hpp"
 #include "board_config.hpp"
 #include "pwm_timing_bench.hpp"
+#include "critical_section.hpp"
 namespace libecu {
 bool Stm32Adc::initializeHardware() noexcept {
     __HAL_RCC_GPIOA_CLK_ENABLE();
@@ -26,29 +27,32 @@ bool Stm32Adc::initializeHardware() noexcept {
     adc_.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
     adc_.Init.ExternalTrigConv = ADC_SOFTWARE_START;
     adc_.Init.DataAlign = ADC_DATAALIGN_RIGHT;
-    adc_.Init.NbrOfConversion = 2;
+    adc_.Init.NbrOfConversion = 3;
     adc_.Init.DMAContinuousRequests = ENABLE;
     adc_.Init.EOCSelection = ADC_EOC_SEQ_CONV;
     if (HAL_ADC_Init(&adc_) != HAL_OK) return false;
 
     ADC_InjectionConfTypeDef injected{};
-    injected.InjectedNbrOfConversion = 4;
+    injected.InjectedNbrOfConversion = 3;
     injected.InjectedSamplingTime = ADC_SAMPLETIME_15CYCLES;
     injected.ExternalTrigInjecConv = ADC_EXTERNALTRIGINJECCONV_T1_TRGO;
     injected.ExternalTrigInjecConvEdge = ADC_EXTERNALTRIGINJECCONVEDGE_FALLING;
-    const uint32_t channels[4] = {ADC_CHANNEL_0, ADC_CHANNEL_11, ADC_CHANNEL_10, ADC_CHANNEL_1};
-    for (unsigned rank = 0; rank < 4; ++rank) {
+    const uint32_t channels[3] = {ADC_CHANNEL_0, ADC_CHANNEL_11, ADC_CHANNEL_10};
+    for (unsigned rank = 0; rank < 3; ++rank) {
         injected.InjectedRank = rank + 1;
         injected.InjectedChannel = channels[rank];
         if (HAL_ADCEx_InjectedConfigChannel(&adc_, &injected) != HAL_OK) return false;
     }
 
     ADC_ChannelConfTypeDef regular{};
-    regular.SamplingTime = ADC_SAMPLETIME_144CYCLES; // high-impedance NTC/pot
+    regular.SamplingTime = ADC_SAMPLETIME_144CYCLES; // high-impedance dividers/pot
     regular.Rank = 1;
-    regular.Channel = ADC_CHANNEL_12;
+    regular.Channel = ADC_CHANNEL_1;
     if (HAL_ADC_ConfigChannel(&adc_, &regular) != HAL_OK) return false;
     regular.Rank = 2;
+    regular.Channel = ADC_CHANNEL_12;
+    if (HAL_ADC_ConfigChannel(&adc_, &regular) != HAL_OK) return false;
+    regular.Rank = 3;
     regular.Channel = ADC_CHANNEL_4;
     if (HAL_ADC_ConfigChannel(&adc_, &regular) != HAL_OK) return false;
 
@@ -63,11 +67,13 @@ bool Stm32Adc::initializeHardware() noexcept {
     dma_.Init.FIFOMode = DMA_FIFOMODE_DISABLE;
     if (HAL_DMA_Init(&dma_) != HAL_OK) return false;
     __HAL_LINKDMA(&adc_, DMA_Handle, dma_);
-    if (HAL_ADC_Start_DMA(&adc_, reinterpret_cast<uint32_t*>(const_cast<uint16_t*>(regular_)), 2) != HAL_OK)
+    // Arm DMA once. Only SysTick starts the software-triggered single scans;
+    // circular DMA reloads its three slots but cannot initiate an ADC scan.
+    if (HAL_DMA_Start(&dma_, uint32_t(uintptr_t(&ADC1->DR)),
+                      uint32_t(uintptr_t(regular_dma_)), 3) != HAL_OK)
         return false;
-    __HAL_DMA_DISABLE_IT(&dma_, DMA_IT_HT | DMA_IT_TC);
-    HAL_NVIC_SetPriority(DMA2_Stream0_IRQn, 1, 0);
-    HAL_NVIC_EnableIRQ(DMA2_Stream0_IRQn);
+    SET_BIT(ADC1->CR2, ADC_CR2_DMA);
+    __HAL_ADC_ENABLE_IT(&adc_, ADC_IT_OVR);
     HAL_NVIC_SetPriority(ADC_IRQn, 1, 0);
     HAL_NVIC_EnableIRQ(ADC_IRQn);
     return HAL_ADCEx_InjectedStart_IT(&adc_) == HAL_OK;
@@ -78,10 +84,9 @@ bool Stm32Adc::captureInjected(uint32_t irq_started_cycles) noexcept {
     latest_[0] = ADC1->JDR1;
     latest_[1] = ADC1->JDR2;
     latest_[2] = ADC1->JDR3;
-    latest_[3] = ADC1->JDR4;
     if (second_pending_) {
         second_pending_ = false;
-        for (unsigned i = 0; i < 4; ++i) injected_[i] = first_[i] + latest_[i];
+        for (unsigned i = 0; i < 3; ++i) injected_[i] = first_[i] + latest_[i];
         MODIFY_REG(ADC1->CR2, ADC_CR2_JEXTEN, ADC_EXTERNALTRIGINJECCONVEDGE_FALLING);
     } else {
         frame_started_cycles_ = irq_started_cycles;
@@ -103,22 +108,21 @@ bool Stm32Adc::captureInjected(uint32_t irq_started_cycles) noexcept {
         previous_max_compare_ = highest;
         previous_period_ = period;
         if (room) {
-            for (unsigned i = 0; i < 4; ++i) first_[i] = latest_[i];
+            for (unsigned i = 0; i < 3; ++i) first_[i] = latest_[i];
             second_pending_ = true;
             CLEAR_BIT(ADC1->CR2, ADC_CR2_JEXTEN);
             SET_BIT(ADC1->CR2, ADC_CR2_JSWSTART);
             return false;
         }
-        // Fallback retains the same sum-of-two scaling and physical current/
-        // voltage units, without discarding half-LSB information in paired scans.
-        for (unsigned i = 0; i < 4; ++i) injected_[i] = INJECTED_SAMPLE_SUM * latest_[i];
+        // Fallback retains the same current sum scale, without discarding
+        // half-LSB information in paired scans.
+        for (unsigned i = 0; i < 3; ++i) injected_[i] = INJECTED_SAMPLE_SUM * latest_[i];
     }
 #else
     frame_started_cycles_ = irq_started_cycles;
     injected_[0] = ADC1->JDR1;
     injected_[1] = ADC1->JDR2;
     injected_[2] = ADC1->JDR3;
-    injected_[3] = ADC1->JDR4;
 #endif
     ++samples_;
     return true;
@@ -133,7 +137,42 @@ uint32_t Stm32Adc::getRawProtectionCurrent(PwmChannel phase) const noexcept {
     return index < 3 ? injected_[index] : 0;
 #endif
 }
-void Stm32Adc::startRegular() noexcept { SET_BIT(ADC1->CR2, ADC_CR2_SWSTART); }
+bool Stm32Adc::serviceRegular(uint32_t now_us) noexcept {
+    constexpr uint32_t dma_errors = DMA_LISR_TEIF0 | DMA_LISR_DMEIF0 | DMA_LISR_FEIF0;
+    const uint32_t dma_flags = DMA2->LISR;
+    if ((dma_flags & dma_errors) || (ADC1->SR & ADC_SR_OVR) ||
+        !(DMA2_Stream0->CR & DMA_SxCR_EN)) regular_failed_ = true;
+    if (regular_failed_) return false;
+
+    if (regular_pending_) {
+        if (!(dma_flags & DMA_LISR_TCIF0)) {
+            // This is the next scheduled SysTick, even if IRQ jitter makes its
+            // timestamp delta slightly less than 1 ms. A scan normally takes
+            // tens of microseconds; missing this cycle is a fault, not a wait.
+            regular_failed_ = true;
+            return false;
+        }
+        if (DMA2_Stream0->NDTR != 3 ||
+            uint32_t(now_us - regular_started_us_) > REGULAR_MAX_AGE_US) {
+            regular_failed_ = true;
+            return false;
+        }
+        __atomic_thread_fence(__ATOMIC_ACQUIRE);
+        const uint32_t next = regular_index_ ^ 1U;
+        regular_frames_[next] = {regular_dma_[0], regular_dma_[1], regular_dma_[2], regular_started_us_};
+        __atomic_store_n(&regular_index_, next, __ATOMIC_RELEASE);
+        regular_ready_ = true;
+    }
+
+    DMA2->LIFCR = DMA_LIFCR_CTCIF0 | DMA_LIFCR_CHTIF0;
+    regular_started_us_ = now_us;
+    regular_pending_ = true;
+    // The injected IRQ also writes CR2 (JEXTEN/JSWSTART for x2). Protect this
+    // single RMW, not the scan, against restoring a stale injected trigger.
+    CriticalSection lock;
+    SET_BIT(ADC1->CR2, ADC_CR2_SWSTART);
+    return true;
+}
 uint32_t Stm32Adc::getRawAdcValue(PwmChannel phase) {
     const unsigned index = static_cast<unsigned>(phase);
 #ifdef PWM_TIMING_BENCH
@@ -146,7 +185,7 @@ uint32_t Stm32Adc::getRawAdcValue() {
 #ifdef PWM_TIMING_BENCH
     return INJECTED_SAMPLE_SUM * f410_bench_inputs.bus_adc;
 #else
-    return injected_[3];
+    return INJECTED_SAMPLE_SUM * regularFrame().bus;
 #endif
 }
 bool Stm32Adc::offsetsPlausible() const noexcept {

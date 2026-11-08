@@ -26,11 +26,13 @@ uint16_t rx_index = 0;
 libecu::BldcController* controller = nullptr;
 libecu::CommandProcessor* console = nullptr;
 volatile bool control_enabled = false;
+volatile bool adc_running = false;
 volatile bool control_tick = false;
 bool uart_ready = false;
 uint32_t interrupt_depth = 0;
 uint32_t saved_primask = 0;
 int32_t zero_counts[3]{};
+uint32_t timing_entry_cycles = 0;
 constexpr int32_t CURRENT_TRIP_COUNTS =
     static_cast<int32_t>(libecu::Stm32Adc::INJECTED_SAMPLE_SUM * 25.0f * ihm08::SHUNT_OHMS *
                          ihm08::CURRENT_GAIN * 4095.0f / ihm08::ADC_REFERENCE);
@@ -224,7 +226,16 @@ extern "C" void board_adc_interrupt() {
     }
     if (!(flags & ADC_SR_JEOC)) return;
     ADC1->SR = ~(ADC_SR_JEOC | ADC_SR_JSTRT);
+    const bool timing = f410_timing_capture.remaining != 0;
+    const uint32_t entry_count = timing ? TIM1->CNT : 0;
+    const uint32_t entry_control = timing ? TIM1->CR1 : 0;
     const bool frame_ready = adc_driver.captureInjected(started);
+    if (timing && adc_driver.frameStartedCycles() == started) {
+        // TIM1 and the core both run at100 MHz. Capture the first JEOC phase,
+        // retaining it across an optional second scan. A CNT read after the
+        // DWT start makes entry+body slightly conservative by those few cycles.
+        timing_entry_cycles = entry_control & TIM_CR1_DIR ? TIM1->ARR - entry_count : TIM1->ARR + entry_count;
+    }
     // Inspect every conversion, including the first scan of an x2 frame:
     // averaging must not hide a short overcurrent pulse from software protection.
     if (controller && controller->getDriveMode() != libecu::DriveMode::NEUTRAL) {
@@ -237,6 +248,9 @@ extern "C" void board_adc_interrupt() {
     if (!frame_ready) return;
     ++f410_diagnostics.samples;
     if (!controller) return;
+    // This still runs if SysTick is lost: no drive on an uninitialized or stale
+    // auxiliary frame. Its timestamp is the scan launch, not DMA collection.
+    if (!adc_driver.regularFresh(time_us())) trip(ADC_FAILURE);
 #ifdef PWM_TIMING_BENCH
     // Exercise deferred Hall/PLL processing too (~5.95 mechanical RPS with MOTOR_1).
     // This extra work is included in timing, giving a conservative ISR estimate.
@@ -258,24 +272,40 @@ extern "C" void board_adc_interrupt() {
     }
     const uint32_t cycles = DWT->CYCCNT - adc_driver.frameStartedCycles();
     if (cycles > f410_diagnostics.max_current_loop_cycles) f410_diagnostics.max_current_loop_cycles = cycles;
-    const bool overrun = cycles >= SystemCoreClock / libecu::ActiveTiming::CURRENT_HZ || (ADC1->SR & ADC_SR_JEOC);
-    if (f410_timing_capture.remaining) {
+    const bool selected = f410_timing_capture.remaining &&
+        (!(f410_timing_capture.flags & F410_TIMING_DRIVE_ONLY) || (TIM1->BDTR & TIM_BDTR_MOE));
+    const bool record = selected && !f410_timing_capture.skip_frames;
+    if (selected && f410_timing_capture.skip_frames) --f410_timing_capture.skip_frames;
+    if (record) {
         f410_timing_capture.total_cycles += cycles;
         if (!f410_timing_capture.samples || cycles < f410_timing_capture.min_cycles)
             f410_timing_capture.min_cycles = cycles;
         if (cycles > f410_timing_capture.max_cycles) f410_timing_capture.max_cycles = cycles;
-        if (overrun) ++f410_timing_capture.overruns;
+        const uint32_t from_peak = timing_entry_cycles + cycles;
+        f410_timing_capture.entry_total_cycles += timing_entry_cycles;
+        if (!f410_timing_capture.samples || timing_entry_cycles < f410_timing_capture.entry_min_cycles)
+            f410_timing_capture.entry_min_cycles = timing_entry_cycles;
+        if (timing_entry_cycles > f410_timing_capture.entry_max_cycles)
+            f410_timing_capture.entry_max_cycles = timing_entry_cycles;
+        f410_timing_capture.peak_total_cycles += from_peak;
+        if (!f410_timing_capture.samples || from_peak < f410_timing_capture.peak_min_cycles)
+            f410_timing_capture.peak_min_cycles = from_peak;
+        if (from_peak > f410_timing_capture.peak_max_cycles) f410_timing_capture.peak_max_cycles = from_peak;
+        if (adc_driver.frameStartedCycles() != started) ++f410_timing_capture.paired_frames;
         ++f410_timing_capture.samples;
         --f410_timing_capture.remaining;
     }
+    // Include recorder bookkeeping in the existing whole-frame guard. The
+    // reported body/peak observations above end before this bookkeeping.
+    const bool overrun = DWT->CYCCNT - adc_driver.frameStartedCycles() >=
+                         SystemCoreClock / libecu::ActiveTiming::CURRENT_HZ || (ADC1->SR & ADC_SR_JEOC);
+    if (record && overrun) ++f410_timing_capture.overruns;
     if (overrun) {
         ++f410_diagnostics.overruns;
         trip(LOOP_OVERRUN);
     }
 }
 
-extern "C" void DMA2_Stream0_IRQHandler() { adc_driver.dmaInterrupt(); }
-extern "C" void HAL_ADC_ErrorCallback(ADC_HandleTypeDef*) { trip(ADC_FAILURE); }
 extern "C" void board_hall_timer_interrupt() {
     if (__HAL_TIM_GET_FLAG(&microseconds_timer, TIM_FLAG_CC1OF)) {
         ++f410_diagnostics.hall_overcaptures;
@@ -292,6 +322,7 @@ extern "C" void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef* timer) {
 extern "C" void board_systick() {
     static uint32_t divider = 0;
     static uint32_t last_samples = 0;
+    if (adc_running && !adc_driver.serviceRegular(time_us())) trip(ADC_FAILURE);
     if (!control_enabled || ++divider < 1000 / libecu::ActiveTiming::SPEED_HZ) return;
     divider = 0;
     const uint32_t samples = adc_driver.samples();
@@ -303,7 +334,6 @@ extern "C" void board_systick() {
     if (pwm_driver.faulted() && controller->getDriveMode() != libecu::DriveMode::NEUTRAL)
         controller->setDriveMode(libecu::DriveMode::NEUTRAL);
     controller->update();
-    adc_driver.startRegular();
     control_tick = true;
 }
 
@@ -367,8 +397,14 @@ public:
         VoltageSensorParameters voltage{float(ihm08::BUS_R_UP), float(ihm08::BUS_R_DOWN)};
         TemperatureSensorParameters temperature{4700.0f, 10000.0f, 3435.0f};
         if (!adc_driver.initialize(calibration, voltage, temperature) || !adc_driver.initializeHardware() ||
-            !pwm_driver.startTimebase()) return false;
+             !pwm_driver.startTimebase()) return false;
+        adc_running = true;
         HAL_Delay(100);
+        if (!adc_driver.regularFresh(time_us())) {
+            trip(ADC_FAILURE);
+            printf("ADC auxiliary scan failed; bridge latched OFF, console available\n");
+            return true;
+        }
         if (adc_driver.samples() < 100 || !adc_driver.offsetsPlausible() || !adc_driver.calibrateZeroOffset()) {
             trip(ADC_CALIBRATION);
             printf("ADC calibration failed: raw U/V/W=%lu/%lu/%lu; bridge latched OFF, console available\n",
@@ -425,7 +461,9 @@ public:
     bool brakeEngaged() noexcept override { return HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_13) == GPIO_PIN_RESET; }
     [[noreturn]] void fail() noexcept override { Error_Handler(); while (true) {} }
 private:
-    uint32_t readPot() noexcept { return pwm_driver.faulted() ? 0 : adc_driver.readRawPotentiometer(); }
+    uint32_t readPot() noexcept {
+        return pwm_driver.faulted() || !adc_driver.regularFresh(time_us()) ? 0 : adc_driver.readRawPotentiometer();
+    }
     BoardInfo info_{};
     uint32_t reported_faults_ = 0;
 };

@@ -8,6 +8,7 @@
 #include "control_timing.hpp"
 #include "numeric_profiles.hpp"
 #include "numeric_ops.hpp"
+#include "control_optimization.hpp"
 
 namespace libecu {
 
@@ -31,6 +32,12 @@ public:
     using Fraction = typename Profile::Fraction;
     using Params = HallMonitorParamsT<Profile>;
     using Clock = SampleClock<FrequencyHz>;
+    struct PreparedParameters {
+        Params params;
+        Fraction alpha;
+        Fraction keep;
+        uint32_t persistence_ticks;
+    };
     struct Info {
         Count invalid_score;
         Fraction erratic_score;
@@ -49,22 +56,42 @@ public:
         setParameters(Params{});
     }
 
-    /** @return false if the leaky-count range cannot cover the configured event window. */
-    bool setParameters(const Params& params) noexcept {
+    /** @brief Validate and calculate coefficients without accessing live monitor state.
+     *  @return false if the leaky-count range cannot cover the configured event window.
+     */
+    LIBECU_SLOW_PATH static bool prepareParameters(const Params& params, PreparedParameters& prepared) noexcept {
         const uint32_t tau = params.decay_time_us ? params.decay_time_us : 1000u;
         const uint64_t rate_window = uint64_t(FrequencyHz) * tau;
+        Fraction alpha{};
         if constexpr (!std::is_same<Count, float>::value) {
             constexpr uint64_t max_events = uint64_t(std::numeric_limits<typename Count::StorageType>::max())
                                            / Count::SCALE;
             if (rate_window > max_events * 1000000u) return false;
-            alpha_ = numericClamp(number<Fraction>(1000000, static_cast<int64_t>(rate_window)),
-                                  Fraction{}, number<Fraction>(1));
+            alpha = numericClamp(number<Fraction>(1000000, static_cast<int64_t>(rate_window)),
+                                 Fraction{}, number<Fraction>(1));
         } else {
-            alpha_ = 1000000.0f / (float(FrequencyHz) * tau);
+            alpha = 1000000.0f / (float(FrequencyHz) * tau);
         }
-        keep_ = numericClamp(number<Fraction>(1) - alpha_, Fraction{}, number<Fraction>(1));
-        params_ = params;
-        persistence_ticks_ = Clock::ticksFromUs(params.invalid_persist_time_us);
+        prepared = {params, alpha, numericClamp(number<Fraction>(1) - alpha, Fraction{}, number<Fraction>(1)),
+                    Clock::ticksFromUs(params.invalid_persist_time_us)};
+        return true;
+    }
+
+    /** @brief Publish configuration only; retain every event, score, timer and fault.
+     *  @note Caller serializes this bounded assignment with the sampling ISR.
+     */
+    void applyPrepared(const PreparedParameters& prepared) noexcept {
+        params_ = prepared.params;
+        alpha_ = prepared.alpha;
+        keep_ = prepared.keep;
+        persistence_ticks_ = prepared.persistence_ticks;
+    }
+
+    /** @brief Convenience for construction or callers already owning the monitor. */
+    bool setParameters(const Params& params) noexcept {
+        PreparedParameters prepared;
+        if (!prepareParameters(params, prepared)) return false;
+        applyPrepared(prepared);
         return true;
     }
 

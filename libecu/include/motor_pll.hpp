@@ -34,6 +34,7 @@ namespace libecu {
 class MotorPLL {
 public:
     using Core = MotorPLLCore<ActiveNumericProfile, ActiveTiming::CURRENT_HZ>;
+    using PreparedGains = Core::PreparedGains;
     Core::Angle getNativeAngle() const noexcept { return core_.getAngle(); }
     Core::Speed getNativeSpeedStepsSec() const noexcept { return core_.getSpeedStepsSec(); }
     uint8_t getHallStateRaw() const noexcept { return core_.getInfo().hall_state_raw; }
@@ -161,6 +162,10 @@ public:
      * @return false if a coefficient does not fit the active profile
      */
     bool setGains(float kp_base, float ki_base) noexcept;
+    /** @brief Validate and calculate gains outside the interrupt mask; transactional on failure. */
+    static bool prepareGains(float kp_base, float ki_base, PreparedGains& prepared) noexcept;
+    /** @brief Publish gains only; caller serializes with the sampling ISR. */
+    void applyPrepared(const PreparedGains& prepared) noexcept { core_.applyPrepared(prepared); }
 
     /**
      * @brief Get base PI gains

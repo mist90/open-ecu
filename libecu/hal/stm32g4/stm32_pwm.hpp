@@ -28,6 +28,9 @@ public:
     void updateNativeDutyCycle(NativeDuty u, NativeDuty v, NativeDuty w) override;
     void enable(bool enable) override;
     void apply() override;
+    /** @brief Latch an acquisition failure; MOE stays off until reset. */
+    void trip() noexcept;
+    bool faulted() const noexcept { return faulted_; }
 
     /**
      * @brief Dead time actually programmed into DTG, in nanoseconds
@@ -48,6 +51,7 @@ private:
     uint16_t dead_time_ns_;
     uint16_t actual_dead_time_ns_;   ///< What DTG really encodes; see the getter
     bool enabled_;
+    volatile bool faulted_ = false;
 
     /**
      * @brief Convert PWM channel to TIM channel
