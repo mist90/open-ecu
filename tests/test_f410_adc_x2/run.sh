@@ -25,7 +25,7 @@ for profile in float fixed; do
             -I../../STM32F410/Core/Inc -I../../libecu/include -I../../libecu/hal/stm32f4 \
             -isystem "$drivers/STM32F4xx_HAL_Driver/Inc" \
             -isystem "$drivers/CMSIS/Device/ST/STM32F4xx/Include" -isystem "$drivers/CMSIS/Include" \
-            main.cpp ../../libecu/hal/stm32f4/stm32_adc.cpp \
+            main.cpp ../../libecu/hal/stm32f4/stm32_adc.cpp ../../libecu/hal/stm32f4/stm32_pwm.cpp \
             -Wl,--gc-sections -o "$work/test-$profile-$x2"
         "$work/test-$profile-$x2"
     done

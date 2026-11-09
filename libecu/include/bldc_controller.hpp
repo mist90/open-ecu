@@ -338,6 +338,22 @@ public:
 
     /// @brief Currently selected electrical algorithm
     DriveAlgorithm getAlgorithm() const noexcept;
+    /** @brief Next active FOC's discarded phase, or -1 for other modes.
+     *  @note Read under the same IRQ ownership as pwmInterruptHandler(), before it runs.
+     */
+    int currentReconstructedPhase() const noexcept {
+        return algorithm_ == DriveAlgorithm::FOC && dmode_ != DriveMode::NEUTRAL
+            ? int(foc_.reconstructedPhase()) : -1;
+    }
+    /** @brief Set this current frame's FOC reconstruction choice without changing its raw samples.
+     *  @return false outside active FOC or for a phase outside U/V/W (0/1/2).
+     *  @note Caller qualifies both retained phases and owns the same IRQ as pwmInterruptHandler().
+     *        Call immediately before that handler; if the frame is aborted, park/reset the drive.
+     */
+    bool setCurrentReconstructedPhase(unsigned phase) noexcept {
+        return algorithm_ == DriveAlgorithm::FOC && dmode_ != DriveMode::NEUTRAL &&
+               foc_.setNextReconstructedPhase(phase);
+    }
 
     /**
      * @brief Set the FOC d/q current regulator gains
@@ -498,7 +514,22 @@ public:
      */
     void pwmInterruptHandler() noexcept;
 
-
+    /**
+     * @brief Keep Hall/PLL rotor feedback alive after the current loop has stopped
+     *
+     * Call at ActiveTiming::CURRENT_HZ only after the board has disabled the
+     * bridge, selected NEUTRAL and permanently stopped current acquisition and
+     * pwmInterruptHandler() until reset. Use the current ISR's priority/ownership:
+     * the two handlers must never run concurrently or both tick the same period.
+     * Hall interrupts must remain enabled; update() still publishes speed at the
+     * slow-loop rate. NEUTRAL reports signed speed in the physical Hall frame.
+     *
+     * Consumes real Hall events and advances the existing PLL without resetting
+     * a coasting rotor's estimate. Reads no ADC, runs no drive algorithm and
+     * makes no PWM calls. Ignored outside NEUTRAL; the board owns the fault latch
+     * that prevents re-arming the bridge or restarting acquisition.
+     */
+    void rotorObservationInterruptHandler() noexcept;
 
 private:
     /// @brief The algorithm currently selected, never null
@@ -543,8 +574,8 @@ private:
     volatile DriveMode dmode_;
     bool initialized_;
 
-    // Deferred Hall update (debounce via PWM ISR re-read)
-    volatile bool hall_update_pending_;      ///< Set by Hall ISR, processed by PWM ISR
+    // Deferred Hall update (re-read by the active current-rate handler)
+    volatile bool hall_update_pending_;      ///< Set by Hall ISR, consumed by current/observation ISR
 
     /**
      * @brief Voltage-mode duty request, 0.0 to 1.0
@@ -576,6 +607,9 @@ private:
 
     /// @brief Refresh physical Hall after a mode change/parking; caller holds CriticalSection.
     void synchronizeHallPosition(bool discard_tracking = false) noexcept;
+
+    /// @brief Age Hall health and consume a deferred reading; caller owns the current-rate ISR.
+    void observeHall(bool guard_active) noexcept;
 
     /**
      * @brief Apply acceleration/deceleration limits to target speed

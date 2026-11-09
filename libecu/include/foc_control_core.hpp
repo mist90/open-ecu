@@ -58,6 +58,7 @@ public:
         filter_d_.reset();
         filter_q_.reset();
         zero_current_idle_ = false;
+        next_reconstructed_phase_ = 3;
     }
     const Params& getParams() const noexcept { return params_; }
     /** @brief Set precomputed feedback coefficients, resetting both axes' histories. */
@@ -89,8 +90,26 @@ public:
         filter_d_.reset();
         filter_q_.reset();
         zero_current_idle_ = false;
+        next_reconstructed_phase_ = 3;
         const Duty zero = params_.low_side_clamped_pwm ? Duty{} : number<Duty>(1, 2);
         previous_ = {zero, zero, zero};
+    }
+
+    /** @brief Override one update's discarded phase after the board qualifies the other two.
+     *  @return false for a phase outside U/V/W (0/1/2), leaving any pending choice intact.
+     *  @note Caller owns the sampling ISR. Consumed by update(); reset/setParams cancel it.
+     */
+    bool setNextReconstructedPhase(unsigned phase) noexcept {
+        if (phase > 2) return false;
+        next_reconstructed_phase_ = static_cast<uint8_t>(phase);
+        return true;
+    }
+
+    /** @brief Next discarded phase: one-frame override, otherwise highest previous duty (U/V/W ties). */
+    unsigned reconstructedPhase() const noexcept {
+        if (next_reconstructed_phase_ < 3) return next_reconstructed_phase_;
+        if (previous_.u >= previous_.v && previous_.u >= previous_.w) return 0;
+        return previous_.v >= previous_.w ? 1u : 2u;
     }
 
     /** @brief Run one sample. Voltages and current magnitudes are physical SI values. */
@@ -98,9 +117,11 @@ public:
         const Angle angle = multiplyTo<Angle>(in.angle_steps, RAD_PER_STEP) + params_.angle_offset_rad;
         const auto rotation = Transforms::rotation(angle);
 
+        const unsigned reconstructed = reconstructedPhase();
+        next_reconstructed_phase_ = 3;
         Current u = -in.i_u, v = -in.i_v, w = -in.i_w;
-        if (previous_.u >= previous_.v && previous_.u >= previous_.w) u = -(v + w);
-        else if (previous_.v >= previous_.w) v = -(u + w);
+        if (reconstructed == 0) u = -(v + w);
+        else if (reconstructed == 1) v = -(u + w);
         else w = -(u + v);
         const auto dq = Transforms::park(Transforms::clarkeZeroSum(u, v, w), rotation);
         const Current filtered_d = filter_d_.update(dq.d, params_.current_filter);
@@ -219,6 +240,7 @@ private:
     typename Transforms::ModulationBus modulation_bus_{};
     bool bus_valid_ = false;
     bool zero_current_idle_ = false;
+    uint8_t next_reconstructed_phase_ = 3; // 3 selects the automatic duty-history rule.
     PhaseDutiesT<Duty> previous_{number<Duty>(1, 2), number<Duty>(1, 2), number<Duty>(1, 2)};
 };
 

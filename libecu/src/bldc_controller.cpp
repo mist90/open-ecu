@@ -706,10 +706,36 @@ BldcController::Speed BldcController::applyAccelerationLimit(Speed target_speed)
 
 LIBECU_HOT_LOOP void BldcController::hallSensorInterruptHandler() noexcept
 {
-    // Coalesce Hall events until the next PWM ISR. This does not guarantee
-    // a minimum settling time: an edge can arrive immediately before that ISR.
+    // Coalesce Hall events until the next current/observation ISR. This does not
+    // guarantee a minimum settling time: an edge can arrive immediately before it.
     // Input pulse rejection belongs to the board's Hall acquisition path.
     hall_update_pending_ = true;
+}
+
+LIBECU_HOT_LOOP void BldcController::observeHall(bool guard_active) noexcept {
+    // The health time base must keep running even without Hall edges, including
+    // when the board has replaced the current loop with observation-only ticks.
+    hall_monitor_.tick(guard_active);
+    if (hall_update_pending_) {
+        hall_update_pending_ = false;
+        // Share one decoded sample between the health monitor and the PLL.
+        // This alone does not qualify a raw GPIO transition as stable.
+        const uint8_t hall_state = hall_interface_.getPosition();
+        hall_monitor_.onPosition(hall_state, guard_active);
+        if (hall_state <= 5) {
+            CriticalSection cs;
+            status_.measured_position = hall_state;
+            motor_pll_.updateHall(hall_state);
+        }
+    }
+}
+
+LIBECU_HOT_LOOP void BldcController::rotorObservationInterruptHandler() noexcept {
+    if (dmode_ != DriveMode::NEUTRAL) return;
+    observeHall(false);
+    CriticalSection cs;
+    motor_pll_.updateTick();
+    status_.pll_angle = motor_pll_.getNativeAngle();
 }
 
 LIBECU_HOT_LOOP void BldcController::pwmInterruptHandler() noexcept {
@@ -721,10 +747,10 @@ LIBECU_HOT_LOOP void BldcController::pwmInterruptHandler() noexcept {
     // One snapshot of everything, taken once, handed to whichever algorithm is
     // selected. Neither algorithm reaches into hardware for measurements, so
     // they cannot disagree about what this PWM period looked like.
-    // ADC already converted all injected channels — reading registers adds no
-    // latency. All three shunts are read even in six-step, which uses one of
-    // them: the cost is two extra register reads and two conversions, and it
-    // is what lets the two algorithms share a single input path.
+    // The port already captured a coherent current frame and a complete,
+    // source-dated auxiliary measurement. These getters never wait for ADC.
+    // All three phase values are read even in six-step, so both algorithms
+    // share one calibrated input path independent of peripheral group choice.
     // Only the three measurement locals escape through the virtual ADC call.
     // Passing fields of a pre-zeroed full input makes GCC materialize/clear
     // the whole structure before that call, although every other field below
@@ -733,29 +759,9 @@ LIBECU_HOT_LOOP void BldcController::pwmInterruptHandler() noexcept {
     adc_interface_->readNativeCurrents(current_u, current_v, current_w);
     MotorAlgorithmInputT<Profile> in{current_u, current_v, current_w, adc_interface_->readNativeBusVoltage()};
 
-    // Hall health time base. Reads no hardware; it only decays the monitor's
-    // accumulators and ages a standing illegal code, both of which have to run
-    // on the PWM clock rather than on Hall events - those arrive at the
-    // commutation rate, which is exactly what is unreliable when a line breaks.
     const bool hall_controls_drive = status_.control_mode != ControlMode::OPEN_LOOP;
     const bool hall_guard_active = hall_controls_drive && dmode_ != DriveMode::NEUTRAL && status_.is_running;
-    hall_monitor_.tick(hall_guard_active);
-
-    // Process the board's deferred Hall reading.
-    if (hall_update_pending_) {
-        hall_update_pending_ = false;
-        // Share one decoded sample between the health monitor and the PLL.
-        // This alone does not qualify a raw GPIO transition as stable.
-        uint8_t hall_state = hall_interface_.getPosition();
-        hall_monitor_.onPosition(hall_state, hall_guard_active);
-        if (hall_state <= 5) {
-            {
-                CriticalSection cs;
-                status_.measured_position = hall_state;
-                motor_pll_.updateHall(hall_state);
-            }
-        }
-    }
+    observeHall(hall_guard_active);
 
     // Read shared data atomically (avoid torn reads from SysTick interrupt)
     Profile::Angle measured_angle{};

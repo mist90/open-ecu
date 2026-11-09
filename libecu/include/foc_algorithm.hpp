@@ -27,11 +27,10 @@
  *
  * ## Current sampling, which is the part that bites
  *
- * The ADC is triggered at the counter peak, in the middle of the window where
- * all three low-side switches are on, so all three shunts carry phase current
- * there. That window is (1 - duty) * PWM period wide, and SVPWM drives the
+ * The board supplies PWM-synchronized current samples and validates their
+ * low-side apertures. That window is (1 - duty) * PWM period wide, and SVPWM drives the
  * highest phase duty towards 1 as the modulation index rises: at 0.95 duty it
- * is 2.5 us, and the injected ADC sequence alone takes 1.79 us. The sample from
+ * is 2.5 us. The sample from
  * that one phase lands in or near a switching transient and is not to be
  * trusted.
  *
@@ -42,11 +41,12 @@
  * The alternative - tracking CCR4 with the duty, as VESC does - remains open if
  * two shunts are ever not enough.
  *
- * Note the sampling *order* is a separate, unfixed hazard: on this board U is
- * ADC1 rank 1, V is ADC2 rank 1 and W is ADC2 rank 2, so W is converted
- * roughly 0.9 us later than the other two and is the most exposed to a
- * shrinking window regardless of its duty. If bench data shows W misbehaving
- * at high modulation while U and V are clean, that ordering is the reason.
+ * Sampling order and skew are board-specific. The port must qualify every
+ * retained phase's aperture. reconstructedPhase() exposes the exact next
+ * discarded phase, including resets/ties, for guards that rely on two shunts;
+ * a highest-CCR guess alone does not describe this core's private history.
+ * A port that qualifies the other two phases can setNextReconstructedPhase()
+ * for that one frame. The following update returns to the duty-history rule.
  *
  * ## The angle offset, and why it is tunable
  *
@@ -168,6 +168,10 @@ struct FocParams {
 class FocAlgorithm final : public MotorAlgorithm {
 public:
     using Core = FocControlCore<ActiveNumericProfile, ActiveTiming::CURRENT_HZ>;
+    /** @brief Exact next FOC reconstruction identity, including resets of its private duty history. */
+    unsigned reconstructedPhase() const noexcept { return core_.reconstructedPhase(); }
+    /** @brief Select one frame's discarded phase; caller qualifies both retained phases and owns the ISR. */
+    bool setNextReconstructedPhase(unsigned phase) noexcept { return core_.setNextReconstructedPhase(phase); }
     Core::Output updateNative(const Core::Input& input) noexcept;
     /**
      * @brief Constructor

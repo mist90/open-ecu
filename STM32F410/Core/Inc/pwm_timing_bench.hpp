@@ -24,7 +24,7 @@ struct F410TimingCapture {
     uint32_t peak_total_cycles;
     uint32_t peak_max_cycles;
     uint32_t peak_min_cycles;
-    uint32_t paired_frames; // Completed on the second JEOC; remaining samples are single/fallback.
+    uint32_t paired_frames; // Current-only DMA frames containing two physical triples (no x1 fallback).
 };
 static_assert(sizeof(F410TimingCapture) == 60, "Update the F410 timing decoder");
 extern volatile F410TimingCapture f410_timing_capture;

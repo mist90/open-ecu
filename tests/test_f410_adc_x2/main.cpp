@@ -1,9 +1,10 @@
 /** @file main.cpp
- * @brief Exercise the actual F410 ADC HAL against anonymous fake MMIO pages
+ * @brief F410 real PWM setup and x1/x2 aperture qualification against anonymous MMIO
  */
 #include "stm32_adc.hpp"
+#include "stm32_pwm.hpp"
+#include "pwm_sampling_state.hpp"
 #include "board_config.hpp"
-#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <new>
@@ -11,134 +12,148 @@
 
 using namespace libecu;
 static int checks = 0, failures = 0;
-static void check(bool ok, const char* message) {
+static void check(bool ok, const char* why) {
     ++checks;
-    if (!ok) { ++failures; std::printf("FAIL: %s\n", message); }
+    if (!ok) { ++failures; std::printf("FAIL: %s\n", why); }
+}
+extern "C" {
+void HAL_GPIO_Init(GPIO_TypeDef*, GPIO_InitTypeDef*) {}
+void HAL_GPIO_WritePin(GPIO_TypeDef*, uint16_t, GPIO_PinState) {}
+void HAL_NVIC_SetPriority(IRQn_Type, uint32_t, uint32_t) {}
+void HAL_NVIC_EnableIRQ(IRQn_Type) {}
+HAL_StatusTypeDef HAL_TIM_PWM_Init(TIM_HandleTypeDef* timer) {
+    timer->Instance->CR1 = timer->Init.CounterMode;
+    timer->Instance->ARR = timer->Init.Period;
+    timer->Instance->PSC = timer->Init.Prescaler;
+    return HAL_OK;
+}
+HAL_StatusTypeDef HAL_TIM_PWM_ConfigChannel(TIM_HandleTypeDef* timer, const TIM_OC_InitTypeDef* oc, uint32_t channel) {
+    (&timer->Instance->CCR1)[channel / 4] = oc->Pulse;
+    return HAL_OK;
+}
+HAL_StatusTypeDef HAL_TIMEx_MasterConfigSynchronization(TIM_HandleTypeDef* timer, const TIM_MasterConfigTypeDef* master) {
+    timer->Instance->CR2 = master->MasterOutputTrigger;
+    return HAL_OK;
+}
+HAL_StatusTypeDef HAL_TIMEx_ConfigBreakDeadTime(TIM_HandleTypeDef*, const TIM_BreakDeadTimeConfigTypeDef* config) {
+    check(config->BreakState == TIM_BREAK_ENABLE && config->BreakPolarity == TIM_BREAKPOLARITY_LOW &&
+          config->AutomaticOutput == TIM_AUTOMATICOUTPUT_DISABLE, "asynchronous hardware break remains enabled");
+    return HAL_OK;
+}
+HAL_StatusTypeDef HAL_TIMEx_ConfigCommutEvent(TIM_HandleTypeDef*, uint32_t, uint32_t) { return HAL_OK; }
+HAL_StatusTypeDef HAL_TIM_GenerateEvent(TIM_HandleTypeDef*, uint32_t) { return HAL_OK; }
 }
 
-uint32_t time_us() { static uint32_t now = 0; return now += 100; }
-
-static void raw(uint32_t u = 2122, uint32_t v = 2120, uint32_t w = 2130, uint32_t bus = 2028) {
-    ADC1->JDR1 = u; ADC1->JDR2 = v; ADC1->JDR3 = w; ADC1->JDR4 = bus;
-    CLEAR_BIT(ADC1->CR2, ADC_CR2_JSWSTART); // Hardware clears the software-start request.
+static void compares(uint32_t highest) {
+    TIM1->CCR1 = highest; TIM1->CCR2 = 300; TIM1->CCR3 = 100;
 }
-
-static void timer(uint32_t compare = 500, uint32_t count = 2100, uint32_t period = 2500) {
-    TIM1->CR1 = TIM_CR1_CEN | TIM_CR1_DIR | TIM_COUNTERMODE_CENTERALIGNED1;
-    TIM1->PSC = 0;
-    TIM1->ARR = period;
-    TIM1->CCR1 = compare; TIM1->CCR2 = compare; TIM1->CCR3 = compare;
-    TIM1->CNT = count;
-}
-
-static void checkAcquisition() {
-    constexpr uint32_t sum = Stm32Adc::INJECTED_SAMPLE_SUM;
-    static_assert(sum == (STM32F4_ADC_SOFTWARE_X2 ? 2 : 1));
-    const uint32_t regular_bits = ADC_CR2_ADON | ADC_CR2_DMA | ADC_CR2_DDS | ADC_CR2_EXTEN_0;
-    ADC1->CR2 = regular_bits | ADC_EXTERNALTRIGINJECCONV_T1_TRGO |
-                ADC_EXTERNALTRIGINJECCONVEDGE_FALLING;
-    Stm32Adc adc;
-    CurrentSensorCalibration calibration{ihm08::SHUNT_OHMS, ihm08::CURRENT_GAIN, ihm08::ADC_REFERENCE, 12};
-    calibration.injected_sample_sum = sum;
-    check(adc.initialize(calibration, {float(ihm08::BUS_R_UP), float(ihm08::BUS_R_DOWN)}), "initialize SI scaling");
-    timer(); raw();
-    check(adc.captureInjected(10), "first frame falls back until PWM history is known");
-    check(adc.samples() == 1 && adc.frameStartedCycles() == 10, "one frame with matching timestamp");
-    check(adc.getRawAdcValue(PwmChannel::PHASE_U) == 2122*sum, "fallback uses the advertised sum scale");
-    check(adc.offsetsPlausible() && adc.calibrateZeroOffset(), "zero calibration works in either build mode");
-    check(std::fabs(adc.readPhaseCurrent(PwmChannel::PHASE_U)) < .001f, "zero remains zero after scaling");
-
-#if STM32F4_ADC_SOFTWARE_X2
-    raw(2122,2120,2130,2028);
-    check(!adc.captureInjected(100), "first JEOC starts a second scan without publishing");
-    check(adc.samples() == 1 && adc.getRawAdcValue(PwmChannel::PHASE_U) == 4244, "partial frame stays private");
-    check((ADC1->CR2 & ADC_CR2_JEXTEN) == 0 && (ADC1->CR2 & ADC_CR2_JSWSTART), "software scan is requested");
-    check((ADC1->CR2 & regular_bits) == regular_bits, "regular ADC/DMA configuration is preserved");
-    raw(2123,2121,2131,2029);
-    check(adc.captureInjected(550), "second JEOC publishes one coherent sum");
-    check(adc.samples() == 2 && adc.frameStartedCycles() == 100, "two IRQs are one control frame");
-    check(adc.getRawAdcValue(PwmChannel::PHASE_U) == 4245 &&
-          adc.getRawAdcValue(PwmChannel::PHASE_V) == 4241 &&
-          adc.getRawAdcValue(PwmChannel::PHASE_W) == 4261,
-          "all three current sums retain odd half-LSB results");
-    check(adc.getRawAdcValue() == 0, "obsolete JDR4 voltage data cannot leak into the regular cache");
-    check((ADC1->CR2 & ADC_CR2_JEXTEN) == ADC_EXTERNALTRIGINJECCONVEDGE_FALLING,
-          "PWM trigger is restored after the second scan");
-    const float expected_current = 0.5f*3.3f/(4095.0f*ihm08::SHUNT_OHMS*ihm08::CURRENT_GAIN);
-    check(std::fabs(adc.readPhaseCurrent(PwmChannel::PHASE_U)-expected_current) < .001f,
-          "half-count current is converted with the correct physical gain");
-
-    raw(4000);
-    check(!adc.captureInjected(1000), "overcurrent example starts a paired frame");
-    const int32_t limit = int32_t(25.0f*ihm08::SHUNT_OHMS*ihm08::CURRENT_GAIN*4095.0f/3.3f*sum);
-    const int32_t zero = 2122*sum;
-    check(int32_t(adc.getRawProtectionCurrent(PwmChannel::PHASE_U))-zero > limit,
-          "first-scan peak remains visible to protection before frame completion");
-    raw(2122);
-    check(adc.captureInjected(1450), "complete overcurrent example");
-    check(int32_t(adc.getRawAdcValue(PwmChannel::PHASE_U))-zero < limit,
-          "example average is below the threshold, so checking only the average would miss the peak");
-    raw(); check(!adc.captureInjected(1500), "start second-scan negative peak example");
-    raw(200); check(adc.captureInjected(1950), "complete second-scan negative peak example");
-    check(int32_t(adc.getRawProtectionCurrent(PwmChannel::PHASE_U))-zero < -limit,
-          "second-scan negative peak is also visible without averaging");
-    check(int32_t(adc.getRawAdcValue(PwmChannel::PHASE_U))-zero > -limit,
-          "averaging would also miss the second-scan negative peak");
-
-    timer(1700); raw();
-    check(adc.captureInjected(2000), "high duty skips the second scan");
-    check(adc.getRawAdcValue() == 0, "high-duty fallback leaves regular voltage alone");
-    timer(500); raw();
-    check(adc.captureInjected(3000), "high-to-low transition also requires the previous window to be valid");
-    check(!adc.captureInjected(4000), "next low-duty frame can use two scans");
-    raw(); check(adc.captureInjected(4450), "finish low-duty frame");
-    timer(500,950); raw();
-    check(adc.captureInjected(5000), "4.5-us boundary has no spare time and falls back");
-    timer(500,951); raw();
-    check(!adc.captureInjected(6000), "strictly larger remaining window allows the second scan");
-    raw(); check(adc.captureInjected(6450), "finish boundary frame");
-    timer(); TIM1->CR1 &= ~TIM_CR1_DIR; raw();
-    check(adc.captureInjected(7000), "up-counting is not a second-scan window");
-    timer(); TIM1->CR1 &= ~TIM_CR1_CEN; raw();
-    check(adc.captureInjected(8000), "stopped PWM timebase falls back");
-    timer(); TIM1->PSC = 1; raw();
-    check(adc.captureInjected(9000), "unqualified counter prescaler falls back");
-    timer(500,2100,2400); raw();
-    check(adc.captureInjected(10000), "period changes invalidate window history");
-    check(!adc.captureInjected(0xfffffff0U), "timestamp wrap frame starts");
-    raw(); check(adc.captureInjected(20), "timestamp wrap frame completes");
-    check(adc.frameStartedCycles() == 0xfffffff0U && uint32_t(20-adc.frameStartedCycles()) == 36,
-          "whole-frame timestamp survives counter wrap");
-    raw(); check(!adc.captureInjected(0), "zero is a valid first timestamp");
-    raw(); check(adc.captureInjected(450) && adc.frameStartedCycles() == 0, "zero timestamp is retained");
-#else
-    for (uint32_t n=0; n<6; ++n) {
-        timer(n%2 ? 1700 : 500); raw(2123,2121,2131,2029);
-        check(adc.captureInjected(100+n), "disabled x2 publishes on every JEOC");
-        check(adc.frameStartedCycles() == 100+n, "disabled x2 keeps the current IRQ timestamp");
-        check(adc.getRawAdcValue(PwmChannel::PHASE_U) == 2123 && adc.getRawAdcValue() == 0,
-              "disabled x2 preserves 12-bit current samples and leaves regular voltage alone");
-        check(!(ADC1->CR2 & ADC_CR2_JSWSTART), "disabled x2 never requests a second scan");
+static void timerSetup() {
+    Stm32Pwm pwm;
+    check(pwm.initialize(20000, ihm08::DEAD_TIME_NS), "production PWM initializes at 20 kHz");
+    check((TIM1->CR1 & TIM_CR1_CMS) == TIM_COUNTERMODE_CENTERALIGNED2 && !(TIM1->CR2 & TIM_CR2_CCDS),
+          "CC4 DMA is up-count compare only, not both slopes or update");
+    check(TIM1->CCR4 == TIM1->ARR - ihm08::ADC_LEAD_TICKS, "source remains 1 us before the PWM peak");
+    // RM0401 center-aligned CCxIF direction qualification, applied to the
+    // configuration produced by the real HAL. Model 20 complete carrier cycles.
+    unsigned requests = 0;
+    const uint32_t cms = TIM1->CR1 & TIM_CR1_CMS;
+    for (unsigned frame = 0; frame < 20; ++frame) {
+        for (uint32_t t = 0; t < 2 * TIM1->ARR; ++t) {
+            const bool down = t >= TIM1->ARR;
+            const uint32_t count = down ? 2 * TIM1->ARR - t : t;
+            if (count == TIM1->CCR4 &&
+                (cms == TIM_COUNTERMODE_CENTERALIGNED3 ||
+                 (down ? cms == TIM_COUNTERMODE_CENTERALIGNED1 : cms == TIM_COUNTERMODE_CENTERALIGNED2)))
+                ++requests;
+        }
     }
-    check(adc.samples() == 7, "disabled x2 frame counter advances once per conversion sequence");
-#endif
-    check(adc.getRawTemperatureAdcValue() == 0 && adc.readRawPotentiometer() == 0,
-          "injected publication does not overwrite regular-channel storage");
-    check(adc.getRawProtectionCurrent(static_cast<PwmChannel>(99)) == 0, "invalid protection channel is bounded");
-    check((ADC1->CR2 & regular_bits) == regular_bits, "regular ADC flags survive all paths");
+    check(requests == 20, "one CC4 hardware request per full PWM carrier");
+}
+
+static void aperture() {
+    // These direct-register fixtures do not emulate UIF/preload transfer. Test
+    // their legacy conservative path independently of the production PWM writer.
+    pwm_sampling_state = {};
+    constexpr unsigned sum = Stm32Adc::INJECTED_SAMPLE_SUM;
+    static_assert(sum == (STM32F4_ADC_SOFTWARE_X2 ? 2 : 1));
+    // Last-U aperture: subtract its SAR conversion and the two later ranks
+    // from the complete current scan. Auxiliary apertures are separate.
+    for (uint32_t compare = 700; compare < 2450; compare += 25) {
+        compares(compare);
+        Stm32Adc adc;
+        check(adc.beginFrames(0), "source can arm without depending on a nonzero timestamp");
+        const uint32_t closing = sum == 1 ? 60 : 384;
+        const bool expected = 2400 > compare + 300 && 5000 > 2400 + closing + compare;
+        check(adc.currentWindowValid() == expected, "guard covers settle and final current aperture at each duty");
+        check(adc.currentWindowValid(0),
+               "x1/x2 can exclude the explicitly reconstructed unique-highest U leg");
+        if (!expected) {
+            // Even if the controller requests a low duty next, the old active
+            // compare represented by the armed frame must still be rejected.
+            compares(700);
+            check(!adc.currentWindowValid(), "all-leg guard retains old per-phase PWM window history");
+        }
+    }
+    TIM1->CCR1 = 100; TIM1->CCR2 = 300; TIM1->CCR3 = 1999;
+    Stm32Adc adc;
+    check(adc.beginFrames(0xfffffff0U), "arm timestamp can straddle wrap");
+    check(adc.currentWindowValid(), "last count strictly inside x2 aperture accepted");
+    TIM1->CCR3 = 2000;
+    check(adc.currentWindowValid() == (sum == 1), "exact closing boundary has no slack and fails x2");
+    check(adc.currentWindowValid(2), "the exact reconstructed W phase can exclude that single invalid leg");
+    check(adc.currentWindowValid(0) == (sum == 1), "a different reconstruction choice cannot exclude W");
+    for (unsigned highest = 0; highest < 3; ++highest) {
+        uint32_t duties[3] = {0, 0, 0};
+        duties[highest] = 2375; // 95% is intentionally reconstructed by FOC
+        duties[(highest + 1) % 3] = 1000; // both consumed legs and both x2 samples fit
+        TIM1->CCR1 = duties[0]; TIM1->CCR2 = duties[1]; TIM1->CCR3 = duties[2];
+        Stm32Adc high_duty;
+        check(high_duty.beginFrames(0), "arm a high-duty reconstruction case");
+        check(!high_duty.currentWindowValid(), "unqualified/default consumer cannot use a bad shunt sample");
+        check(high_duty.currentWindowValid(int(highest)),
+               "x1/x2 keep valid 95%-highest reconstruction in every phase/rank");
+        check(!high_duty.currentWindowValid(int((highest + 1) % 3)),
+               "a different post-reset reconstruction choice cannot exempt the bad leg");
+        (&TIM1->CCR1)[(highest + 1) % 3] = 2350;
+        check(!high_duty.currentWindowValid(int(highest)),
+               "reconstructing the highest leg never excuses a second invalid consumed leg");
+    }
+    TIM1->CCR1 = TIM1->CCR2 = 2375; TIM1->CCR3 = 0;
+    Stm32Adc tied;
+    check(tied.beginFrames(0) && !tied.currentWindowValid(0) && !tied.currentWindowValid(1),
+           "two narrow high-duty windows cannot be rescued by a tied highest-leg choice");
+    check(tied.currentInvalidPhases() == 3,
+           "both invalid legs remain explicit: single-phase reconstruction cannot repair two");
+    TIM1->CCR1 = TIM1->CCR2 = 1000;
+    Stm32Adc wide_tied;
+    check(wide_tied.beginFrames(0) && wide_tied.currentWindowValid(),
+           "ties are harmless when all three sampled apertures are qualified");
+    TIM1->RCR = 1;
+    check(!wide_tied.currentWindowValid(), "a skipped peak reload cannot qualify a duty generation");
+    Stm32Adc skipped_reload;
+    check(!skipped_reload.beginFrames(0), "nonzero repetition counter cannot arm the peak-generation proof");
+    TIM1->RCR = 0;
+    SET_BIT(TIM1->CR1, TIM_CR1_UDIS);
+    check(!wide_tied.currentWindowValid(), "in-progress duty write cannot qualify the sampling window");
+    Stm32Adc masked_reload;
+    check(!masked_reload.beginFrames(0), "suppressed updates cannot arm the next duty generation");
+    CLEAR_BIT(TIM1->CR1, TIM_CR1_UDIS);
+    TIM1->PSC = 1;
+    Stm32Adc bad_clock;
+    check(!bad_clock.beginFrames(0), "unqualified prescaler fails closed rather than changing aperture units");
+    TIM1->PSC = 0;
+    MODIFY_REG(TIM1->CR1, TIM_CR1_CMS, TIM_COUNTERMODE_CENTERALIGNED3);
+    Stm32Adc double_trigger;
+    check(!double_trigger.beginFrames(0), "both-slope compare configuration cannot arm acquisition");
+    check(!(TIM1->DIER & TIM_DIER_CC4DE), "failed qualification stops the trigger request source");
 }
 
 int main() {
-    // Only anonymous process memory is mapped: no debugger or physical device access.
-    constexpr std::size_t bytes = 0x4000;
-    void* area = mmap(reinterpret_cast<void*>(TIM1_BASE), bytes, PROT_READ|PROT_WRITE,
-                      MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED_NOREPLACE, -1, 0);
-    if (area == MAP_FAILED) { std::perror("fake peripheral mapping"); return EXIT_FAILURE; }
-    new (reinterpret_cast<void*>(TIM1_BASE)) TIM_TypeDef{};
-    new (reinterpret_cast<void*>(ADC1_BASE)) ADC_TypeDef{};
-    checkAcquisition();
-    munmap(area,bytes);
-    std::printf("F410 ADC %s, x2=%d: %d checks, %d failures\n",
-                CONTROL_PROFILE_NAME, STM32F4_ADC_SOFTWARE_X2, checks, failures);
+    void* mmio = mmap(reinterpret_cast<void*>(0x40010000), 0x20000, PROT_READ | PROT_WRITE,
+                      MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
+    if (mmio == MAP_FAILED) { std::perror("anonymous MMIO"); return EXIT_FAILURE; }
+    timerSetup(); aperture();
+    std::printf("F410 PWM/regular aperture %s x%u: %d checks, %d failures\n",
+                CONTROL_PROFILE_NAME, Stm32Adc::INJECTED_SAMPLE_SUM, checks, failures);
     return failures ? EXIT_FAILURE : EXIT_SUCCESS;
 }

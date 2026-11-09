@@ -1,7 +1,8 @@
 /** @file stm32_pwm.cpp
- * @brief IHM08M1 complementary PWM, break shutdown and injected-ADC trigger
+ * @brief IHM08M1 complementary PWM, break shutdown and regular-ADC trigger
  */
 #include "stm32_pwm.hpp"
+#include "pwm_sampling_state.hpp"
 #include "board_config.hpp"
 #include <cmath>
 #include <initializer_list>
@@ -35,7 +36,8 @@ bool Stm32Pwm::initialize(uint32_t frequency, uint16_t dead_time_ns) {
     __HAL_RCC_TIM1_CLK_ENABLE();
     timer_.Instance = TIM1;
     timer_.Init.Prescaler = 0;
-    timer_.Init.CounterMode = TIM_COUNTERMODE_CENTERALIGNED1;
+    // CMS=2: CC4 DMA request only on the UP-counting match, once per carrier.
+    timer_.Init.CounterMode = TIM_COUNTERMODE_CENTERALIGNED2;
     timer_.Init.Period = period_;
     timer_.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
     timer_.Init.RepetitionCounter = 0;
@@ -52,8 +54,8 @@ bool Stm32Pwm::initialize(uint32_t frequency, uint16_t dead_time_ns) {
     for (uint32_t channel : {TIM_CHANNEL_1, TIM_CHANNEL_2, TIM_CHANNEL_3}) {
         if (HAL_TIM_PWM_ConfigChannel(&timer_, &oc, channel) != HAL_OK) return false;
     }
-    // OC4REF falls once per full period, 1 us BEFORE the centre of all-low time.
-    // ADC JEXTSEL=TIM1_TRGO, falling edge; CH4 is internal, PA11 stays Hi-Z (BKIN net!).
+    // CC4 requests a one-word DMA write to ADC SWSTART, 1 us BEFORE the peak.
+    // CH4 is internal: PA11 stays Hi-Z (BKIN net!). CCDS stays zero.
     oc.Pulse = period_ - ihm08::ADC_LEAD_TICKS;
     if (HAL_TIM_PWM_ConfigChannel(&timer_, &oc, TIM_CHANNEL_4) != HAL_OK) return false;
     TIM_MasterConfigTypeDef master{};
@@ -72,6 +74,11 @@ bool Stm32Pwm::initialize(uint32_t frequency, uint16_t dead_time_ns) {
         HAL_TIMEx_ConfigCommutEvent(&timer_, TIM_TS_NONE, TIM_COMMUTATION_SOFTWARE) != HAL_OK) return false;
     setNeutral();
     __HAL_TIM_MOE_DISABLE_UNCONDITIONALLY(&timer_);
+    // Establish real zero shadows, including on reinitialization. A preload
+    // write alone does not change the active compare before an update event.
+    if (HAL_TIM_GenerateEvent(&timer_, TIM_EVENTSOURCE_UPDATE) != HAL_OK) return false;
+    TIM1->SR = ~uint32_t(TIM_SR_UIF);
+    pwm_sampling_state.reset();
 
     GPIO_InitTypeDef gpio{};
     gpio.Mode = GPIO_MODE_AF_PP;
@@ -84,7 +91,7 @@ bool Stm32Pwm::initialize(uint32_t frequency, uint16_t dead_time_ns) {
     gpio.Pin = GPIO_PIN_6; // TIM1_BKIN, shield R78, comparator outputs active low
     gpio.Pull = GPIO_NOPULL;
     HAL_GPIO_Init(GPIOA, &gpio);
-    __HAL_TIM_CLEAR_FLAG(&timer_, TIM_FLAG_BREAK);
+    __HAL_TIM_CLEAR_FLAG(&timer_, uint32_t(TIM_FLAG_BREAK));
     __HAL_TIM_ENABLE_IT(&timer_, TIM_IT_BREAK);
     HAL_NVIC_SetPriority(TIM1_BRK_TIM9_IRQn, 0, 0);
     HAL_NVIC_EnableIRQ(TIM1_BRK_TIM9_IRQn);
@@ -118,6 +125,11 @@ void Stm32Pwm::updateNativeDutyCycle(NativeDuty u, NativeDuty v, NativeDuty w) {
     const uint32_t cw = dutyToCompare(numericClamp(w, NativeDuty{}, maximum), period_);
     // Block only the reload, not the running counter/OC4REF ADC trigger.
     SET_BIT(TIM1->CR1, TIM_CR1_UDIS);
+    const bool update_seen = (TIM1->SR & TIM_SR_UIF) != 0;
+    const PwmSamplingState::Compare live{{TIM1->CCR1, TIM1->CCR2, TIM1->CCR3}};
+    pwm_sampling_state.observeUpdate(update_seen, live);
+    TIM1->SR = ~uint32_t(TIM_SR_UIF); // W0C: preserve break/compare flags.
+    pwm_sampling_state.recordWrite({{cu, cv, cw}});
     TIM1->CCR1 = cu;
     TIM1->CCR2 = cv;
     TIM1->CCR3 = cw;

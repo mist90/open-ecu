@@ -25,7 +25,7 @@ struct CurrentSensorCalibration {
     float offset_voltage_u = 0.0f;
     float offset_voltage_v = 0.0f;
     float offset_voltage_w = 0.0f;
-    uint16_t injected_sample_sum = 1;
+    uint16_t injected_sample_sum = 1; // Legacy name: phase samples per PWM frame, independent of ADC group.
 };
 struct VoltageSensorParameters { float r_up; float r_down; };
 
@@ -39,9 +39,11 @@ struct TemperatureSensorParameters {
 /**
  * @brief Raw hardware plus typed current/voltage/temperature conversion
  *
- * Current and bus readings share the configured sum scale; regular Vbus is
- * scaled by the port at the cached getter boundary. Regular
- * NTC/throttle readings retain the physical ADC resolution. The float-facing
+ * Current and bus readings share the configured sum scale. A PWM-triggered
+ * DMA frame contains each original phase sample. The latest complete auxiliary
+ * scan supplies Vbus (source-dated by the port, possibly one carrier older);
+ * the port scales it at the getter boundary. NTC/throttle are coherent slow
+ * snapshots and retain the physical ADC resolution. The float-facing
  * methods adapt existing callers; readNative* exposes the conversion core's
  * types directly to a profile-parametric control loop.
  */
@@ -88,11 +90,11 @@ public:
         return true;
     }
 
-    /** @return Injected phase sum, including injected_sample_sum scaling. */
+    /** @return Phase sum of one complete PWM frame, including injected_sample_sum scaling. */
     virtual uint32_t getRawAdcValue(PwmChannel channel) = 0;
-    /** @return Cached DC bus value at the same sum scale as phase readings. */
+    /** @return Latest complete DC bus value at phase sum scale; port enforces its acquisition age. */
     virtual uint32_t getRawAdcValue() = 0;
-    /** @return Last complete regular NTC sample; the port enforces readiness/freshness. */
+    /** @return SysTick-published NTC code; the port enforces readiness/freshness. */
     virtual uint32_t getRawTemperatureAdcValue() = 0;
 
     /** @return Signed phase current, positive out of the phase into its low-side shunt. */

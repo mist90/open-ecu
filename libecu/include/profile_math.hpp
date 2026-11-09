@@ -55,17 +55,24 @@ public:
         const uint32_t reciprocal = UINT32_MAX / (divisor >> shift);
         const uint32_t initial = reciprocal << (16u - shift);
         constexpr uint64_t numerator = uint64_t(1) << 48;
-        const int64_t error = int64_t(uint64_t(initial) * divisor) - int64_t(numerator);
+        const int64_t error = fixed_detail::wideProduct(static_cast<int32_t>(initial), bus.raw()) -
+                              int64_t(numerator);
         // The product is bounded by 2^50. Split off its high word before the
         // variable shift, avoiding a general 64-bit shift on 32-bit targets.
         const int32_t correction_high = static_cast<int32_t>((error * reciprocal) >> 32);
         const int32_t correction = correction_high >> shift;
         uint32_t quotient = static_cast<uint32_t>(int32_t(initial) - correction);
-        uint64_t product = uint64_t(quotient) * divisor;
-        if (product > numerator) { --quotient; product -= divisor; }
-        if (numerator - product >= divisor) { ++quotient; product += divisor; }
-        const uint32_t remainder = static_cast<uint32_t>(numerator - product);
-        quotient += remainder >= divisor - remainder;
+        // For x=2^48/divisor and p=reciprocal/2^(32+shift), Newton gives
+        // ceil(x - x*(divisor*p-1)^2). |divisor*p-1|<2^-15 and x<=2^30,
+        // so the subtracted error is <1: quotient is floor(x) or ceil(x).
+        // Thus the residual is strictly between -divisor and divisor and
+        // fits int32. Its low word suffices; the numerator's low word is zero.
+        int32_t remainder = static_cast<int32_t>(0u - quotient * divisor);
+        if (remainder < 0) {
+            --quotient;
+            remainder += static_cast<int32_t>(divisor);
+        }
+        quotient += static_cast<uint32_t>(remainder) >= divisor - static_cast<uint32_t>(remainder);
         return Fraction::fromRaw(static_cast<int32_t>(quotient));
     }
 

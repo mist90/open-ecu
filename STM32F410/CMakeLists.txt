@@ -10,7 +10,7 @@ endif()
 
 option(ENABLE_THROTTLE_BRAKE_CONTROL "Use IHM08M1 potentiometer and Nucleo B1 brake" OFF)
 option(ENABLE_PWM_TIMING_BENCH "Synthetic sensors with MOE permanently OFF for ISR timing" OFF)
-option(ENABLE_ADC_SOFTWARE_X2 "Window-qualified injected ADC x2 sampling in the F410 HAL" ON)
+option(ENABLE_ADC_SOFTWARE_X2 "Two phase triples in each PWM-triggered regular DMA frame (legacy option name)" ON)
 set(NUMERIC_PROFILE "float" CACHE STRING "Control arithmetic: float or fixed")
 set_property(CACHE NUMERIC_PROFILE PROPERTY STRINGS float fixed)
 if(NOT NUMERIC_PROFILE MATCHES "^(float|fixed)$")

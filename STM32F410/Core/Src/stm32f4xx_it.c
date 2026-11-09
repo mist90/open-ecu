@@ -16,6 +16,10 @@ void SysTick_Handler(void) {
     board_systick();
 }
 void ADC_IRQHandler(void) { board_adc_interrupt(); }
+void board_adc_dma_interrupt(void);
+void DMA2_Stream0_IRQHandler(void) { board_adc_dma_interrupt(); }
+void DMA2_Stream4_IRQHandler(void) { board_adc_interrupt(); }
 void TIM1_BRK_TIM9_IRQHandler(void) { board_break_interrupt(); }
+void TIM1_CC_IRQHandler(void) { board_rotor_observation_interrupt(); }
 void TIM5_IRQHandler(void) { board_hall_timer_interrupt(); }
 /* USER CODE END IRQ */

@@ -197,6 +197,10 @@ bool Stm32Pwm::initialize(uint32_t frequency, uint16_t dead_time_ns) {
         return false;
     }
 
+    // PWM HAL start above also starts CNT. Keep the trigger source stopped
+    // until both independent ADCs/DMAs are armed; no half-initialized first scan.
+    CLEAR_BIT(TIM1->CR1, TIM_CR1_CEN);
+    TIM1->CNT = 0;
     return true;
 }
 

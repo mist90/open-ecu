@@ -221,6 +221,48 @@ static void testBusCache() {
     check(exact, "cached FOC bus values exactly match recomputation through bus/parameter changes and resets");
 }
 
+template<class P>
+static void testReconstructionIdentity() {
+    using Core = FocControlCore<P, 20000>;
+    using C = typename P::Current;
+    unsigned seen = 0;
+    for (bool clamped : {false, true}) {
+        Core core;
+        typename Core::Params params;
+        params.low_side_clamped_pwm = clamped;
+        core.setParams(params);
+        core.reset();
+        check(core.reconstructedPhase() == 0, "reset history uses the exact U-first tie rule");
+        typename Core::Input in;
+        in.bus_voltage = number<typename P::Voltage>(48);
+        in.duty_command = number<typename P::Duty>(3, 10);
+        in.drive_mode = DriveMode::FORWARD;
+        in.electric_mode = ElectricMode::VOLTAGE_MODE;
+        in.i_u = number<C>(9, 10); in.i_v = number<C>(-4, 10); in.i_w = number<C>(-5, 10);
+        for (unsigned tick = 0; tick < 240; ++tick) {
+            in.angle_steps = number<typename P::Angle>(tick, 40);
+            core.update(in);
+            if (tick % 37 == 0) core.reset(); // Reset need not match live hardware CCR history.
+            const unsigned ignored = core.reconstructedPhase();
+            check(ignored < 3, "reported reconstruction identity is a physical phase");
+            seen |= 1u << ignored;
+            auto reference = core, changed = core, retained = core;
+            auto altered = in, other = in;
+            C* phases[] = {&altered.i_u, &altered.i_v, &altered.i_w};
+            C* other_phases[] = {&other.i_u, &other.i_v, &other.i_w};
+            *phases[ignored] += number<C>(123);
+            *other_phases[(ignored + 1) % 3] += number<C>(1);
+            const auto a = reference.update(in), b = changed.update(altered), c = retained.update(other);
+            check(a.i_d == b.i_d && a.i_q == b.i_q && a.measured_current == b.measured_current &&
+                  a.duty_u == b.duty_u && a.duty_v == b.duty_v && a.duty_w == b.duty_w,
+                  "reported phase is actually discarded by the next update");
+            check(a.i_d != c.i_d || a.i_q != c.i_q,
+                  "a retained measurement remains observable through the same update");
+        }
+    }
+    check(seen == 7, "behavioral reconstruction checks exercised U, V and W");
+}
+
 int main() {
     testExactIntegerMath();
     testBoundedRotation();
@@ -228,6 +270,8 @@ int main() {
     testLowSideClamped<FixedProfile>();
     testBusCache<FloatProfile>();
     testBusCache<FixedProfile>();
+    testReconstructionIdentity<FloatProfile>();
+    testReconstructionIdentity<FixedProfile>();
     using P = FixedProfile;
     using M = P::Math;
     using T = FocTransforms<P>;

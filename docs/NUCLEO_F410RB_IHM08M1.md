@@ -184,9 +184,9 @@ CCxE/CCxNE, is not valid for this driver. The programmed TIM1 dead time is
 
 | Phase | Low-side and analog signal path | MCU |
 |---|---|---|
-| U | Q12 → SENS1 → J5=3Sh → R43 10 mΩ → GND; Vshunt_1 → R2/R1 → U10A → R3 → Curr_fdbk1 → R47 → CN7.28 | PA0 / ADC1_IN0, injected rank 1 |
-| V | Q8 → SENS2/Vshunt_2 → R44 10 mΩ → GND; R7/R6 → U10B → R8 → Curr_fdbk2 → R48 → CN7.36 | PC1 / ADC1_IN11, rank 2 |
-| W | Q10 → SENS3 → J6=3Sh → R45 10 mΩ → GND; Vshunt_3 → R13/R12 → U10C → R14 → Curr_fdbk3 → R50 → CN7.38 | PC0 / ADC1_IN10, rank 3 |
+| U | Q12 → SENS1 → J5=3Sh → R43 10 mΩ → GND; Vshunt_1 → R2/R1 → U10A → R3 → Curr_fdbk1 → R47 → CN7.28 | PA0 / ADC1_IN0, regular ranks 1/4 (×2) |
+| V | Q8 → SENS2/Vshunt_2 → R44 10 mΩ → GND; R7/R6 → U10B → R8 → Curr_fdbk2 → R48 → CN7.36 | PC1 / ADC1_IN11, regular ranks 2/5 (×2) |
+| W | Q10 → SENS3 → J6=3Sh → R45 10 mΩ → GND; Vshunt_3 → R13/R12 → U10C → R14 → Curr_fdbk3 → R50 → CN7.38 | PC0 / ADC1_IN10, regular ranks 3/6 (×2) |
 
 With JP1/JP2 closed:
 
@@ -196,9 +196,9 @@ Vzero = 3.3 × 680/(6800+680) × 5.7 ≈ 1.710 V ≈ 2122 counts
 I = (raw - zero) × 3.3 / (4095 × 0.010 × G)
 ```
 
-These formulas use single-conversion counts. With the default software x2,
-the HAL publishes sums of two (`0..8190`), including `2*raw` for a single-scan
-fallback. Calibration, physical current/Vbus conversion and software
+These formulas use single-conversion counts. With the default regular-DMA x2,
+the HAL publishes sums of two (`0..8190`). Both triples belong to one hardware
+sequence; no single-scan fallback remains. Calibration, physical current/Vbus conversion and software
 protection account for that factor automatically. NTC and pot remain `0..4095`.
 
 At startup the firmware averages the real zero of every phase with the
@@ -213,9 +213,9 @@ the shunt; FOC converts that sign into its own phase-current convention.
 
 | Signal | Path | MCU / use |
 |---|---|---|
-| Vbus | J1.1 → R17 169 kΩ → VBUS_SENS/VBUS; R18 9.31 kΩ to GND, C14 4.7 nF → R51 → CN7.30 | PA1 / ADC1_IN1, regular rank 1 |
-| Temperature | 3.3V → R19 NTC 10 kΩ → temperature feedback → R20 4.7 kΩ → GND; C10 10 nF → R54 → CN7.35 | PC2 / ADC1_IN12, regular rank 2 |
-| Potentiometer | R42 wiper / SPEED → R181 → CN7.32 | PA4 / ADC1_IN4, regular rank 3 |
+| Vbus | J1.1 → R17 169 kΩ → VBUS_SENS/VBUS; R18 9.31 kΩ to GND, C14 4.7 nF → R51 → CN7.30 | PA1 / ADC1_IN1, injected auxiliary rank 1 |
+| Temperature | 3.3V → R19 NTC 10 kΩ → temperature feedback → R20 4.7 kΩ → GND; C10 10 nF → R54 → CN7.35 | PC2 / ADC1_IN12, injected auxiliary rank 2 |
+| Potentiometer | R42 wiper / SPEED → R181 → CN7.32 | PA4 / ADC1_IN4, injected auxiliary rank 3 |
 | Button B1 | VDD → R30 4.7 kΩ → SB17/PC13; B1 shorts to GND | PC13, active LOW |
 
 Vbus = raw × 3.3 / 4095 × (169000+9310)/9310, ratio ≈ 19.153. The BOM NTC
@@ -315,39 +315,37 @@ These matter even with a fixed pin map:
 | HCLK / APB2 | 100 MHz / 100 MHz |
 | APB1 / TIM5CLK | 50 MHz / 100 MHz (doubled because the APB prescaler is 2) |
 | TIM1 | PSC=0, ARR=2500, RCR=0, center-aligned → 20 kHz |
-| TIM1 CH4 | CCR4=2400, PWM1, TRGO=OC4REF, falling edge |
-| ADC1 | APB2/4 = 25 MHz, 12 bit, U/V/W injected, 15-cycle sampling |
-| DMA2 Stream0 Channel0 | Vbus/NTC/pot, circular, three halfwords; regular scan started by 1-kHz SysTick |
+| TIM1 CH4 | CCR4=2400, CMS2/CCDS0, one up-count compare DMA request |
+| ADC1 | APB2/4 = 25 MHz, 12 bit; regular currents15-cycle, pipelined injected auxiliaries144-cycle sampling |
+| DMA2 Stream0 Channel0 | Normal current DMA: six halfwords (×2) / three (×1); one TC control IRQ |
+| DMA2 Stream4 Channel6 | Normal one-word TIM1_CH4 → ADC_CR2 SWSTART trigger bridge; error IRQ only |
 | TIM5 | PSC=99, ARR=0xFFFFFFFF, 1 MHz counter; Hall XOR/IC1 with CKD=DIV2, IC1F=0xF |
 | SysTick | 1 kHz HAL tick, divided by 10 for the 100 Hz speed loop |
-| IRQ priorities | BKIN=0; ADC=1; Hall TIM5=2; SysTick=3; no regular-DMA IRQ |
+| IRQ priorities | BKIN=0; DMA/ADC errors=1; Hall TIM5=2; SysTick=3 |
 
 The TIM5 slave reset is disabled (`SMS=0`): Hall captures do not reset CNT,
 so `time_us()` stays a monotonic 32-bit microsecond counter. CKD divides
 only the digital-filter clock, not the counter rate. CH2/CH3 of TIM5 are
 inputs to the XOR only and are never enabled as outputs.
 
-The ADC is triggered **once per full PWM period**, by the falling OC4REF
-while counting up, 1 µs before the CNT peak. The three current conversions
-take about 3×(15+12)/25 MHz = **3.24 µs**, plus a small trigger synchronization.
-Software x2 is enabled by
-default: the first JEOC snapshots U/V/W and starts another injected
-scan when the low-side window permits. The second JEOC publishes their sums
-and runs the controller once. There is still one control frame per 50 µs.
-
-Pairing and trigger switching are entirely inside `Stm32Adc`. Both previous
-and current duties must be below 60%, the timer period must be unchanged,
-and TIM1 must be running down with PSC=0 and more than 450 ticks left before
-the largest compare. Otherwise one scan publishes `2*raw`, keeping identical
-scaling. The first frame and high-to-low duty transitions also use this
-fallback. Overcurrent checks inspect each unaveraged scan before the control
-update.
+The ADC is triggered **once per full PWM period**, by a CC4 hardware DMA write
+of SWSTART. The compare is 1 µs before the CNT peak; regular EXTSEL on F410
+cannot select TIM1_TRGO/CH4 directly. No CPU start ISR is involved.
+One regular sequence contains `U,V,W[,U,V,W]`. Its complete DMA IRQ checks
+the frame and every original current sample, consumes the previous complete
+injected `Vbus,NTC,pot` group, and manually starts the next auxiliary group
+before running control once per50 µs. There is no software start of a second
+current triple and no auxiliary completion IRQ.
+The old `ENABLE_ADC_SOFTWARE_X2` name remains compatible, with ON default.
+Fixed x2 rejects an insufficient current aperture instead of falling back;
+both duty generations participate. See the exact source, aperture and lifetime
+contract in [ADC_REGULAR.md](../STM32F410/ADC_REGULAR.md).
 
 Unlike the G431, the currents are sampled sequentially, with no internal
 PGA and no hardware oversampling. Each current's sample-and-hold aperture
 is 15/25 MHz = 0.60 µs; successive apertures start 1.08 µs apart. Relative
-to the counter peak, U/V/W sampling starts at −1.00/+0.08/+1.16 µs, plus
-up to 0.13 µs trigger latency (DS11144: three ADC clocks and one APB2 clock).
+to the nominal CC4 event, U/V/W sampling starts at0/+1.08/+2.16 µs, plus
+the hardware DMA-write/ADC synchronization latency, which needs measurement.
 
 FOC uses **low-side-clamped space-vector modulation (DPWMMIN)**: subtracting
 the lowest phase reference from all three references preserves the
@@ -360,17 +358,29 @@ For a circular voltage vector at 95% modulation, the two lower duties never
 exceed `sqrt(3)/2 × 0.95 ≈ 0.82273`. Each retained shunt therefore has at
 least 8.86 µs of low-side window. Even the earliest aperture starts after
 the 1 µs dead time and the 2 µs settling budget (UM1996 T-noise + T-rise);
-the latest aperture ends before its low-side switch turns off.
+the latest x1 aperture ends before its low-side switch turns off. The extended
+x2 sequence has a stricter checked envelope, so this x1 reconstruction
+calculation is not an x2 qualification. Apertures use fixed datasheet timings
+(3.24/6.48 us conversion scans), with hardware launch delay treated as negligible;
+CPU/IRQ latency belongs to the separate control deadline. An x1 reconstruction
+exemption uses the exact phase selected by the next FOC update and a matching
+unique CCR maximum; ambiguous ties/another invalid phase are rejected. In x2,
+each physical triple is reconstructed from its own two qualified shunts before
+averaging. The discarded phase may differ between triples; two invalid phases
+within the same triple still stop acquisition. Original ADC codes remain intact.
 
 The voltage-vector limit is applied before modulation, so the current
 regulators' anti-windup uses the same available voltage range as the PWM
 outputs. These settings are supplied by the board through `BoardInfo`.
 
-Vbus, NTC and potentiometer use a separate three-rank DMA regular sequence with
-144-cycle sampling. SysTick collects the previous complete scan and starts the
-next at1 kHz; the injected group preempts it. Readers return coherent cached
-values without waiting. Launch-time freshness is bounded at2500 µs, and a
-missing DMA completion faults at the next tick. The HAL tick stays at1 ms.
+Vbus, NTC and potentiometer are one separate, fixed injected sequence launched
+from the current DMA IRQ. Its18.72-µs conversion runs in parallel with CPU work;
+the current-only regular sequence takes3.24/6.48 µs in ×1/×2. Current control
+uses the previous complete Vbus measurement on every PWM, approximately one
+carrier old. Source timestamps are retained; zero/uncompleted startup data are
+not published. SysTick only snapshots NTC/pot and calculates slow thermal state.
+No ADC launch or waiting occurs in SysTick.
+Acquisition/source age and slow-service progress have independent watchdogs.
 See [the regular-acquisition contract](../STM32F410/ADC_REGULAR.md).
 
 `AT+SPD` specifies mechanical RPS for VELOCITY or the OPEN_LOOP field;
@@ -383,11 +393,11 @@ loop; the virtual field never overwrites them.
 
 `f410_diagnostics` is reachable over SWD:
 
-* `samples`: number of complete control frames, not individual injected scans;
-* `max_current_loop_cycles`: maximum first-JEOC-to-controller/OSC completion
-interval, including the second-scan gap when software x2 is used;
-* `overruns`: the whole-frame guard, including recorder bookkeeping, reaches
-  5000 cycles or finds a new JEOC pending on exit;
+* `samples`: number of complete DMA/control frames;
+* `max_current_loop_cycles`: maximum complete-frame DMA-entry-to-controller/OSC
+  completion interval; acquisition time is additional;
+* `overruns`: source-relative acquisition/control budget is exceeded; DMA TC
+  does not restart the carrier deadline;
 * `faults`: bitmask — 1=BKIN, 2=|I|>25 A, 4=Vbus<10 V, 8=ADC/DMA/stale,
   16=ISR overrun, 32=out-of-range NTC while driving, 64=current-input
   calibration failed;
@@ -396,10 +406,18 @@ interval, including the second-scan gap when software x2 is used;
   the decoded Hall edge count published in HSTATUS.
 
 On any hardware fault the console prints `Board fault mask ...`; the bridge
-stays latched off until reset. The 5000-cycle budget is the full 50 µs PWM
-period.
+stays latched off until reset. The DMA/source guard reserves3 µs before the
+next50-µs source event.
+
+After an ADC failure/overrun stops acquisition, TIM1 CC4 supplies a separate
+20-kHz observation-only interrupt. Hall/PLL processing continues through the
+real coast-down, so UART speed remains live. ADC/control stay disabled and
+NEUTRAL is enforced until reset; the other ADC values are retained fault data.
 
 ### Measured current-loop timing after the SysTick migration (2026-11-08)
+
+**Historical injected-ADC firmware.** These measurements predate the unified
+regular-DMA refactor and do not qualify its new control/actuation latency.
 
 NUCLEO-F410RB, ST-LINK `066EFF535752877167082532`, about40.5 V,95 RPM, FOC,
 current mode, stock F410 gains2.1991/2067.1680 and speed PI2/2. Each variant

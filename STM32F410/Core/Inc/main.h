@@ -11,6 +11,7 @@ extern "C" {
 void Error_Handler(void);
 void board_adc_interrupt(void);
 void board_break_interrupt(void);
+void board_rotor_observation_interrupt(void);
 void board_hall_timer_interrupt(void);
 void board_systick(void);
 int board_console_write(const char* data, int length);
