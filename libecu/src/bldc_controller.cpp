@@ -141,6 +141,7 @@ const MotorAlgorithm& BldcController::algorithm() const noexcept
 
 LIBECU_SLOW_PATH bool BldcController::initialize() noexcept
 {
+    cancelPwmInterruptHandler();
     pwm_interface_.setNeutral();
     if (!parameters_valid_ || !pi_speed_controller_.isConfigured() || !six_step_.isCurrentPiConfigured())
         return false;
@@ -192,8 +193,8 @@ LIBECU_SLOW_PATH void BldcController::update() noexcept
     }
 
     // ---- Thermal protection -----------------------------------------------
-    // Convert the last complete regular-ADC snapshot at the slow-loop rate.
-    // Acquisition is owned by each board's SysTick/DMA pipeline; this read never
+    // Convert the last complete auxiliary snapshot at the slow-loop rate.
+    // Acquisition is owned by each board's sampling pipeline; this read never
     // starts a conversion or waits for it. The board enforces readiness/freshness.
     //
     // Runs whether or not the motor is running: a drive that has just been
@@ -357,6 +358,7 @@ void BldcController::setControlMode(ControlMode mode) noexcept
 {
     CriticalSection cs;
     if (status_.control_mode != mode) {
+        cancelPwmInterruptHandler();
         const bool from_open_loop = status_.control_mode == ControlMode::OPEN_LOOP;
         status_.control_mode = mode;
         if (from_open_loop) {
@@ -381,6 +383,7 @@ bool BldcController::setElectricMode(ElectricMode mode) noexcept
     const PiParameters& tuning = mode == ElectricMode::VOLTAGE_MODE
                                ? params_.pi_voltage_mode : params_.pi_current_mode;
     if (!pi_speed_controller_.setParameters(tuning)) return false;
+    cancelPwmInterruptHandler();
     status_.electric_mode = mode;
     pi_speed_controller_.reset();
 
@@ -396,6 +399,7 @@ void BldcController::setAlgorithm(DriveAlgorithm new_algorithm) noexcept
     if (algorithm_ == new_algorithm) {
         return;
     }
+    cancelPwmInterruptHandler();
 
     // Hand the bridge over. The outgoing algorithm's integrators are cleared
     // so it cannot resume from a state that belonged to a different
@@ -467,6 +471,7 @@ LIBECU_HOT_LOOP void BldcController::setDriveMode(DriveMode mode) noexcept
         algorithm().reset();
         filtered_measured_current_ = Current{};
     } else {
+        cancelPwmInterruptHandler();
         if (was_neutral) {
             synchronizeHallPosition();
             if (status_.control_mode == ControlMode::OPEN_LOOP)
@@ -594,6 +599,7 @@ void BldcController::start() noexcept
     status_.is_running = true;
 
     CriticalSection cs;
+    cancelPwmInterruptHandler();
     synchronizeHallPosition(true);
     open_loop_.seed(motor_pll_.getNativeAngle());
 
@@ -627,6 +633,7 @@ void BldcController::start() noexcept
 void BldcController::stop() noexcept
 {
     CriticalSection cs;
+    cancelPwmInterruptHandler();
     status_.is_running = false;
     status_.duty_cycle = Duty{};
     duty_command_ = Duty{};
@@ -726,6 +733,11 @@ LIBECU_HOT_LOOP void BldcController::observeHall(bool guard_active) noexcept {
             CriticalSection cs;
             status_.measured_position = hall_state;
             motor_pll_.updateHall(hall_state);
+        } else {
+            // Recheck an illegal GPIO code on the next control/observation tick.
+            // A brief glitch must not look continuously illegal merely because
+            // no further filtered Hall edge arrives during the hold timer.
+            hall_update_pending_ = true;
         }
     }
 }
@@ -739,56 +751,57 @@ LIBECU_HOT_LOOP void BldcController::rotorObservationInterruptHandler() noexcept
 }
 
 LIBECU_HOT_LOOP void BldcController::pwmInterruptHandler() noexcept {
-    // Check if current controller and ADC are available
-    if (!adc_interface_) {
-        return;
-    }
+    preparePwmInterruptHandler();
+    completePwmInterruptHandler();
+}
 
-    // One snapshot of everything, taken once, handed to whichever algorithm is
-    // selected. Neither algorithm reaches into hardware for measurements, so
-    // they cannot disagree about what this PWM period looked like.
-    // The port already captured a coherent current frame and a complete,
-    // source-dated auxiliary measurement. These getters never wait for ADC.
-    // All three phase values are read even in six-step, so both algorithms
-    // share one calibrated input path independent of peripheral group choice.
-    // Only the three measurement locals escape through the virtual ADC call.
-    // Passing fields of a pre-zeroed full input makes GCC materialize/clear
-    // the whole structure before that call, although every other field below
-    // is assigned before the algorithm sees it.
-    Current current_u{}, current_v{}, current_w{};
-    adc_interface_->readNativeCurrents(current_u, current_v, current_w);
-    MotorAlgorithmInputT<Profile> in{current_u, current_v, current_w, adc_interface_->readNativeBusVoltage()};
+LIBECU_HOT_LOOP void BldcController::preparePwmInterruptHandler() noexcept {
+    if (!adc_interface_ || pwm_prepared_) return;
 
-    const bool hall_controls_drive = status_.control_mode != ControlMode::OPEN_LOOP;
-    const bool hall_guard_active = hall_controls_drive && dmode_ != DriveMode::NEUTRAL && status_.is_running;
+    prepared_hall_controls_drive_ = status_.control_mode != ControlMode::OPEN_LOOP;
+    const bool hall_guard_active = prepared_hall_controls_drive_ &&
+                                   dmode_ != DriveMode::NEUTRAL && status_.is_running;
     observeHall(hall_guard_active);
 
     // Read shared data atomically (avoid torn reads from SysTick interrupt)
-    Profile::Angle measured_angle{};
+    auto& in = prepared_pwm_input_;
     {
         CriticalSection cs;
         in.electric_mode = status_.electric_mode;
         in.target_current = status_.target_current;
         in.duty_command = duty_command_;
+        in.drive_mode = dmode_;
         motor_pll_.updateTick();
-        measured_angle = motor_pll_.getNativeAngle();
+        prepared_pwm_measured_angle_ = motor_pll_.getNativeAngle();
         if (status_.control_mode == ControlMode::OPEN_LOOP) {
-            if (status_.is_running) open_loop_.advance(dmode_);
-            in.step = open_loop_.step(dmode_, params_.useInverseCommTable);
+            if (status_.is_running) open_loop_.advance(in.drive_mode);
+            in.step = open_loop_.step(in.drive_mode, params_.useInverseCommTable);
             in.angle_steps = open_loop_.angle();
-            in.speed_steps_s = status_.is_running ? open_loop_.speed(dmode_) : Profile::PllSpeed{};
+            in.speed_steps_s = status_.is_running ? open_loop_.speed(in.drive_mode) : Profile::PllSpeed{};
         } else {
-            in.step = motor_pll_.getNextHall(dmode_);
-            in.angle_steps = measured_angle;
+            in.step = motor_pll_.getNextHall(in.drive_mode);
+            in.angle_steps = prepared_pwm_measured_angle_;
             in.speed_steps_s = motor_pll_.getNativeSpeedStepsSec();
         }
+        pwm_prepared_ = true;
     }
-    in.drive_mode = dmode_;
+}
+
+LIBECU_HOT_LOOP void BldcController::completePwmInterruptHandler() noexcept {
+    if (!pwm_prepared_) return;
+    pwm_prepared_ = false;
+
+    // The board has now published one coherent current frame and a complete,
+    // source-dated auxiliary measurement. Fill the reusable input in place:
+    // no copy/clearing of the prepared command and rotor fields in this stage.
+    auto& in = prepared_pwm_input_;
+    adc_interface_->readNativeCurrents(in.i_u, in.i_v, in.i_w);
+    in.bus_voltage = adc_interface_->readNativeBusVoltage();
 
     // Hall health. The monitor latches, so unlike the old PLL rule this does
     // not re-assert every cycle; it has to be cleared explicitly once the
     // wiring is dealt with.
-    if (hall_controls_drive && hall_monitor_.isFaulted() && dmode_ != DriveMode::NEUTRAL) {
+    if (prepared_hall_controls_drive_ && hall_monitor_.isFaulted() && dmode_ != DriveMode::NEUTRAL) {
         setDriveMode(DriveMode::NEUTRAL);
     }
 
@@ -802,7 +815,7 @@ LIBECU_HOT_LOOP void BldcController::pwmInterruptHandler() noexcept {
     // worth having. The base class still exists for the non-ISR paths
     // (reset/onEnter), where clarity is worth more than cycles.
     const MotorAlgorithmOutputT<Profile> out = [&]() -> MotorAlgorithmOutputT<Profile> {
-        if (dmode_ == DriveMode::NEUTRAL) {
+        if (dmode_ == DriveMode::NEUTRAL || in.drive_mode == DriveMode::NEUTRAL) {
             // Do not run the current regulators against an inactive bridge.
             MotorAlgorithmOutputT<Profile> parked{};
             parked.angle_e_rad = multiplyTo<Profile::Angle>(in.angle_steps, FocAlgorithm::Core::RAD_PER_STEP);
@@ -822,7 +835,7 @@ LIBECU_HOT_LOOP void BldcController::pwmInterruptHandler() noexcept {
 
     {
         CriticalSection cs;
-        // Report a filtered current: the raw value is a single ADC sample per
+        // Report a filtered current: the raw value is one current-frame value per
         // PWM cycle, and sampling that at 100 Hz aliases the chopping ripple
         // into the telemetry. Control and +OSC keep the raw value.
         const Fraction i_alpha = limits_.current_alpha;
@@ -839,7 +852,7 @@ LIBECU_HOT_LOOP void BldcController::pwmInterruptHandler() noexcept {
         status_.duty_v = out.duty_v;
         status_.duty_w = out.duty_w;
         status_.bus_voltage = in.bus_voltage;
-        status_.pll_angle = measured_angle;
+        status_.pll_angle = prepared_pwm_measured_angle_;
         status_.current_pi_saturation = out.saturation;
         status_.target_position = in.step;
         status_.i_d = out.i_d;

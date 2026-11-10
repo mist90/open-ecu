@@ -778,7 +778,10 @@ class CurrentWaveformTab(QWidget):
     # (index, meas_mA, tgt_mA, duty%, position, id_mA, iq_mA, angle_deg_e)
     def __init__(self, write_callback=None):
         super().__init__()
-        self._osc_samples: list[tuple[int, int, int, int, int, int, int, int]] = []
+        self._osc_samples: dict[int, tuple[int, ...]] = {}
+        self._osc_bad_lines = 0
+        self._osc_duplicates = 0
+        self._osc_incomplete_bursts = 0
         self._osc_active = False
         self._write = write_callback
         self._init_ui()
@@ -846,10 +849,13 @@ class CurrentWaveformTab(QWidget):
         layout.addWidget(scroll, stretch=1)
 
         self.label_status = QLabel("Waiting for +OSC burst...")
+        self.label_status.setWordWrap(True)
         self.label_status.setStyleSheet("color: #888;")
         layout.addWidget(self.label_status, alignment=Qt.AlignmentFlag.AlignCenter)
 
     def _toggle_capture(self):
+        # OSC=0 abandons an unfinished firmware burst without a terminator.
+        self._clear_burst()
         if not self._osc_active:
             self._osc_active = True
             self.btn_capture.setText("Stop OSC")
@@ -867,78 +873,134 @@ class CurrentWaveformTab(QWidget):
                 self._write(cmd.encode("ascii"))
 
 
-    def reset(self):
+    def _clear_burst(self):
         self._osc_samples.clear()
+        self._osc_bad_lines = 0
+        self._osc_duplicates = 0
+
+    def reset(self):
+        self._clear_burst()
+        self._osc_incomplete_bursts = 0
         for curve in (self.curve_meas_cur, self.curve_tgt_cur, self.curve_id,
                       self.curve_iq, self.curve_angle, self.curve_duty,
                       self.curve_position):
             curve.setData([], [])
         self.label_status.setText("Waiting for +OSC burst...")
+        self.label_status.setStyleSheet("color: #888;")
 
     def add_data(self, sample_idx: int, meas_cur: int, tgt_cur: int, duty: int,
                  position: int, i_d: int = 0, i_q: int = 0, angle_e: int = 0):
-        self._osc_samples.append((sample_idx, meas_cur, tgt_cur, duty, position,
-                                  i_d, i_q, angle_e))
-        if len(self._osc_samples) > OSC_BUFFER_SIZE + 64:
-            self._osc_samples = self._osc_samples[-OSC_BUFFER_SIZE:]
+        if not 0 <= sample_idx < OSC_BUFFER_SIZE:
+            self._osc_bad_lines += 1
+            return
+        if self._osc_samples and sample_idx < next(reversed(self._osc_samples)):
+            # The terminator (or OSC=0) may have cut off the previous burst.
+            # Never sort samples from two acquisitions into one waveform.
+            self.finish_burst(terminated=False)
+        if sample_idx in self._osc_samples:
+            self._osc_duplicates += 1
+            return
+        self._osc_samples[sample_idx] = (meas_cur, tgt_cur, duty, position,
+                                       i_d, i_q, angle_e)
 
-    def finish_burst(self):
+    @staticmethod
+    def _missing_ranges(indices):
+        ranges = []
+        for index in indices:
+            if ranges and index == ranges[-1][1] + 1:
+                ranges[-1][1] = index
+            else:
+                ranges.append([index, index])
+        labels = [str(a) if a == b else f"{a}–{b}" for a, b in ranges[:6]]
+        if len(ranges) > 6:
+            labels.append("…")
+        return ", ".join(labels)
+
+    def finish_burst(self, terminated=True):
         if not self._osc_samples:
-            self.label_status.setText("Empty burst received")
+            if self._osc_bad_lines:
+                self.label_status.setText(f"Invalid OSC burst: {self._osc_bad_lines} malformed lines")
+                self.label_status.setStyleSheet("color: #ff8844;")
+            self._clear_burst()
             return
 
-        self._osc_samples.sort(key=lambda x: x[0])
         n = len(self._osc_samples)
-        x = np.array([s[0] for s in self._osc_samples], dtype=np.float64)
-        meas_cur = np.array([s[1] / 1000.0 for s in self._osc_samples], dtype=np.float64)
-        tgt_cur = np.array([s[2] / 1000.0 for s in self._osc_samples], dtype=np.float64)
-        duty = np.array([s[3] / 100.0 for s in self._osc_samples], dtype=np.float64)
-        position = np.array([s[4] for s in self._osc_samples], dtype=np.float64)
-        i_d = np.array([s[5] / 1000.0 for s in self._osc_samples], dtype=np.float64)
-        i_q = np.array([s[6] / 1000.0 for s in self._osc_samples], dtype=np.float64)
-        angle_e = np.array([s[7] for s in self._osc_samples], dtype=np.float64)
+        missing = [i for i in range(OSC_BUFFER_SIZE) if i not in self._osc_samples]
+        # A sparse x array joins the two sides of a lost UART chunk with a
+        # plausible-looking straight line. Keep the sample clock and put holes
+        # in every channel instead; pyqtgraph must not bridge those NaNs.
+        x = np.arange(OSC_BUFFER_SIZE, dtype=np.float64)
+        values = np.full((OSC_BUFFER_SIZE, 7), np.nan)
+        for index, sample in self._osc_samples.items():
+            values[index] = sample
+        values /= np.array([1000, 1000, 100, 1, 1000, 1000, 1])
+        meas_cur, tgt_cur, duty, position, i_d, i_q, angle_e = values.T
 
-        self.curve_meas_cur.setData(x, meas_cur)
-        self.curve_tgt_cur.setData(x, tgt_cur)
-        self.curve_id.setData(x, i_d)
-        self.curve_iq.setData(x, i_q)
-        self.curve_duty.setData(x, duty)
-        self.curve_position.setData(x, position)
-        self.curve_angle.setData(x, angle_e)
+        for curve, channel in (
+            (self.curve_meas_cur, meas_cur), (self.curve_tgt_cur, tgt_cur),
+            (self.curve_id, i_d), (self.curve_iq, i_q),
+            (self.curve_duty, duty), (self.curve_position, position),
+            (self.curve_angle, angle_e),
+        ):
+            curve.setData(x, channel, connect="finite")
 
-        x_range = (x[0], x[-1] + 10)
+        x_range = (0, OSC_BUFFER_SIZE - 1 + 10)
         for plot in (self.plot_currents, self.plot_angle, self.plot_duty,
                      self.plot_position):
             plot.setXRange(*x_range)
 
+        problems = []
+        if missing:
+            problems.append(f"missing {len(missing)} ({self._missing_ranges(missing)})")
+        if self._osc_bad_lines:
+            problems.append(f"malformed {self._osc_bad_lines}")
+        if self._osc_duplicates:
+            problems.append(f"duplicates {self._osc_duplicates}")
+        if not terminated:
+            problems.append("missing end marker")
+        self._clear_burst()
+        if problems:
+            self._osc_incomplete_bursts += 1
+            self.label_status.setText(
+                f"Incomplete OSC: {n}/{OSC_BUFFER_SIZE} samples | "
+                + " | ".join(problems) + " | statistics unavailable"
+            )
+            self.label_status.setStyleSheet("color: #ff8844;")
+            return
+
         # Ripple is the number worth reading off this view, so put it in the
         # status line rather than making people eyeball it.
         sd = float(np.std(meas_cur))
+        error_rms = float(np.sqrt(np.mean((meas_cur - tgt_cur) ** 2)))
         extra = ""
         if np.any(i_q != 0.0):
             extra = (f" | Id {i_d.mean():+.3f} A  Iq {i_q.mean():+.3f} A"
                      f" (sd {float(np.std(i_q)):.4f})")
         self.label_status.setText(
-            f"OSC burst: {n} samples | measured {meas_cur.mean():+.3f} A "
-            f"sd {sd:.4f}{extra}")
+            f"OSC burst: {n}/{OSC_BUFFER_SIZE} samples | measured {meas_cur.mean():+.3f} A "
+            f"sd {sd:.4f} A | error RMS {error_rms:.4f} A{extra}"
+            f" | incomplete bursts: {self._osc_incomplete_bursts}")
+        self.label_status.setStyleSheet("color: #888;")
 
     def add_line(self, line: str):
-        if line == "":
+        if line in ("", "+OSC:"):
             self.finish_burst()
-            self._osc_samples.clear()
             return
         if line.startswith("+OSC:"):
             rest = line[5:]
             parts = rest.split(",")
             # 5 fields is pre-FOC firmware; 8 adds Id, Iq and the electrical
             # angle. Accept either so an older board still plots.
-            if len(parts) >= 5:
-                try:
-                    vals = [int(p) for p in parts[:8]]
-                except ValueError:
-                    return
-                vals += [0] * (8 - len(vals))
-                self.add_data(*vals)
+            if len(parts) not in (5, 8):
+                self._osc_bad_lines += 1
+                return
+            try:
+                vals = [int(p) for p in parts]
+            except ValueError:
+                self._osc_bad_lines += 1
+                return
+            vals += [0] * (8 - len(vals))
+            self.add_data(*vals)
 
 
 class ATConsoleTab(QWidget):

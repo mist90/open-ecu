@@ -22,9 +22,7 @@ void HAL_SYSTICK_Callback(void);
 
 extern TIM_HandleTypeDef htim1;
 extern TIM_HandleTypeDef htim4;
-/* USER CODE BEGIN AdcDeclarations */
-extern void board_adc_error_interrupt(void);
-/* USER CODE END AdcDeclarations */
+extern DMA_HandleTypeDef hdma_adc1;
 
 /******************************************************************************/
 /*           Cortex-M4 Processor Interruption and Exception Handlers          */
@@ -131,22 +129,39 @@ void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim)
 }
 
 /**
-  * @brief ADC2 current-only completion; ADC1's auxiliary tail keeps running.
+  * @brief This function handles TIM1 update interrupt and TIM16 global interrupt.
+  *        Used for high-frequency current control loop (20kHz)
   */
-void DMA1_Channel2_IRQHandler(void)
+void TIM1_UP_TIM16_IRQHandler(void)
 {
-    /* USER CODE BEGIN DMA1_Channel2_IRQn */
+    /* USER CODE BEGIN TIM1_UP_TIM16_IRQn 0 */
 #ifdef BENCH_PROFILING
     const uint32_t started = bench_pwm_irq_begin();
 #endif
-    motor_controller_pwm_interrupt_handler();
+    /* USER CODE END TIM1_UP_TIM16_IRQn 0 */
+    HAL_TIM_IRQHandler(&htim1);
+    /* USER CODE BEGIN TIM1_UP_TIM16_IRQn 1 */
 #ifdef BENCH_PROFILING
     bench_pwm_irq_end(started);
 #endif
-    /* USER CODE END DMA1_Channel2_IRQn */
+    /* USER CODE END TIM1_UP_TIM16_IRQn 1 */
 }
 
-/* USER CODE BEGIN ADC1_2_IRQn */
-void DMA1_Channel1_IRQHandler(void) { board_adc_error_interrupt(); }
-void ADC1_2_IRQHandler(void) { board_adc_error_interrupt(); }
-/* USER CODE END ADC1_2_IRQn */
+/**
+  * @brief TIM1 period elapsed callback (called at PWM frequency, 20kHz)
+  * @param htim: Timer handle
+  */
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+    if (htim->Instance == TIM1) {
+        // In center-aligned mode, update event fires twice per PWM period:
+        // 1. At CNT=ARR (overflow, counting down) - ADC conversion is complete
+        // 2. At CNT=0 (underflow, counting up) - ADC conversion not yet triggered
+        // Process only when counting DOWN (after overflow) to read fresh ADC values
+        // Check DIR bit in CR1: 0=upcounting, 1=downcounting
+        if (htim->Instance->CR1 & TIM_CR1_DIR) {
+            // Call motor controller's PWM interrupt handler for current control loop
+            motor_controller_pwm_interrupt_handler();
+        }
+    }
+}

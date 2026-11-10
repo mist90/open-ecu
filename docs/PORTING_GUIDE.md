@@ -29,6 +29,27 @@ See [board.hpp](../libecu/include/board.hpp) and the
 The current application requires an ADC interface even for its PWM-rate
 voltage-mode path; returning `nullptr` does not provide a working motor loop.
 
+### Current acquisition
+
+The controller consumes a coherent calibrated frame, independently of injected
+registers, hardware oversampling or DMA. Raw getters retain one fixed configured
+sum scale; an adaptive x2 port normalizes an x1 fallback to that same scale.
+Auxiliary readiness and source age remain the board's responsibility.
+
+All current ports call `pwmInterruptHandler()` once after a complete current
+frame is available. STM32F410 uses injected U/V/W with a window-qualified second
+software scan; STM32G431 uses dual injected acquisition with hardware x2.
+Their regular auxiliary DMA scans are serviced by SysTick. Source ordering,
+deadlines, raw protection and failure shutdown belong to each board port.
+
+Current STM32 contracts are documented in
+[F410 injected software x2](../STM32F410/ADC_REGULAR.md) and
+[G431 injected hardware x2](../STM32G431/ADC_REGULAR.md). Timing measurements below
+retain their historical acquisition/scheduling configuration.
+
+The shared controller and numeric optimizations are retained. The STM32 ports
+use the single-call wrapper, with no separate source-IRQ preparation stage.
+
 ### Command protocol and transport
 
 `Board::createConsole(BldcController&)` returns a statically allocated

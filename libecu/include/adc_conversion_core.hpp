@@ -14,7 +14,7 @@ struct AdcCalibrationT {
     typename Profile::Gain opamp_gain = number<typename Profile::Gain>(16);
     typename Profile::Voltage reference{};
     uint8_t resolution_bits = 12;
-    uint16_t injected_sum = 1;
+    uint16_t injected_sum = 1; // Fixed raw current/Vbus scale, not this frame's acquisition count.
     uint32_t divider_up_ohms = 169000;
     uint32_t divider_down_ohms = 18000;
     uint32_t ntc_pulldown_ohms = 4700;

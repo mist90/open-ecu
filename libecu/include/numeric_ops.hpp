@@ -24,6 +24,14 @@ constexpr T number(int64_t integer) noexcept {
     else return T::fromInteger(integer);
 }
 
+/** @brief Preserve narrow integer width for native FPU conversion. */
+template<class T, class Integer,
+         std::enable_if_t<std::is_integral<Integer>::value && (sizeof(Integer) <= sizeof(uint32_t)), int> = 0>
+constexpr T number(Integer integer) noexcept {
+    if constexpr (std::is_same<T, float>::value) return static_cast<float>(integer);
+    else return T::fromInteger(integer);
+}
+
 /** @brief Force evaluation of rational constants even in size-optimized builds. */
 template<class T, int64_t Numerator, int64_t Denominator = 1>
 inline constexpr T number_v = number<T>(Numerator, Denominator);

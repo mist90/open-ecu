@@ -25,7 +25,8 @@ struct CurrentSensorCalibration {
     float offset_voltage_u = 0.0f;
     float offset_voltage_v = 0.0f;
     float offset_voltage_w = 0.0f;
-    uint16_t injected_sample_sum = 1; // Legacy name: phase samples per PWM frame, independent of ADC group.
+    // Legacy name: fixed raw current/Vbus sum scale, independent of ADC group or acquisition count.
+    uint16_t injected_sample_sum = 1;
 };
 struct VoltageSensorParameters { float r_up; float r_down; };
 
@@ -39,13 +40,19 @@ struct TemperatureSensorParameters {
 /**
  * @brief Raw hardware plus typed current/voltage/temperature conversion
  *
- * Current and bus readings share the configured sum scale. A PWM-triggered
- * DMA frame contains each original phase sample. The latest complete auxiliary
- * scan supplies Vbus (source-dated by the port, possibly one carrier older);
- * the port scales it at the getter boundary. NTC/throttle are coherent slow
- * snapshots and retain the physical ADC resolution. The float-facing
- * methods adapt existing callers; readNative* exposes the conversion core's
- * types directly to a profile-parametric control loop.
+ * Current and bus readings share the configured injected_sample_sum scale,
+ * regardless of injected/regular capture, DMA or hardware/software summation.
+ * This scale stays fixed for the calibration: a port acquiring one sample in
+ * a scale-2 frame publishes twice that code, while two samples publish their
+ * unrounded sum. Acquisition count, aperture validation and protection of the
+ * actual acquired samples belong to the port.
+ *
+ * The latest complete auxiliary scan supplies Vbus (source-dated by the port,
+ * possibly older than the current frame); the port scales it at the getter
+ * boundary. NTC/throttle are coherent slow snapshots and retain the physical
+ * ADC resolution. The float-facing methods adapt existing callers;
+ * readNative* exposes the conversion core's types directly to a
+ * profile-parametric control loop.
  */
 class AdcInterface {
 public:
@@ -90,11 +97,11 @@ public:
         return true;
     }
 
-    /** @return Phase sum of one complete PWM frame, including injected_sample_sum scaling. */
+    /** @return Completed PWM frame's phase code normalized to injected_sample_sum scale. */
     virtual uint32_t getRawAdcValue(PwmChannel channel) = 0;
     /** @return Latest complete DC bus value at phase sum scale; port enforces its acquisition age. */
     virtual uint32_t getRawAdcValue() = 0;
-    /** @return SysTick-published NTC code; the port enforces readiness/freshness. */
+    /** @return Cached NTC code at physical ADC resolution; the port enforces readiness/freshness. */
     virtual uint32_t getRawTemperatureAdcValue() = 0;
 
     /** @return Signed phase current, positive out of the phase into its low-side shunt. */
@@ -115,14 +122,19 @@ public:
     float convertAdcToTemperature(uint32_t raw) const noexcept {
         return numberCast<float>(core_.temperature(raw));
     }
-    /** @return Normalized regular-channel throttle reading. */
+    /** @return Normalized throttle reading from a code at physical ADC resolution. */
     float convertAdcToThrottle(uint32_t raw) const noexcept { return numberCast<float>(core_.throttle(raw)); }
     Core::Duty convertNativeThrottle(uint32_t raw) const noexcept { return core_.throttle(raw); }
 
     NativeVoltage convertNativeAdcToVoltage(uint32_t raw) const noexcept { return core_.busVoltage(raw); }
     NativeVoltage readNativeBusVoltage() noexcept { return convertNativeAdcToVoltage(getRawAdcValue()); }
     Core::Temperature readNativeTemperature() noexcept { return core_.temperature(getRawTemperatureAdcValue()); }
-    /** @brief Read all phases; ports may batch acquisition using the same calibrated conversions. */
+    /** @brief Read the completed current frame without starting or waiting for acquisition.
+     *  @note The port keeps the three raw getters coherent, or overrides this
+     *        method to snapshot/convert its captured frame. Native feedback may
+     *        include port-qualified reconstruction; original samples used by
+     *        raw protection remain the port's responsibility. Vbus is read separately.
+     */
     virtual void readNativeCurrents(NativeCurrent& u, NativeCurrent& v, NativeCurrent& w) noexcept {
         u = core_.current(getRawAdcValue(PwmChannel::PHASE_U), 0);
         v = core_.current(getRawAdcValue(PwmChannel::PHASE_V), 1);

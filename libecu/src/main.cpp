@@ -225,7 +225,7 @@ int main(void)
             const libecu::ControlMode control_mode = motor_controller.getNativeStatus().control_mode;
             // Reads the throttle sampled during the last control tick, not the
             // hardware. The board port owns ADC scheduling, including any
-            // sharing of the regular group with the NTC. See Board::readThrottle().
+            // sharing with the NTC. See Board::readThrottle().
             //
             // Taken once per tick, normalised, and scaled below into the
             // speed demand.

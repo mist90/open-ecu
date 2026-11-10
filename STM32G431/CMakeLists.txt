@@ -17,7 +17,6 @@ endif()
 option(ENABLE_DEBUG_PWM_ISR "Enable PWM ISR debug data capture (uses ~8KB RAM)" OFF)
 option(ENABLE_THROTTLE_BRAKE_CONTROL "Use the physical throttle and brake as control inputs" ON)
 option(ENABLE_BENCH_PROFILING "Capture PWM callback cycle counts through SWD" OFF)
-option(ENABLE_ADC_X2 "Two current samples per phase with independent pipelined ADC1/2 DMA" ON)
 set(PI_NUMERIC_PROFILE "float" CACHE STRING "Legacy PI-only override when NUMERIC_PROFILE=float")
 set_property(CACHE PI_NUMERIC_PROFILE PROPERTY STRINGS float fixed)
 set(NUMERIC_PROFILE "float" CACHE STRING "Control numerical profile: float or fixed")
@@ -44,7 +43,6 @@ add_compile_definitions(
     STM32G4
     STM32G431xx
     USE_HAL_DRIVER
-    STM32G4_ADC_X2=$<BOOL:${ENABLE_ADC_X2}>
     $<$<CONFIG:Debug>:DEBUG>
 )
 

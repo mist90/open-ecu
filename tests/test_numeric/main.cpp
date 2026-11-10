@@ -375,7 +375,29 @@ static void testSmallIncrements() {
     check(controller.getIntegral().toFloat() < 0.0023f, "small-error accumulation matches elapsed time");
 }
 
+static void testNarrowIntegerNumbers() {
+    const auto verify = [](auto value) {
+        const int64_t wide = value;
+        check(number<float>(value) == number<float>(wide), "32-bit float conversion preserves the int64 contract");
+        check(number<FixedPointType<0, int64_t>>(value).raw() == wide,
+              "wide fixed conversion preserves the full signed/unsigned32 value");
+        check(number<FixedProfile::Current>(value).raw() == FixedProfile::Current::fromInteger(wide).raw() &&
+              number<FixedProfile::Accumulator>(value).raw() == FixedProfile::Accumulator::fromInteger(wide).raw(),
+              "narrow number overload preserves fixed saturation and wide-accumulator semantics");
+    };
+    for (int32_t value : {INT32_MIN, INT32_MIN + 1, -16777217, -8190, -1, 0, 1, 5, 4095, 8190,
+                         16777217, INT32_MAX}) verify(value);
+    for (uint32_t value : {0u, 1u, 5u, 255u, 4095u, 8190u, 65535u, 16777217u,
+                          0x7fffffffu, 0x80000000u, 0xffffffffu}) verify(value);
+    check(number<float>(uint32_t(UINT32_MAX)) == 4294967296.0f &&
+          number<float>(uint32_t(0x80000000u)) == 2147483648.0f &&
+          number<float>(int32_t(INT32_MIN)) == -2147483648.0f &&
+          number<float>(int32_t(16777217)) == 16777216.0f,
+          "binary32 rounding and unsigned values above INT32_MAX retain their sign/range");
+}
+
 int main() {
+    testNarrowIntegerNumbers();
     testRightShifts<7, int8_t>();
     testRightShifts<15, int16_t>();
     testRightShifts<31, int32_t>();

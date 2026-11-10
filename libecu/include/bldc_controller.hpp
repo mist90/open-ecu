@@ -81,7 +81,7 @@ struct MotorControlParams {
     /**
      * LPF alpha for the *reported* measured current, applied per PWM cycle.
      *
-     * The raw current is one ADC sample per PWM cycle of a chopped waveform, so
+     * The raw current is one current-frame value per PWM cycle of a chopped waveform, so
      * reading it at the 100 Hz telemetry rate aliases badly - consecutive +TM
      * lines can differ by an amp with nothing actually changing. This filter
      * only affects what is reported; the control loop and the +OSC capture keep
@@ -339,7 +339,7 @@ public:
     /// @brief Currently selected electrical algorithm
     DriveAlgorithm getAlgorithm() const noexcept;
     /** @brief Next active FOC's discarded phase, or -1 for other modes.
-     *  @note Read under the same IRQ ownership as pwmInterruptHandler(), before it runs.
+     *  @note Read under current-ISR ownership, before complete (or the compatibility wrapper).
      */
     int currentReconstructedPhase() const noexcept {
         return algorithm_ == DriveAlgorithm::FOC && dmode_ != DriveMode::NEUTRAL
@@ -347,8 +347,9 @@ public:
     }
     /** @brief Set this current frame's FOC reconstruction choice without changing its raw samples.
      *  @return false outside active FOC or for a phase outside U/V/W (0/1/2).
-     *  @note Caller qualifies both retained phases and owns the same IRQ as pwmInterruptHandler().
-     *        Call immediately before that handler; if the frame is aborted, park/reset the drive.
+     *  @note Caller qualifies both retained phases and owns the serialized current ISR.
+     *        Call immediately before completePwmInterruptHandler() or pwmInterruptHandler();
+     *        if the frame is aborted, park/reset the drive.
      */
     bool setCurrentReconstructedPhase(unsigned phase) noexcept {
         return algorithm_ == DriveAlgorithm::FOC && dmode_ != DriveMode::NEUTRAL &&
@@ -508,11 +509,41 @@ public:
     void hallSensorInterruptHandler() noexcept;
 
     /**
-     * @brief PWM interrupt handler for high-frequency current control loop (20kHz)
-     * Call this from TIM1 update interrupt when current control mode is active.
-     * This runs the inner current control loop at PWM frequency.
+     * @brief Compatibility current tick: prepare then complete at ActiveTiming::CURRENT_HZ.
+     * The port calls this once per PWM period after capture and protection,
+     * regardless of the acquisition mechanism or number of samples in the frame.
+     * Currents and the separately cached bus voltage must be ready to read.
      */
     void pwmInterruptHandler() noexcept;
+
+    /**
+     * @brief Advance Hall/PLL once and snapshot commands/rotor state while ADC acquisition runs.
+     * Performs no ADC reads, electrical algorithm update or PWM writes. A pending
+     * preparation is not overwritten: another prepare is a no-op until complete
+     * or cancel. Without an ADC interface it is also a no-op, like the wrapper.
+     * @note Prepare/complete/cancel share the board's serialized current-ISR ownership.
+     */
+    void preparePwmInterruptHandler() noexcept;
+
+    /**
+     * @brief Consume the prepared frame once, reading ready currents/Vbus and running current control.
+     * No pending preparation means no work. Commands/rotor state come from prepare;
+     * live NEUTRAL and faults still prevent electrical control. The board validates
+     * acquisition ownership and may set the one-frame FOC reconstruction hint just
+     * before complete. This stage never advances Hall/PLL again.
+     */
+    void completePwmInterruptHandler() noexcept;
+
+    /**
+     * @brief Discard pending work without ADC/PWM access or another Hall/PLL tick.
+     * The tick already performed by prepare is not rolled back. Start/stop,
+     * active drive re-entry and control/electrical mode changes cancel pending
+     * work too; parking is honored live at complete. A hint set for an aborted FOC
+     * frame still requires parking/resetting the drive, as for the unsplit API.
+     */
+    void cancelPwmInterruptHandler() noexcept { pwm_prepared_ = false; }
+    /** @brief Whether a source snapshot survived intervening reconfiguration. */
+    bool hasPreparedPwmFrame() const noexcept { return pwm_prepared_; }
 
     /**
      * @brief Keep Hall/PLL rotor feedback alive after the current loop has stopped
@@ -573,6 +604,12 @@ private:
     NativeMotorStatus status_{};
     volatile DriveMode dmode_;
     bool initialized_;
+
+    // Reused in place across the two serialized current-ISR stages; never heap allocated.
+    MotorAlgorithmInputT<Profile> prepared_pwm_input_{};
+    Profile::Angle prepared_pwm_measured_angle_{};
+    bool prepared_hall_controls_drive_ = false;
+    bool pwm_prepared_ = false;
 
     // Deferred Hall update (re-read by the active current-rate handler)
     volatile bool hall_update_pending_;      ///< Set by Hall ISR, consumed by current/observation ISR

@@ -69,9 +69,6 @@ static libecu::CommandProcessor* command_processor = nullptr;
 static volatile bool control_tick = false;
 static volatile bool control_enabled = false;
 static volatile bool adc_running = false;
-static volatile bool thermal_fault = false;
-static volatile uint32_t slow_updated_us = 0;
-static uint32_t interrupt_depth = 0, saved_primask = 0;
 
 #ifdef BENCH_PROFILING
 #include "numeric_bench.hpp"
@@ -98,7 +95,8 @@ uint32_t bench_pwm_irq_begin(void) {
 }
 
 void bench_pwm_irq_end(uint32_t started) {
-    // The profile is now entered by complete-frame DMA, once per carrier.
+    // The opposite half of a centre-aligned PWM period also raises TIM1's IRQ,
+    // but does not call the controller. Count only the full control samples.
     const uint32_t samples = pwm_bench_profile.samples;
     if (!samples || samples == pwm_irq_previous_samples) return;
     const uint32_t cycles = DWT->CYCCNT - started;
@@ -163,15 +161,11 @@ uint32_t time_us()
 // Use CMSIS intrinsics for interrupt control
 // These functions are used by libecu library for critical sections
 extern "C" void disable_interrupts() {
-    const uint32_t prior = __get_PRIMASK();
-    __disable_irq();
-    if (interrupt_depth++ == 0) saved_primask = prior;
-    __DMB();
+    __asm volatile ("cpsid i" : : : "memory");
 }
 
 extern "C" void enable_interrupts() {
-    __DMB();
-    if (interrupt_depth != 0 && --interrupt_depth == 0) __set_PRIMASK(saved_primask);
+    __asm volatile ("cpsie i" : : : "memory");
 }
 
 /**
@@ -195,28 +189,19 @@ extern "C" void motor_controller_hall_interrupt_handler(void)
 }
 
 /**
- * @brief ADC2 current TC: current phases and the previous complete auxiliary bank
+ * @brief C-linkage wrapper for PWM interrupt handler (current control loop)
+ * This function is called from C code (stm32g4xx_it.c) at PWM_TIMER_FREQ for current control
  */
 extern "C" void motor_controller_pwm_interrupt_handler(void)
 {
-    const uint32_t frame_now = time_us();
 #ifdef BENCH_PROFILING
     const uint32_t started = DWT->CYCCNT;
 #endif
-    if (!adc_driver.captureFrame(frame_now)) { pwm_driver.trip(); return; }
-    adc_running = true;
-    if (!adc_driver.regularReady()) {
-        // First ADC1 bank is still producing auxiliaries. Never control/arm
-        // from zero-initialized bus/NTC data or label it as a completed frame.
-        if (!adc_driver.rearmFrame(time_us())) pwm_driver.trip();
-        return;
-    }
     if (motor_controller != nullptr) {
-        if (uint32_t(time_us() - slow_updated_us) > 2500) pwm_driver.trip();
-        // G431 retains its configured motor/current limits. This port had no
-        // independent raw-ampere trip threshold; acquisition does not invent one.
-        if ((pwm_driver.faulted() || thermal_fault) &&
-            motor_controller->getDriveMode() != libecu::DriveMode::NEUTRAL)
+        // Check independently of SysTick so its loss cannot leave the bridge
+        // running on stale Vbus. DMA publication carries its launch timestamp.
+        if (!adc_driver.regularFresh(time_us())) pwm_driver.trip();
+        if (pwm_driver.faulted() && motor_controller->getDriveMode() != libecu::DriveMode::NEUTRAL)
             motor_controller->setDriveMode(libecu::DriveMode::NEUTRAL);
         motor_controller->pwmInterruptHandler();
         if (command_processor->wantsCurrentSample()) {
@@ -233,37 +218,19 @@ extern "C" void motor_controller_pwm_interrupt_handler(void)
         --pwm_bench_profile.remaining;
     }
 #endif
-    // Guard is source-relative, includes ADC latency, and reserves 3 us to the
-    // next trigger. Neither the controller nor profiling can reset this budget.
-    if (!adc_driver.rearmFrame(time_us())) pwm_driver.trip();
-}
-
-extern "C" void board_adc_error_interrupt(void) {
-    adc_driver.failFrame();
-    pwm_driver.trip();
 }
 
 /**
- * @brief 1 kHz cached auxiliary processing, divided down for the speed/control loop
+ * @brief 1 kHz auxiliary DMA service, divided down for the speed/control loop
  */
 void HAL_SYSTICK_Callback(void) {
     static uint32_t divider = 0;
-    if (adc_running) {
-        const int result = adc_driver.serviceRegular(time_us());
-        if (result < 0) { adc_driver.failFrame(); pwm_driver.trip(); }
-        else if (result > 0) {
-            if (motor_controller)
-                thermal_fault = adc_driver.convertAdcToTemperature(adc_driver.getRawTemperatureAdcValue()) >
-                                motor_controller->getParams().max_temperature_c;
-            slow_updated_us = time_us();
-        }
-    }
+    if (adc_running && !adc_driver.serviceRegular(time_us())) pwm_driver.trip();
     if (!control_enabled || ++divider < 1000 / PERIODIC_TIMER_FREQ) return;
     divider = 0;
     control_tick = true;
     if (motor_controller) {
-        if ((pwm_driver.faulted() || thermal_fault) &&
-            motor_controller->getDriveMode() != libecu::DriveMode::NEUTRAL)
+        if (pwm_driver.faulted() && motor_controller->getDriveMode() != libecu::DriveMode::NEUTRAL)
             motor_controller->setDriveMode(libecu::DriveMode::NEUTRAL);
         motor_controller->update();
     }
@@ -352,10 +319,11 @@ public:
             return false;
         }
 
-        // Independent ADC1/2 DMAs are armed before enabling their shared source.
-        if (!adc_driver.beginFrames(time_us()) || HAL_TIM_Base_Start(&htim1) != HAL_OK) {
+        // Start TIM1 to generate TRGO2 triggers for ADC (must be before ADC start)
+        if (HAL_TIM_Base_Start(&htim1) != HAL_OK) {
             return false;
         }
+        adc_running = true;
 
         // Wait for stable ADC readings
         HAL_Delay(100);
@@ -391,19 +359,30 @@ public:
     bool startCurrentLoop(BldcController& controller,
                           CommandProcessor& console) noexcept override
     {
-        CriticalSection lock;
-        command_processor = &console;
         motor_controller = &controller;
-        return true; // DMA1 channel2 has been the sole current IRQ since calibration.
+        command_processor = &console;
+
+        /* Configure interrupt priorities for real-time control
+         * Lower preempt priority number = higher priority (can preempt higher numbers)
+         * Priority 0: TIM1 (PWM_TIMER_FREQ current loop) - highest priority, time-critical
+         * Priority 1: Hall sensors (EXTI9_5) - medium priority, already configured in MX_GPIO_Init
+         * Priority 2: SysTick (control loop) - lowest priority
+         */
+        HAL_NVIC_SetPriority(TIM1_UP_TIM16_IRQn, 0, 0);
+        HAL_NVIC_EnableIRQ(TIM1_UP_TIM16_IRQn);
+
+        // Enable TIM1 update interrupt for PWM_TIMER_FREQ current control loop
+        // (TIM1 base is already started earlier for ADC calibration)
+        return HAL_TIM_Base_Start_IT(&htim1) == HAL_OK;
     }
 
     bool startControlLoop() noexcept override
     {
-        // HAL timeouts and auxiliary processing keep their 1 ms timebase. Divide only
+        // HAL timeouts and auxiliary DMA keep their 1 ms timebase. Divide only
         // the controller callback, rather than slowing HAL ticks to 100 Hz.
         static_assert(PERIODIC_TIMER_FREQ <= 1000 && 1000 % PERIODIC_TIMER_FREQ == 0,
                       "Control frequency must divide the 1 kHz SysTick");
-        // SysTick priority must be lower than complete-frame DMA.
+        // SysTick priority must be lower than TIM1 (higher number = lower priority)
         HAL_NVIC_SetPriority(SysTick_IRQn, 2, 0);
         control_enabled = true;
         return true;

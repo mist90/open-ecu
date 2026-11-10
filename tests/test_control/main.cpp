@@ -47,7 +47,7 @@ public:
     uint8_t position = 0;
     unsigned reads = 0;
 };
-class Adc final : public AdcInterface {
+class Adc : public AdcInterface {
 public:
     Adc() {
         check(initialize(CurrentSensorCalibration{0.003f, 16.0f, 3.3f, 12, 1.65f, 1.65f, 1.65f, 2},
@@ -62,6 +62,16 @@ public:
     unsigned temperature_reads = 0;
     uint32_t currents[3] = {4107, 4107, 4107};
     uint32_t bus = 5000;
+};
+class CapturedAdc final : public Adc {
+public:
+    void readNativeCurrents(NativeCurrent& u, NativeCurrent& v, NativeCurrent& w) noexcept override {
+        ++frame_reads;
+        u = convertNativeAdcToCurrent(currents[0], PwmChannel::PHASE_U);
+        v = convertNativeAdcToCurrent(currents[1], PwmChannel::PHASE_V);
+        w = convertNativeAdcToCurrent(currents[2], PwmChannel::PHASE_W);
+    }
+    unsigned frame_reads = 0;
 };
 class Console final : public AtCommandProcessor {
 public:
@@ -332,6 +342,306 @@ static void testHallDuration() {
     check(monitor.getParameters().decay_time_us == previous.decay_time_us,
           "rejected Hall tuning preserves the running configuration");
 #endif
+}
+
+static void testInvalidHallRetry() {
+    for (bool split : {false, true}) {
+        for (bool persistent : {false, true}) {
+            Pwm pwm;
+            Hall hall;
+            Adc adc;
+            auto params = makeParams();
+            params.algorithm = DriveAlgorithm::FOC;
+            BldcController controller(pwm, hall, params, &adc);
+            check(controller.initialize(), "invalid-Hall retry controller initializes");
+            HallMonitor defaults;
+            auto monitor = defaults.getParameters();
+            monitor.invalid_threshold = 0.0f;
+            monitor.invalid_persist_time_us = 300;
+            check(controller.setHallMonitorParams(monitor), "configure unchanged 300us invalid-Hall hold");
+            controller.start();
+            controller.setDriveMode(DriveMode::FORWARD);
+            const auto tick = [&] {
+                if (split) {
+                    controller.preparePwmInterruptHandler();
+                    controller.completePwmInterruptHandler();
+                } else {
+                    controller.pwmInterruptHandler();
+                }
+            };
+            tick(); // Consume the healthy Hall sample requested by drive entry.
+            hall.position = HALL_POSITION_INVALID;
+            controller.hallSensorInterruptHandler();
+            tick();
+            check(controller.getHallFault() == HallFault::NONE && controller.getHallInfo().invalid_time_us == 0,
+                  "one transient illegal reading starts the hold rather than faulting immediately");
+            const unsigned reads = hall.reads;
+            const auto limit = ActiveTiming::CurrentClock::ticksFromUs(monitor.invalid_persist_time_us);
+            if (!persistent) {
+                hall.position = 1; // GPIO settles without another filtered Hall edge/interrupt.
+                tick();
+                check(hall.reads == reads + 1 && controller.getNativeStatus().measured_position == 1 &&
+                      controller.getHallInfo().invalid_time_us == 0,
+                      "next control tick re-reads the illegal GPIO and observes recovery without a new edge");
+                for (uint32_t sample = 0; sample < limit + 2; ++sample) tick();
+                check(controller.getHallFault() == HallFault::NONE && pwm.enabled &&
+                      controller.getDriveMode() == DriveMode::FORWARD && hall.reads == reads + 1,
+                      "recovered Hall stops retries and never ages the stale illegal reading into a fault");
+            } else {
+                for (uint32_t sample = 1; sample < limit; ++sample) {
+                    tick();
+                    check(controller.getHallFault() == HallFault::NONE && hall.reads == reads + sample &&
+                          controller.getHallInfo().invalid_time_us == ActiveTiming::CurrentClock::ticksToUs(sample),
+                          "persistent illegal GPIO is retried without resetting or shortening its hold");
+                }
+                tick();
+                check(controller.getHallFault() == HallFault::INVALID_CODE && !pwm.enabled &&
+                      controller.getDriveMode() == DriveMode::NEUTRAL && hall.reads == reads + limit &&
+                      controller.getHallInfo().invalid_time_us == ActiveTiming::CurrentClock::ticksToUs(limit),
+                      "persistent illegal GPIO still trips on the exact configured hold tick without new edges");
+            }
+        }
+    }
+}
+
+static void testCapturedCurrentFrames() {
+    for (auto algorithm : {DriveAlgorithm::SIX_STEP, DriveAlgorithm::FOC}) {
+        Pwm raw_pwm, captured_pwm;
+        Hall raw_hall, captured_hall;
+        Adc raw;
+        CapturedAdc captured;
+        auto params = makeParams();
+        params.algorithm = algorithm;
+        params.max_voltage = 24.0f;
+        BldcController reference(raw_pwm, raw_hall, params, &raw);
+        BldcController controller(captured_pwm, captured_hall, params, &captured);
+        for (auto* next : {&reference, &controller}) {
+            check(next->initialize(), "captured-frame controller initializes");
+            next->start();
+            next->setControlMode(ControlMode::CLOSED_LOOP_TORQUE);
+            next->setElectricMode(ElectricMode::VOLTAGE_MODE);
+            next->setDriveMode(DriveMode::FORWARD);
+            next->setDutyCycle(0.1f);
+        }
+        // The common loop sees normalized frames, whether from injected x1/x2,
+        // hardware oversampling or DMA. Actual scan count stays below this API.
+        const uint32_t frames[][3] = {
+            {2000u * 2, 2060u * 2, 2080u * 2},
+            {2000u + 2001u, 2060u + 2059u, 2080u + 2081u},
+            {2100u * 2, 2020u * 2, 2010u * 2},
+        };
+        for (const auto& frame : frames) {
+            for (unsigned i = 0; i < 3; ++i) raw.currents[i] = captured.currents[i] = frame[i];
+            const unsigned reads = captured.frame_reads, writes = captured_pwm.native_writes;
+            const unsigned bus_reads = captured.bus_reads;
+            reference.pwmInterruptHandler();
+            controller.pwmInterruptHandler();
+            check(captured.frame_reads == reads + 1 && captured.current_reads == 0 &&
+                  captured.bus_reads == bus_reads + 1 && captured.temperature_reads == 0,
+                  "one controller tick uses the coherent native override and a separate cached bus read");
+            check(captured_pwm.native_writes == writes + 1,
+                  "one completed current frame produces one PWM update regardless of scan count");
+            const auto& expected = reference.getNativeStatus();
+            const auto& actual = controller.getNativeStatus();
+            check(actual.measured_current == expected.measured_current &&
+                  actual.i_d == expected.i_d && actual.i_q == expected.i_q &&
+                  actual.v_d == expected.v_d && actual.v_q == expected.v_q &&
+                  actual.duty_u == expected.duty_u && actual.duty_v == expected.duty_v &&
+                  actual.duty_w == expected.duty_w && actual.bus_voltage == expected.bus_voltage,
+                  "native captured frames and raw getter frames produce identical control outputs");
+        }
+        captured.bus = 8190;
+        controller.pwmInterruptHandler();
+        check(controller.getDriveMode() == DriveMode::NEUTRAL && !captured_pwm.enabled,
+              "independently updated cached Vbus still protects a native captured-current path");
+    }
+}
+
+static void testSplitCurrentLoop() {
+    for (auto algorithm : {DriveAlgorithm::SIX_STEP, DriveAlgorithm::FOC}) {
+        for (auto mode : {ControlMode::CLOSED_LOOP_TORQUE, ControlMode::OPEN_LOOP}) {
+            for (auto electric : {ElectricMode::VOLTAGE_MODE, ElectricMode::CURRENT_MODE}) {
+                Pwm wrapped_pwm, split_pwm;
+                Hall wrapped_hall, split_hall;
+                CapturedAdc wrapped_adc, split_adc;
+                auto params = makeParams();
+                params.algorithm = algorithm;
+                params.pi_current_regulator.kp = 0.1f;
+                params.foc_current_regulator.kp = 0.5f;
+                params.foc_current_regulator.ki = 20.0f;
+                BldcController wrapped(wrapped_pwm, wrapped_hall, params, &wrapped_adc);
+                BldcController split(split_pwm, split_hall, params, &split_adc);
+                for (auto* next : {&wrapped, &split}) {
+                    check(next->initialize(), "split/wrapper controller initializes");
+                    next->start();
+                    next->setControlMode(mode);
+                    check(next->setElectricMode(electric), "split electrical mode configures");
+                    next->setDriveMode(DriveMode::FORWARD);
+                }
+                for (unsigned tick = 0; tick < 32; ++tick) {
+                    for (auto* next : {&wrapped, &split}) {
+                        next->setDutyCycle(.25f);
+                        next->setCurrent(1.0f);
+                        next->setTargetSpeed(1.0f);
+                        next->hallSensorInterruptHandler();
+                    }
+                    wrapped_hall.position = split_hall.position = (tick / 4) % 6;
+                    fake_time_us += 1000000 / ActiveTiming::CURRENT_HZ;
+                    // Acquisition has not published this carrier's physical values yet.
+                    split_adc.currents[0] = 8000;
+                    const unsigned reads = split_adc.reads(), frames = split_adc.frame_reads;
+                    const unsigned writes = split_pwm.calls, halls = split_hall.reads;
+                    check(!split.hasPreparedPwmFrame() && !wrapped.hasPreparedPwmFrame(),
+                          "completed wrapper/split frame leaves no pending preparation");
+                    split.preparePwmInterruptHandler();
+                    check(split.hasPreparedPwmFrame() && split.hasPreparedPwmFrame() &&
+                          split_adc.reads() == reads && split_adc.frame_reads == frames &&
+                          split_pwm.calls == writes && split_hall.reads == halls + 1,
+                          "prepare consumes one deferred Hall read with no ADC/algorithm/PWM work");
+                    const auto pll = split.getPllInfo();
+                    const auto health = split.getHallInfo();
+                    split.preparePwmInterruptHandler();
+                    check(split.hasPreparedPwmFrame() && split.getPllInfo().angle == pll.angle &&
+                          split.getPllInfo().pll_integral == pll.pll_integral &&
+                          split.getHallInfo().edge_accum == health.edge_accum && split_hall.reads == halls + 1 &&
+                          split_adc.frame_reads == frames && split_pwm.calls == writes,
+                          "duplicate prepare retains the first snapshot without another Hall/PLL tick");
+                    for (unsigned phase = 0; phase < 3; ++phase) {
+                        const uint32_t value = 4000 + phase * 60 + tick;
+                        wrapped_adc.currents[phase] = split_adc.currents[phase] = value;
+                    }
+                    wrapped_adc.bus = split_adc.bus = 4800 + 2 * tick;
+                    // Late target updates belong to the next preparation. The
+                    // wrapper provides the same old targets with newly ready ADC data.
+                    wrapped.pwmInterruptHandler();
+                    split.setDutyCycle(.75f);
+                    split.setCurrent(3.0f);
+                    split.setTargetSpeed(2.0f);
+                    split.completePwmInterruptHandler();
+                    check(!split.hasPreparedPwmFrame() && !wrapped.hasPreparedPwmFrame() &&
+                          split_adc.frame_reads == frames + 1 && split_adc.bus_reads == wrapped_adc.bus_reads &&
+                          split_hall.reads == halls + 1 && split.getPllInfo().angle == pll.angle &&
+                          split.getPllInfo().pll_integral == pll.pll_integral,
+                          "complete reads one newly ready coherent frame without a second Hall/PLL tick");
+                    const auto& expected = wrapped.getNativeStatus();
+                    const auto& actual = split.getNativeStatus();
+                    check(actual.measured_current == expected.measured_current && actual.i_d == expected.i_d &&
+                          actual.i_q == expected.i_q && actual.v_d == expected.v_d && actual.v_q == expected.v_q &&
+                          actual.duty_u == expected.duty_u && actual.duty_v == expected.duty_v &&
+                          actual.duty_w == expected.duty_w && actual.angle_e_rad == expected.angle_e_rad &&
+                          actual.pll_angle == expected.pll_angle &&
+                          actual.target_position == expected.target_position &&
+                          actual.bus_voltage == expected.bus_voltage,
+                          "split FOC/six-step preserves wrapper outputs and preparation-time commands/rotor state");
+                    const unsigned completed_writes = split_pwm.calls;
+                    split.completePwmInterruptHandler();
+                    check(!split.hasPreparedPwmFrame() && split_adc.frame_reads == frames + 1 &&
+                          split_pwm.calls == completed_writes &&
+                          split.getPllInfo().angle == pll.angle,
+                          "duplicate complete cannot read ADC, write PWM or advance the rotor");
+                }
+            }
+        }
+    }
+}
+
+static void testSplitCancellationAndGuards() {
+    Pwm pwm;
+    Hall hall;
+    CapturedAdc adc;
+    auto params = makeParams();
+    params.algorithm = DriveAlgorithm::FOC;
+    params.max_voltage = 24.0f;
+    BldcController controller(pwm, hall, params, &adc);
+    check(controller.initialize(), "split ownership controller initializes");
+    controller.start();
+    controller.setDriveMode(DriveMode::FORWARD);
+    controller.setControlMode(ControlMode::CLOSED_LOOP_TORQUE);
+    const unsigned initial_reads = adc.reads(), initial_frames = adc.frame_reads, initial_writes = pwm.calls;
+    controller.completePwmInterruptHandler();
+    controller.cancelPwmInterruptHandler();
+    check(!controller.hasPreparedPwmFrame() && adc.reads() == initial_reads &&
+          adc.frame_reads == initial_frames && pwm.calls == initial_writes,
+          "complete/cancel before prepare are inert");
+    hall.position = HALL_POSITION_INVALID;
+    controller.hallSensorInterruptHandler();
+    controller.preparePwmInterruptHandler();
+    check(controller.hasPreparedPwmFrame(), "getter exposes prepared ownership before cancellation");
+    const auto pll = controller.getPllInfo();
+    const auto age = controller.getHallInfo().invalid_time_us;
+    controller.cancelPwmInterruptHandler();
+    controller.cancelPwmInterruptHandler();
+    controller.completePwmInterruptHandler();
+    check(!controller.hasPreparedPwmFrame() && adc.frame_reads == initial_frames && pwm.calls == initial_writes &&
+          controller.getPllInfo().angle == pll.angle && controller.getHallInfo().invalid_time_us == age,
+          "cancel discards prepared work without completing, rewinding or adding a rotor tick");
+    controller.preparePwmInterruptHandler();
+    check(controller.hasPreparedPwmFrame() &&
+          controller.getHallInfo().invalid_time_us == age + ActiveTiming::CurrentClock::ticksToUs(1),
+          "next preparation after cancellation advances Hall health exactly once");
+    controller.cancelPwmInterruptHandler();
+
+    hall.position = 0; controller.hallSensorInterruptHandler();
+    controller.preparePwmInterruptHandler();
+    controller.setDriveMode(DriveMode::NEUTRAL);
+    check(controller.hasPreparedPwmFrame(),
+          "live parking retains the prepared frame for parked measurement publication");
+    const unsigned parked_writes = pwm.calls, parked_frames = adc.frame_reads;
+    controller.completePwmInterruptHandler();
+    check(!controller.hasPreparedPwmFrame() && !pwm.enabled && pwm.calls == parked_writes &&
+          adc.frame_reads == parked_frames + 1 &&
+          controller.getNativeStatus().i_q == BldcController::Current{} &&
+          controller.getNativeStatus().v_q == BldcController::Voltage{},
+          "live parking after prepare consumes measurements but cannot run the electrical algorithm");
+    controller.setDriveMode(DriveMode::FORWARD);
+    controller.preparePwmInterruptHandler();
+    adc.bus = 8190;
+    controller.completePwmInterruptHandler();
+    check(!pwm.enabled && controller.getDriveMode() == DriveMode::NEUTRAL,
+          "completion guards the newly acquired bus rather than a preparation-time voltage");
+    adc.bus = 5000;
+    controller.setDriveMode(DriveMode::FORWARD);
+    HallMonitor defaults;
+    auto monitor = defaults.getParameters();
+    monitor.invalid_threshold = .5f;
+    monitor.invalid_debounce = 1;
+    check(controller.setHallMonitorParams(monitor), "configure an immediate invalid-Hall event for split guard");
+    hall.position = HALL_POSITION_INVALID; controller.hallSensorInterruptHandler();
+    const unsigned before_fault = pwm.calls;
+    controller.preparePwmInterruptHandler();
+    check(controller.getHallFault() != HallFault::NONE && pwm.calls == before_fault && pwm.enabled,
+          "prepare latches Hall health without writing PWM or running a drive guard");
+    controller.completePwmInterruptHandler();
+    check(controller.getDriveMode() == DriveMode::NEUTRAL && !pwm.enabled,
+          "complete applies a Hall fault latched by preparation");
+
+    for (unsigned transition = 0; transition < 5; ++transition) {
+        Pwm local_pwm;
+        Hall local_hall;
+        CapturedAdc local_adc;
+        BldcController local(local_pwm, local_hall, params, &local_adc);
+        check(local.initialize(), "pending lifecycle fixture initializes");
+        local.start(); local.setDriveMode(DriveMode::FORWARD); local.preparePwmInterruptHandler();
+        check(local.hasPreparedPwmFrame(), "lifecycle transition begins with a visibly prepared frame");
+        if (transition == 0) local.stop();
+        if (transition == 1) local.setAlgorithm(DriveAlgorithm::SIX_STEP);
+        if (transition == 2) local.setElectricMode(ElectricMode::VOLTAGE_MODE);
+        if (transition == 3) local.setControlMode(ControlMode::OPEN_LOOP);
+        if (transition == 4) local.setDriveMode(DriveMode::REVERSE);
+        check(!local.hasPreparedPwmFrame(),
+              "board can distinguish intentional mode cancellation from missing PWM work");
+        const unsigned calls = local_pwm.calls;
+        local.completePwmInterruptHandler();
+        check(local_adc.frame_reads == 0 && local_pwm.calls == calls,
+              "lifecycle/mode reconfiguration cannot complete an obsolete prepared command");
+    }
+    Pwm no_adc_pwm;
+    Hall no_adc_hall;
+    BldcController no_adc(no_adc_pwm, no_adc_hall, makeParams());
+    const unsigned no_adc_writes = no_adc_pwm.calls, no_adc_reads = no_adc_hall.reads;
+    no_adc.preparePwmInterruptHandler(); no_adc.completePwmInterruptHandler(); no_adc.pwmInterruptHandler();
+    check(!no_adc.hasPreparedPwmFrame() && no_adc_pwm.calls == no_adc_writes && no_adc_hall.reads == no_adc_reads,
+          "ADC-less split/wrapper calls preserve the original no-work behavior");
 }
 
 static void testNativePath() {
@@ -656,6 +966,7 @@ static void testControllerReconstruction() {
     const auto healthy = controller.getStatus();
     check(controller.currentReconstructedPhase() == 1, "controller's current frame requests highest-duty V");
     adc.currents[0] = 6000; // U aperture was invalid even though V is the latest duty maximum.
+    controller.preparePwmInterruptHandler();
     reads = adc.reads(); writes = pwm.calls;
     check(controller.setCurrentReconstructedPhase(0) && controller.currentReconstructedPhase() == 0,
           "board can select sampled-invalid U instead of latest-highest V for active FOC");
@@ -663,7 +974,7 @@ static void testControllerReconstruction() {
           "controller rejects invalid phase without replacing qualified U");
     check(adc.reads() == reads && pwm.calls == writes, "successful reconstruction setter is also hardware-free");
     const unsigned current_reads = adc.current_reads;
-    controller.pwmInterruptHandler();
+    controller.completePwmInterruptHandler();
     const auto recovered = controller.getStatus();
     check(std::abs(recovered.i_d - healthy.i_d) < 0.002f && std::abs(recovered.i_q - healthy.i_q) < 0.002f,
           "board-to-controller-to-FOC path rejects poisoned U using qualified V/W");
@@ -750,7 +1061,11 @@ int main() {
     testFragmentedCommands();
     testAtLifecycle();
     testHallDuration();
+    testInvalidHallRetry();
     testNativePath();
+    testCapturedCurrentFrames();
+    testSplitCurrentLoop();
+    testSplitCancellationAndGuards();
     testFrozenRotorClock();
     testRotorObservation(1, DriveAlgorithm::FOC);
     testRotorObservation(-1, DriveAlgorithm::FOC);
