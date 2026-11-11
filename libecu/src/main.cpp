@@ -68,15 +68,17 @@ libecu::MotorControlParams makeMotorParams(const libecu::BoardInfo& board_info) 
 
     // Current-loop PI from the electrical model: kp = 2*L*w_c/Vbus,
     // ki = 2*R*w_c/Vbus, which places the PI zero on the plant pole (Ti = L/R)
-    // and puts the crossover at BLDC_ILOOP_BW_HZ. Falls back to the previous
-    // hand-tuned gains if the motor has not been identified.
+    // and puts the crossover at BLDC_ILOOP_BW_HZ. The motor configuration can
+    // instead select independently tuned six-step gains; an unusable model
+    // also falls back to those gains.
     {
         libecu::CurrentLoopModel iloop;
         iloop.l_phase_h    = BLDC_L_PHASE_H;
         iloop.r_phase_ohm  = BLDC_R_PHASE_OHM;
         iloop.bus_voltage  = board_info.nominal_bus_voltage;
         iloop.bandwidth_hz = BLDC_ILOOP_BW_HZ;
-        libecu::PiParameters ip = libecu::tuneCurrentPi(iloop);
+        libecu::PiParameters ip = BLDC_SIX_STEP_USE_MOTOR_MODEL
+                               ? libecu::tuneCurrentPi(iloop) : libecu::PiParameters{};
         if (ip.kp <= 0.0f) {
             ip.kp = BLDC_CURRENT_FALLBACK_KP;
             ip.ki = BLDC_CURRENT_FALLBACK_KI;
@@ -108,10 +110,10 @@ libecu::MotorControlParams makeMotorParams(const libecu::BoardInfo& board_info) 
     motor_params.foc.max_modulation = board_info.max_modulation;
     motor_params.foc.max_duty_cycle = motor_params.max_duty_cycle;
     motor_params.foc.low_side_clamped_pwm = board_info.low_side_clamped_pwm;
-    // -60 electrical degrees, derived from the six-step table geometry and the
-    // PLL's +1-step field offset (see foc_algorithm.hpp). A derivation, not a
-    // measurement - trim with AT+FANG on the bench before trusting the torque.
-    motor_params.foc.angle_offset_rad = -libecu::FOC_RAD_PER_STEP;
+    // Motor/Hall alignment belongs to the motor configuration: -60 degrees for
+    // MOTOR_1, +120 for the inverse JK42BLS01 alignment verified on the bench.
+    motor_params.foc.angle_offset_rad =
+        (BLDC_FOC_ANGLE_OFFSET_DEG / 60.0f) * libecu::FOC_RAD_PER_STEP;
     motor_params.foc.id_target = 0.0f;   // surface-magnet rotor: no reluctance to exploit
     // Cross-coupling and back-EMF feed-forward stays off for bring-up. A wrong
     // feed-forward is harder to diagnose than none; enable it once the plain

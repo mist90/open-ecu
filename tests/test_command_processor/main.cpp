@@ -5,6 +5,7 @@
 #include "board.hpp"
 #include "bldc_controller.hpp"
 #include "command_processor.hpp"
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -49,6 +50,40 @@ void testDefaults(BldcController& controller) {
     check(silent.writes == 0, "default lifecycle hooks emit no bytes");
     check(silent.process_calls == 1, "process dispatches through the protocol-neutral base");
     check(controller.getDriveMode() == before, "default hooks preserve drive state");
+}
+
+void testMotorDefaults(BldcController& controller) {
+    // Exercise the real shared main's configuration assembly, before any
+    // protocol can hide an incorrect boot default with runtime setters.
+    const auto& params = controller.getParams();
+    check(controller.getDriveMode() == DriveMode::NEUTRAL, "motor boots in neutral");
+    check(controller.getAlgorithm() == DriveAlgorithm::FOC, "qualified motor boots with FOC selected");
+    check(!params.foc.use_decoupling, "unqualified feed-forward stays disabled");
+    float speed_kp{}, speed_ki{}, current_kp{}, current_ki{}, foc_kp{}, foc_ki{};
+    controller.getSpeedPiGains(speed_kp, speed_ki);
+    controller.getCurrentPiGains(current_kp, current_ki);
+    controller.getFocCurrentPi(foc_kp, foc_ki);
+#ifdef MOTOR_1
+    check(params.num_poles == 40 && !params.useInverseCommTable, "scooter Hall configuration survives");
+    check(std::fabs(controller.getFocAngleOffsetDeg() + 60.0f) < 0.001f,
+          "scooter FOC alignment remains -60 degrees");
+    check(std::fabs(speed_kp - 2.0f) < 0.00001f && std::fabs(speed_ki - 2.0f) < 0.00001f,
+          "scooter speed PI survives");
+    check(std::fabs(foc_kp - 2.199115f) < 0.0001f && std::fabs(foc_ki - 2067.168f) < 0.002f,
+          "scooter model still produces the qualified FOC gains");
+    check(std::fabs(current_kp - 0.183260f) < 0.0001f && std::fabs(current_ki - 172.264f) < 0.002f,
+          "scooter six-step PI still follows the model and the test board's 24 V bus");
+#else
+    check(params.num_poles == 8 && params.useInverseCommTable, "JK42 inverse Hall configuration loads");
+    check(std::fabs(controller.getFocAngleOffsetDeg() - 120.0f) < 0.001f,
+          "JK42 boots with the hardware-qualified inverse FOC alignment");
+    check(std::fabs(speed_kp - 0.025f) < 0.00001f && std::fabs(speed_ki - 0.025f) < 0.00001f,
+          "JK42 boots with the damped speed PI");
+    check(std::fabs(foc_kp - 5.340708f) < 0.0001f && std::fabs(foc_ki - 5026.548f) < 0.002f,
+          "JK42 model produces the hardware-qualified FOC gains without AT commands");
+    check(std::fabs(current_kp - 0.15f) < 0.0001f && std::fabs(current_ki - 200.0f) < 0.002f,
+          "JK42 FOC model does not replace the independently tuned six-step PI");
+#endif
 }
 
 char events[32]{};
@@ -96,6 +131,7 @@ public:
     CommandProcessor& createConsole(BldcController& controller) noexcept override {
         record('C');
         testDefaults(controller);
+        testMotorDefaults(controller);
         static Protocol protocol(&controller);
         return protocol;
     }

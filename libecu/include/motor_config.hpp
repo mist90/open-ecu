@@ -28,11 +28,13 @@
 #define BLDC_SPEED_VOLTAGE_KI 0.2f
 #define BLDC_SPEED_CURRENT_KP 2.0f
 #define BLDC_SPEED_CURRENT_KI 2.0f
+#define BLDC_SIX_STEP_USE_MOTOR_MODEL true
 #define BLDC_CURRENT_FALLBACK_KP 0.1f
 #define BLDC_CURRENT_FALLBACK_KI 50.0f
 #define BLDC_PLL_KP 100.0f
 #define BLDC_PLL_KI 5000.0f
 #define BLDC_START_WITH_FOC true
+#define BLDC_FOC_ANGLE_OFFSET_DEG -60.0f
 // Electrical model of one phase, used to compute the current-loop PI gains
 // (see libecu/include/current_loop_tuning.hpp).
 //
@@ -59,7 +61,7 @@
 // more than worst-case excursion.
 #define BLDC_ILOOP_BW_HZ        500.0f
 #else
-// JK42BLS01, tuned unloaded at 20.8 V.
+// JK42BLS01, FOC qualified unloaded on STM32G431 at 20 V.
 #define BLDC_NUM_POLES 8
 #define BLDC_MAX_CURRENT 6.0f
 #define BLDC_MIN_CURRENT  -6.0f
@@ -69,19 +71,26 @@
 #define BLDC_INVERTION true
 #define BLDC_SPEED_VOLTAGE_KP 0.005f
 #define BLDC_SPEED_VOLTAGE_KI 0.02f
-#define BLDC_SPEED_CURRENT_KP 0.01f
-#define BLDC_SPEED_CURRENT_KI 0.05f
+#define BLDC_SPEED_CURRENT_KP 0.025f
+#define BLDC_SPEED_CURRENT_KI 0.025f
+// Six-step uses its independently tuned duty-output current PI.
+#define BLDC_SIX_STEP_USE_MOTOR_MODEL false
 #define BLDC_CURRENT_FALLBACK_KP 0.15f
 #define BLDC_CURRENT_FALLBACK_KI 200.0f
 #define BLDC_PLL_KP 100.0f
 #define BLDC_PLL_KI 5000.0f
-// Start with the tuned six-step loop while the FOC motor model is unidentified.
-#define BLDC_START_WITH_FOC false
-// Not identified for this motor - run a no-load speed sweep against captures
-// from it before trusting these. Zero L or R falls back to the hand-tuned gains.
+#define BLDC_START_WITH_FOC true
+// The inverse commutation alignment needs the opposite vector to MOTOR_1.
+#define BLDC_FOC_ANGLE_OFFSET_DEG 120.0f
+// Effective FOC model from biased fixed-field voltage steps at 20 kHz:
+// tau ~= 1.067 ms, R ~= 1.6 ohm, L ~= 1.7 mH. Includes inverter/current-scale
+// effects; these are not bare-winding datasheet values (nominal R_LL = 1.8 ohm).
+// At 500 Hz: FPID ~= 5.340708 V/A, 5026.548 V/(A*s). Hardware current steps
+// 0.2..0.6 A settle to 95% in about 0.85..0.90 ms; see docs/JK42BLS01_FOC.md.
+// Back-EMF remains unidentified; feed-forward stays disabled.
 #define BLDC_KE_V_S_PER_RAD_E   0.0f
-#define BLDC_R_PHASE_OHM        0.0f
-#define BLDC_L_PHASE_H          0.0f
+#define BLDC_R_PHASE_OHM        1.6f
+#define BLDC_L_PHASE_H          0.0017f
 #define BLDC_ILOOP_BW_HZ        500.0f
 #endif
 
