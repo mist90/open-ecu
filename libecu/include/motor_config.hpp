@@ -15,7 +15,7 @@
 
 #ifdef MOTOR_1
 #define BLDC_NUM_POLES 40
-#define BLDC_MAX_CURRENT 18.0f
+#define BLDC_MAX_CURRENT 20.0f
 #define BLDC_MIN_CURRENT  -6.0f
 #define BLDC_MAX_SPEED 12.0f
 #define BLDC_MAX_ACCELERATION 6.0f
@@ -26,7 +26,10 @@
 #define BLDC_INVERTION false
 #define BLDC_SPEED_VOLTAGE_KP 0.1f
 #define BLDC_SPEED_VOLTAGE_KI 0.2f
-#define BLDC_SPEED_CURRENT_KP 2.0f
+// Mechanical-RPS -> current PI: 10-inch wheel, 80 kg effective road mass.
+// Kp is limited by the unloaded wheel/PLL delay; Ki restores load-step response.
+// Shared by every MOTOR_1 port; calculation and bench checks: docs/MOTOR_1_SPEED_PI.md.
+#define BLDC_SPEED_CURRENT_KP 3.0f
 #define BLDC_SPEED_CURRENT_KI 2.0f
 #define BLDC_SIX_STEP_USE_MOTOR_MODEL true
 #define BLDC_CURRENT_FALLBACK_KP 0.1f

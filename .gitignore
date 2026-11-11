@@ -16,6 +16,7 @@ tests/test_control/test
 tests/test_adc_scaling/test
 tests/test_motor_alignment/test
 tests/test_pi_interface/test
+tests/test_speed_loop/.build/
 tests/test_hall_handoff/test
 tests/test_numeric_pll/test
 tests/test_profile_math/test

@@ -3,6 +3,7 @@
  * @brief Float/fixed differential control traces and boundary validation
  */
 #include "pi_float_interface.hpp"
+#include "motor_config.hpp"
 #include <cmath>
 #include <cstdio>
 #include <limits>
@@ -85,7 +86,8 @@ static void validation() {
           current.getIntegral() == 0.0f, "invalid input clears the regulator output and state");
     // MOTOR_1's actual speed-loop tuning must fit the more precise speed gain format.
     PiFloatInterface<FixedProfile::SpeedPiTypes, 100> scooter;
-    check(scooter.setParameters(PiParameters{2.0f, 2.0f, 18.0f, -6.0f, 12.0f, -4.0f, 2.0f}),
+    check(scooter.setParameters(PiParameters{BLDC_SPEED_CURRENT_KP, BLDC_SPEED_CURRENT_KI,
+                                           BLDC_MAX_CURRENT, BLDC_MIN_CURRENT, 12.0f, -4.0f, 2.0f}),
           "scooter speed tuning fits the fixed profile");
 }
 

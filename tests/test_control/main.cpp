@@ -864,6 +864,96 @@ static void testRotorObservation(int direction, DriveAlgorithm algorithm) {
                 running_speed, coast_fast, coast_slow, controller.getStatus().current_speed_rps);
 }
 
+// Exercise externally visible demand, including the voltage command's trip
+// through the PWM handler (it is not exposed directly by getStatus()).
+static float velocityOutput(BldcController& controller, ElectricMode mode) {
+    if (mode == ElectricMode::VOLTAGE_MODE) controller.pwmInterruptHandler();
+    const auto status = controller.getStatus();
+    return mode == ElectricMode::CURRENT_MODE ? status.target_current : status.duty_cycle;
+}
+
+static void testVelocityStandstillRelease(ElectricMode mode, bool filtered) {
+    Pwm pwm, fresh_pwm;
+    Hall hall, fresh_hall;
+    Adc adc, fresh_adc;
+    auto params = makeParams();
+    params.pi_current_mode.kp = params.pi_voltage_mode.kp = 0.25f;
+    params.pi_current_mode.ki = params.pi_voltage_mode.ki = 0.5f;
+    params.target_speed_lpf_alpha = params.measured_speed_lpf_alpha = filtered ? 0.2f : 0.0f;
+    params.acceleration_rate = filtered ? 2.0f : 0.0f;
+    const auto direction = filtered ? DriveMode::REVERSE : DriveMode::FORWARD;
+    BldcController controller(pwm, hall, params, &adc);
+    BldcController fresh(fresh_pwm, fresh_hall, params, &fresh_adc);
+    for (auto* drive : {&controller, &fresh}) {
+        check(drive->initialize(), "standstill release controller initializes");
+        drive->start();
+        drive->setDriveMode(direction);
+        check(drive->setElectricMode(mode), "standstill release selects output units");
+    }
+    controller.setTargetSpeed(1.0f);
+    for (unsigned i = 0; i < ActiveTiming::SPEED_HZ; ++i) controller.update();
+    check(velocityOutput(controller, mode) > 0.1f,
+          "nonzero stationary speed demand builds real PI output before release");
+    controller.setTargetSpeed(0.0f);
+    controller.update();
+    check(velocityOutput(controller, mode) == 0.0f,
+          "zero command at standstill releases PI immediately, including an unfinished filtered ramp");
+    bool stays_zero = true;
+    for (unsigned i = 0; i < ActiveTiming::SPEED_HZ; ++i) {
+        controller.update();
+        stays_zero &= velocityOutput(controller, mode) == 0.0f;
+    }
+    check(stays_zero, "active velocity idle remains exactly zero rather than retaining PI history");
+
+    // Below the standstill speed tolerance, but still a genuine user command.
+    controller.setTargetSpeed(0.0005f);
+    fresh.setTargetSpeed(0.0005f);
+    bool same_restart = true;
+    for (unsigned i = 0; i < 20; ++i) {
+        controller.update();
+        fresh.update();
+        same_restart &= std::abs(velocityOutput(controller, mode) - velocityOutput(fresh, mode)) < 2e-6f;
+    }
+    check(velocityOutput(controller, mode) > 0.0f,
+          "tiny nonzero stationary command is not swallowed by idle release");
+    check(same_restart, "restart after release matches a fresh controller without stale integral or ramp");
+
+    controller.setTargetSpeed(0.0f);
+    controller.setControlMode(ControlMode::CLOSED_LOOP_TORQUE);
+    if (mode == ElectricMode::CURRENT_MODE) controller.setCurrent(0.125f);
+    else controller.setDutyCycle(0.125f);
+    controller.update();
+    check(std::abs(velocityOutput(controller, mode) - 0.125f) < 2e-6f,
+          "zero speed command does not cancel an explicit standstill torque demand");
+}
+
+static void testVelocityBrakingRelease(int direction) {
+    Pwm pwm;
+    Hall hall;
+    Adc adc;
+    auto params = makeParams();
+    params.pi_current_mode.kp = 0.25f;
+    params.pi_current_mode.ki = 0.5f;
+    params.measured_speed_lpf_alpha = 0.2f;
+    BldcController controller(pwm, hall, params, &adc);
+    check(controller.initialize(), "braking release controller initializes");
+    controller.start();
+    controller.setDriveMode(direction > 0 ? DriveMode::FORWARD : DriveMode::REVERSE);
+    RotorTrace trace(controller, hall, adc, pwm);
+    trace.advance(direction * 2.0f, direction * 2.0f, ActiveTiming::CURRENT_HZ, RotorClock::CURRENT);
+    check(controller.getStatus().current_speed_rps > 1.8f && controller.getStatus().target_current < -0.1f,
+          "zero speed command retains braking current while the rotor moves in the selected direction");
+    trace.advance(direction * 2.0f, 0.0f, ActiveTiming::CURRENT_HZ, RotorClock::CURRENT);
+    trace.advance(0.0f, 0.0f, 3 * ActiveTiming::CURRENT_HZ, RotorClock::CURRENT);
+    check(std::abs(controller.getPllInfo().pll_integral) < 0.1f,
+          "decelerated Hall trace settles the real PLL into standstill");
+    check(controller.getStatus().target_current == 0.0f,
+          "braking integral releases to exact zero after real Hall deceleration");
+    trace.advance(-direction * 2.0f, -direction * 2.0f, ActiveTiming::CURRENT_HZ, RotorClock::CURRENT);
+    check(controller.getStatus().current_speed_rps < -1.8f && controller.getStatus().target_current > 0.1f,
+          "zero command still applies opposite corrective current when the rotor moves against drive direction");
+}
+
 static void testOneFrameReconstruction() {
     using Core = FocAlgorithm::Core;
     using Current = Core::Current;
@@ -1057,6 +1147,9 @@ static void testRejectedModeTuning() {
 int main() {
     testSpeedClock();
     testSlewClock();
+    for (auto mode : {ElectricMode::CURRENT_MODE, ElectricMode::VOLTAGE_MODE})
+        for (bool filtered : {false, true}) testVelocityStandstillRelease(mode, filtered);
+    for (int direction : {1, -1}) testVelocityBrakingRelease(direction);
     testCommands();
     testFragmentedCommands();
     testAtLifecycle();

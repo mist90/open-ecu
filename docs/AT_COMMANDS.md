@@ -147,6 +147,13 @@ Set target motor speed or read the current measured speed.
 | **Range** | 0.0 to 200.0 RPS |
 | **Unit** | Revolutions per second |
 
+In VELOCITY mode, `SPD=0` continues regulating while the rotor slows down. Once
+both the PLL speed and filtered speed feedback settle within 0.1 Hall steps/s
+(0.000833 RPS for a 40-pole motor), the speed PI integral and target-speed filters
+are cleared and the current/duty demand is exactly zero. This releases residual
+torque after stopping, including any unfinished setpoint ramp. Nonzero speed
+commands retain normal PI control, even at standstill.
+
 **Examples:**
 
 ```

@@ -1013,7 +1013,6 @@ class ATConsoleTab(QWidget):
     def __init__(self, write_callback):
         super().__init__()
         self._write = write_callback
-        self._line_count = 0
         self._logging = False
         self._init_ui()
 
@@ -1039,6 +1038,8 @@ class ATConsoleTab(QWidget):
 
         self.log = QTextEdit()
         self.log.setReadOnly(True)
+        # Qt trims complete oldest paragraphs, including wrapped/multiline logs.
+        self.log.document().setMaximumBlockCount(self.MAX_LINES)
         self.log.setFont(QFont("Monospace", 9))
         self.log.setStyleSheet(
             "QTextEdit { background: #1a1a1a; color: #cccccc; border: 1px solid #444; }"
@@ -1086,18 +1087,12 @@ class ATConsoleTab(QWidget):
     def _append(self, text: str, color: str):
         cursor = self.log.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
+        if not self.log.document().isEmpty():
+            cursor.insertBlock()
         fmt = QTextCharFormat()
         fmt.setForeground(QColor(color))
         cursor.setCharFormat(fmt)
-        cursor.insertText(text + "\n")
-        self._line_count += 1
-        if self._line_count > self.MAX_LINES:
-            cursor2 = QTextCursor(self.log.document())
-            cursor2.movePosition(QTextCursor.MoveOperation.Start)
-            cursor2.select(QTextCursor.SelectionType.LineUnderCursor)
-            cursor2.removeSelectedText()
-            cursor2.deleteChar()
-            self._line_count -= 1
+        cursor.insertText(text)
         if self.chk_autoscroll.isChecked():
             sb = self.log.verticalScrollBar()
             sb.setValue(sb.maximum())
@@ -1113,7 +1108,6 @@ class ATConsoleTab(QWidget):
 
     def _clear(self):
         self.log.clear()
-        self._line_count = 0
 
 
 class MonitorWindow(QMainWindow):
@@ -1462,7 +1456,10 @@ class MonitorWindow(QMainWindow):
                 self.control_panel.set_max_current(self._max_current)
 
 def main():
-    pg.setConfigOptions(antialias=True, leftButtonPan=False)
+    # Antialiased noisy paths can hold the GIL for tens of milliseconds, starving
+    # SerialWorker even in its QThread and overflowing the 2-Mbaud receive path.
+    # Opaque width-2 pens use pyqtgraph's fast segmented drawing without AA.
+    pg.setConfigOptions(antialias=False, leftButtonPan=False)
     pg.setConfigOption("background", "#1e1e1e")
     pg.setConfigOption("foreground", "#cccccc")
 

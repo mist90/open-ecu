@@ -181,8 +181,8 @@ LIBECU_SLOW_PATH void BldcController::update() noexcept
     // Signed feedback fixes all four quadrants: turning against the command now
     // yields a *positive* error and therefore corrective torque, while turning
     // with it behaves exactly as before.
-    Speed speed_rps = divideByInteger<Speed>(motor_pll_.getNativeSpeedStepsSec(),
-                                            params_.num_poles * BLDC_NUM_PHASES);
+    const auto speed_steps_s = motor_pll_.getNativeSpeedStepsSec();
+    Speed speed_rps = divideByInteger<Speed>(speed_steps_s, params_.num_poles * BLDC_NUM_PHASES);
     if (dmode_ == DriveMode::REVERSE) speed_rps = -speed_rps;
 
     const Fraction alpha = limits_.speed_alpha;
@@ -258,13 +258,29 @@ LIBECU_SLOW_PATH void BldcController::update() noexcept
             }
 
             case ControlMode::CLOSED_LOOP_VELOCITY: {
-                const Speed limited_target = applyAccelerationLimit(status.target_speed_rps);
                 using PiSpeed = ActivePiProfile::SpeedPiTypes::Input;
-                const auto pi_output = pi_speed_controller_.updateNative(
-                    numberCast<PiSpeed>(limited_target),
-                    numberCast<PiSpeed>(status.current_speed_rps),
-                    status.current_pi_saturation
-                );
+                ActivePiProfile::SpeedPiTypes::Output pi_output{};
+                // A zero-speed command must release torque once the rotor stops:
+                // zero PI error otherwise preserves the last load/braking integral.
+                // Use the FOC idle speed tolerance (Hall steps/s), not exact zero:
+                // the PLL and feedback LPF can retain small numerical residuals.
+                constexpr auto stopped_steps_s = number_v<Profile::PllSpeed, 1, 10>;
+                const Speed stopped_rps = divideByInteger<Speed>(
+                    stopped_steps_s, params_.num_poles * BLDC_NUM_PHASES);
+                if (status.target_speed_rps == Speed{} &&
+                    numericAbs(speed_steps_s) <= stopped_steps_s &&
+                    numericAbs(status.current_speed_rps) <= stopped_rps) {
+                    pi_speed_controller_.reset();
+                    filtered_target_speed_ = Speed{};
+                    limited_target_speed_ = Accumulator{};
+                } else {
+                    const Speed limited_target = applyAccelerationLimit(status.target_speed_rps);
+                    pi_output = pi_speed_controller_.updateNative(
+                        numberCast<PiSpeed>(limited_target),
+                        numberCast<PiSpeed>(status.current_speed_rps),
+                        status.current_pi_saturation
+                    );
+                }
 
                 // Electric mode determines how to use PI output
                 if (status.electric_mode == ElectricMode::VOLTAGE_MODE) {

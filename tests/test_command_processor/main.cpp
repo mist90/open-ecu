@@ -5,6 +5,7 @@
 #include "board.hpp"
 #include "bldc_controller.hpp"
 #include "command_processor.hpp"
+#include "motor_config.hpp"
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -67,8 +68,11 @@ void testMotorDefaults(BldcController& controller) {
     check(params.num_poles == 40 && !params.useInverseCommTable, "scooter Hall configuration survives");
     check(std::fabs(controller.getFocAngleOffsetDeg() + 60.0f) < 0.001f,
           "scooter FOC alignment remains -60 degrees");
-    check(std::fabs(speed_kp - 2.0f) < 0.00001f && std::fabs(speed_ki - 2.0f) < 0.00001f,
-          "scooter speed PI survives");
+    check(std::fabs(speed_kp - BLDC_SPEED_CURRENT_KP) < 0.00001f &&
+          std::fabs(speed_ki - BLDC_SPEED_CURRENT_KI) < 0.00001f,
+          "scooter loads the shared speed PI tuning");
+    check(params.max_current == 20.0f && params.min_current == -6.0f,
+          "scooter current limits are -6/+20 A");
     check(std::fabs(foc_kp - 2.199115f) < 0.0001f && std::fabs(foc_ki - 2067.168f) < 0.002f,
           "scooter model still produces the qualified FOC gains");
     check(std::fabs(current_kp - 0.183260f) < 0.0001f && std::fabs(current_ki - 172.264f) < 0.002f,
