@@ -15,7 +15,7 @@ endif()
 
 # Debug options
 option(ENABLE_DEBUG_PWM_ISR "Enable PWM ISR debug data capture (uses ~8KB RAM)" OFF)
-option(ENABLE_THROTTLE_BRAKE_CONTROL "Use the physical throttle and brake as control inputs" ON)
+option(ENABLE_THROTTLE_BRAKE_CONTROL "Use the physical throttle and brake as control inputs" OFF)
 option(ENABLE_BENCH_PROFILING "Capture PWM callback cycle counts through SWD" OFF)
 set(PI_NUMERIC_PROFILE "float" CACHE STRING "Legacy PI-only override when NUMERIC_PROFILE=float")
 set_property(CACHE PI_NUMERIC_PROFILE PROPERTY STRINGS float fixed)
