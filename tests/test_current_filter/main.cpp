@@ -27,6 +27,7 @@ static void frequencyResponse() {
     check(!makeCurrentFilterCoefficients(CurrentFilterOrder::FIRST_ORDER,
                                         std::numeric_limits<float>::quiet_NaN(), 20000, c), "reject NaN cutoff");
     check(!makeCurrentFilterCoefficients(static_cast<CurrentFilterOrder>(255), 2000, 20000, c), "reject unknown order");
+    check(!makeCurrentFilterCoefficients(static_cast<CurrentFilterOrder>(2), 2000, 20000, c), "reject removed order");
     check(makeCurrentFilterCoefficients(CurrentFilterOrder::OFF, 0, 20000, c), "explicit bypass");
     CurrentFeedbackFilter<P> filter;
     for (float value : {-20.0f, 0.0f, 0.25f, 18.0f}) {
@@ -35,72 +36,75 @@ static void frequencyResponse() {
         check(filter.value() == input, "bypass publishes the latest raw sample through value()");
     }
 
-    for (auto order : {CurrentFilterOrder::FIRST_ORDER, CurrentFilterOrder::BUTTERWORTH_SECOND_ORDER}) {
-        CurrentFilterCoefficients<P> enabled, bypass;
-        check(makeCurrentFilterCoefficients(order, 2000, 16000, enabled), "bypass transition setup");
-        for (unsigned tick = 0; tick < 20; ++tick)
-            filter.update(number<Current>(int(tick % 5) - 2), enabled);
-        const auto raw = number<Current>(-7, 4);
-        check(filter.update(raw, bypass) == raw && filter.value() == raw,
-              "disabling bypasses old histories and preserves observable value");
-        const auto seed = number<Current>(3, 2);
-        check(filter.update(seed, enabled) == seed && filter.value() == seed,
-              "re-enabling after bypass reseeds from the first sample without an explicit reset");
-        for (uint32_t fs : {10000U, 20000U, 40000U}) {
-            for (float fc : {1500.0f, 2000.0f, 2500.0f}) {
-                check(makeCurrentFilterCoefficients(order, fc, fs, c), "design valid coefficients");
-                const auto good = c;
-                check(!makeCurrentFilterCoefficients(order, -1, fs, c) && c.b0 == good.b0 && c.a1 == good.a1,
-                      "invalid configuration preserves coefficients");
-                filter.reset();
-                for (int n = 0; n < 2000; ++n) {
-                    const float value = numberCast<float>(filter.update(numberCast<Current>(-3.25f), c));
-                    if (n == 0 || n == 1999)
-                        check(std::fabs(value + 3.25f) < 0.0005f, "warm start and DC gain");
-                }
-                for (float f : {500.0f, fc, 0.4f*fs}) {
-                    filter.reset();
-                    std::complex<double> input_sum{}, output_sum{};
-                    const int count = int(fs); // integer-Hz frequencies are coherent over one second
-                    for (int n = 0; n < count + 1000; ++n) {
-                        const double angle = 6.283185307179586 * f * n / fs;
-                        const float input = float(std::sin(angle));
-                        const float output = numberCast<float>(filter.update(numberCast<Current>(input), c));
-                        if (n >= 1000) {
-                            const auto weight = std::polar(1.0, -angle);
-                            input_sum += double(input) * weight;
-                            output_sum += double(output) * weight;
-                        }
-                    }
-                    const auto measured = output_sum / input_sum;
-                    const auto z = std::polar(1.0, -6.283185307179586 * f / fs);
-                    const auto expected = (double(numberCast<float>(c.b0)) + double(numberCast<float>(c.b1))*z +
-                                           double(numberCast<float>(c.b2))*z*z) /
-                                          (1.0 + double(numberCast<float>(c.a1))*z +
-                                           double(numberCast<float>(c.a2))*z*z);
-                    check(std::abs(measured - expected) < 0.0003, "measured gain and phase match transfer function");
-                    if (f == fc) check(std::fabs(std::abs(measured) - std::sqrt(0.5)) < 0.0003, "cutoff is -3 dB");
-                }
-                filter.reset();
-                check(std::fabs(numberCast<float>(filter.update(numberCast<Current>(0.5f), c))-0.5f) < 1e-5f,
-                      "reset removes previous signal history");
+    constexpr auto order = CurrentFilterOrder::FIRST_ORDER;
+    CurrentFilterCoefficients<P> enabled, bypass;
+    check(makeCurrentFilterCoefficients(order, 2000, 16000, enabled), "bypass transition setup");
+    for (unsigned tick = 0; tick < 20; ++tick)
+        filter.update(number<Current>(int(tick % 5) - 2), enabled);
+    const auto raw = number<Current>(-7, 4);
+    check(filter.update(raw, bypass) == raw && filter.value() == raw,
+          "disabling bypasses old histories and preserves observable value");
+    const auto seed = number<Current>(3, 2);
+    check(filter.update(seed, enabled) == seed && filter.value() == seed,
+          "re-enabling after bypass reseeds from the first sample without an explicit reset");
+    for (uint32_t fs : {8000U, 10000U, 16000U, 20000U, 40000U}) {
+        for (float fc : {1500.0f, 2000.0f, 2500.0f}) {
+            check(makeCurrentFilterCoefficients(order, fc, fs, c), "design valid coefficients");
+            const auto good = c;
+            check(!makeCurrentFilterCoefficients(order, -1, fs, c) &&
+                  c.alpha == good.alpha && c.order == good.order,
+                  "invalid configuration preserves coefficients");
+            filter.reset();
+            for (int n = 0; n < 2000; ++n) {
+                const float value = numberCast<float>(filter.update(numberCast<Current>(-3.25f), c));
+                if (n == 0 || n == 1999)
+                    check(std::fabs(value + 3.25f) < 0.0005f, "warm start and DC gain");
             }
+            for (float f : {500.0f, fc, 0.4f*fs}) {
+                filter.reset();
+                std::complex<double> input_sum{}, output_sum{};
+                const int count = int(fs); // integer-Hz frequencies are coherent over one second
+                for (int n = 0; n < count + 1000; ++n) {
+                    const double angle = 6.283185307179586 * f * n / fs;
+                    const float input = float(std::sin(angle));
+                    const float output = numberCast<float>(filter.update(numberCast<Current>(input), c));
+                    if (n >= 1000) {
+                        const auto weight = std::polar(1.0, -angle);
+                        input_sum += double(input) * weight;
+                        output_sum += double(output) * weight;
+                    }
+                }
+                const auto measured = output_sum / input_sum;
+                const auto z = std::polar(1.0, -6.283185307179586 * f / fs);
+                const double alpha = numberCast<float>(c.alpha);
+                const auto expected = alpha / (1.0 - (1.0 - alpha)*z);
+                check(std::abs(measured - expected) < 0.0003, "measured gain and phase match transfer function");
+                if (f == fc) check(std::fabs(std::abs(measured) - std::sqrt(0.5)) < 0.0003, "cutoff is -3 dB");
+            }
+            filter.reset();
+            check(std::fabs(numberCast<float>(filter.update(numberCast<Current>(0.5f), c))-0.5f) < 1e-5f,
+                  "reset removes previous signal history");
         }
     }
 }
 
-template<class P>
+template<class P, uint32_t FrequencyHz = 20000>
 static void delayedLoop(const char* profile, float plant_r = 0.658f, float plant_l = 0.0007f,
                         float gain_scale = 1.0f) {
-    using C = FocControlCore<P, 20000>;
-    for (auto order : {CurrentFilterOrder::OFF, CurrentFilterOrder::FIRST_ORDER,
-                      CurrentFilterOrder::BUTTERWORTH_SECOND_ORDER}) {
+    using C = FocControlCore<P, FrequencyHz>;
+    constexpr unsigned step_up = FrequencyHz / 500;
+    constexpr unsigned reverse = FrequencyHz * 3 / 250;
+    constexpr unsigned zero = FrequencyHz * 11 / 500;
+    constexpr unsigned saturate = FrequencyHz / 25;
+    constexpr unsigned recover = FrequencyHz * 3 / 50;
+    constexpr unsigned end = FrequencyHz * 9 / 100;
+    for (auto order : {CurrentFilterOrder::OFF, CurrentFilterOrder::FIRST_ORDER}) {
         for (float fc : {1500.0f, 2000.0f, 2500.0f}) {
             C core;
             typename C::Params params;
             params.angle_offset_rad = typename P::Angle{};
             params.low_side_clamped_pwm = true;
-            check(makeCurrentFilterCoefficients(order, fc, 20000, params.current_filter), "loop filter setup");
+            check(makeCurrentFilterCoefficients(order, fc, FrequencyHz, params.current_filter), "loop filter setup");
             core.setParams(params);
             core.setCurrentPiGains(numberCast<typename C::Gain>(gain_scale*0.0007f*3141.59265f),
                                    numberCast<typename C::Gain>(gain_scale*0.658f*3141.59265f));
@@ -110,10 +114,10 @@ static void delayedLoop(const char* profile, float plant_r = 0.658f, float plant
             in.electric_mode = ElectricMode::CURRENT_MODE;
             in.bus_voltage = numberCast<typename C::Voltage>(40.8f);
             float id = 0.0f, iq = 0.0f, delayed_d = 0.0f, delayed_q = 0.0f, peak = 0.0f;
-            const float decay = std::exp(-plant_r * 0.00005f / plant_l);
-            for (int n = 0; n < 1800; ++n) {
-                const float target = n < 40 ? 0.0f : n < 240 ? 0.3f : n < 440 ? -0.3f :
-                                     n < 800 ? 0.0f : n < 1200 ? 100.0f : 0.0f;
+            const float decay = std::exp(-plant_r / (FrequencyHz * plant_l));
+            for (unsigned n = 0; n < end; ++n) {
+                const float target = n < step_up ? 0.0f : n < reverse ? 0.3f : n < zero ? -0.3f :
+                                     n < saturate ? 0.0f : n < recover ? 100.0f : 0.0f;
                 in.target_current = numberCast<typename C::Current>(target);
                 in.i_u = numberCast<typename C::Current>(-id);
                 in.i_v = numberCast<typename C::Current>(0.5f*id - 0.866025404f*iq);
@@ -126,8 +130,8 @@ static void delayedLoop(const char* profile, float plant_r = 0.658f, float plant
                 iq = iq*decay + delayed_q/plant_r*(1.0f-decay);
                 delayed_d = numberCast<float>(out.v_d);
                 delayed_q = numberCast<float>(out.v_q);
-                if (n >= 40 && n < 240) peak = std::max(peak, iq);
-                if (n == 239 || n == 439 || n == 799 || n == 1799) {
+                if (n >= step_up && n < reverse) peak = std::max(peak, iq);
+                if (n + 1 == reverse || n + 1 == zero || n + 1 == saturate || n + 1 == end) {
                     check(std::fabs(iq-target) < 0.01f, "step/reversal/saturation recovery with one-cycle delay");
                     check(std::fabs(id) < 0.01f, "d axis remains regulated");
                 }
@@ -141,8 +145,8 @@ static void delayedLoop(const char* profile, float plant_r = 0.658f, float plant
             const auto filtered = core.filteredCurrents();
             check(filtered.d == rotated.i_d && filtered.q == rotated.i_q,
                   "angle changes seed filter history in the new dq frame");
-            std::printf("%s order=%u fc=%.0f Hz: step peak %.4f A, final %.6f A\n",
-                        profile, unsigned(order), fc, peak, iq);
+            std::printf("%s fs=%u order=%u fc=%.0f Hz: step peak %.4f A, final %.6f A\n",
+                        profile, FrequencyHz, unsigned(order), fc, peak, iq);
         }
     }
 }
@@ -151,8 +155,7 @@ template<class P>
 static void noiseFloor() {
     using C = FocControlCore<P, 20000>;
     using I = typename C::Current;
-    for (auto order : {CurrentFilterOrder::OFF, CurrentFilterOrder::FIRST_ORDER,
-                      CurrentFilterOrder::BUTTERWORTH_SECOND_ORDER}) {
+    for (auto order : {CurrentFilterOrder::OFF, CurrentFilterOrder::FIRST_ORDER}) {
         C core;
         typename C::Params p;
         p.angle_offset_rad = typename C::Angle{};
@@ -233,6 +236,12 @@ int main() {
     // A faster electrical plant needs lower PI gains even at the same PWM rate.
     delayedLoop<FloatProfile>("float lower-L", 0.22f, 0.000175f, 0.25f);
     delayedLoop<FixedProfile>("fixed lower-L", 0.22f, 0.000175f, 0.25f);
+    // The selected first-order configuration must also close the loop on the
+    // slower MOTOR_1 ports, including their longer one-frame actuation delay.
+    delayedLoop<FloatProfile, 8000>("float lower-L", 0.22f, 0.000175f, 0.25f);
+    delayedLoop<FixedProfile, 8000>("fixed lower-L", 0.22f, 0.000175f, 0.25f);
+    delayedLoop<FloatProfile, 16000>("float lower-L", 0.22f, 0.000175f, 0.25f);
+    delayedLoop<FixedProfile, 16000>("fixed lower-L", 0.22f, 0.000175f, 0.25f);
     noiseFloor<FloatProfile>();
     noiseFloor<FixedProfile>();
     std::printf("%d checks, %d failures\n", checks, failures);

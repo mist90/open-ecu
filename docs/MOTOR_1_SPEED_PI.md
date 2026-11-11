@@ -1,5 +1,9 @@
 # MOTOR_1 speed PI: 10-inch wheel and 80 kg road mass
 
+The inner FOC current-loop filter/gain experiment is documented separately in
+[MOTOR_1_CURRENT_FILTER.md](MOTOR_1_CURRENT_FILTER.md). The F410 board's 2-kHz
+first-order filter and MOTOR_1's FPID=0.549779/516.792 retain the outer SPID=3/2 below.
+
 ## Shared settings
 
 `libecu/include/motor_config.hpp`, under `MOTOR_1`:

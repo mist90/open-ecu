@@ -73,8 +73,8 @@ void testMotorDefaults(BldcController& controller) {
           "scooter loads the shared speed PI tuning");
     check(params.max_current == 20.0f && params.min_current == -6.0f,
           "scooter current limits are -6/+20 A");
-    check(std::fabs(foc_kp - 2.199115f) < 0.0001f && std::fabs(foc_ki - 2067.168f) < 0.002f,
-          "scooter model still produces the qualified FOC gains");
+    check(std::fabs(foc_kp - 0.549779f) < 0.0001f && std::fabs(foc_ki - 516.792f) < 0.002f,
+          "scooter boots with FOC gains qualified with first-order dq filtering");
     check(std::fabs(current_kp - 0.183260f) < 0.0001f && std::fabs(current_ki - 172.264f) < 0.002f,
           "scooter six-step PI still follows the model and the test board's 24 V bus");
 #else
@@ -126,6 +126,8 @@ class TestBoard final : public Board {
 public:
     bool initialize() noexcept override {
         record('I');
+        if (const char* cutoff = std::getenv("TEST_BOARD_CURRENT_FILTER_HZ"))
+            info_.current_feedback_filter_hz = std::strtof(cutoff, nullptr);
         return pwm_.initialize(info_.pwm_frequency_hz, info_.requested_dead_time_ns) && hall_.initialize();
     }
     const BoardInfo& info() const noexcept override { return info_; }
@@ -136,6 +138,13 @@ public:
         record('C');
         testDefaults(controller);
         testMotorDefaults(controller);
+        const auto& foc = controller.getParams().foc;
+        const auto expected_order = info_.current_feedback_filter_hz > 0.0f
+            ? CurrentFilterOrder::FIRST_ORDER : CurrentFilterOrder::OFF;
+        check(foc.current_filter_order == expected_order,
+              "board enables dq filtering independently of the selected motor");
+        check(foc.current_filter_cutoff_hz == info_.current_feedback_filter_hz,
+              "shared main loads the board's actual dq cutoff without a motor override");
         static Protocol protocol(&controller);
         return protocol;
     }

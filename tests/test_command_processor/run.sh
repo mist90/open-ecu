@@ -17,8 +17,10 @@ for profile in float fixed; do
                 -fsanitize=undefined -fno-sanitize-recover=all "${flags[@]}" "${motor_flags[@]}" "${manual_flags[@]}" \
                 -I../../STM32G431/Core/Inc -I../../libecu/include -o "$build_dir/test" main.cpp \
                 ../../libecu/src/{main,bldc_controller,foc_algorithm,hall_monitor,motor_pll,six_step_algorithm}.cpp
-            echo "Protocol lifecycle and boot defaults: profile=$profile motor=$motor manual=$manual"
-            "$build_dir/test"
+            for cutoff in 0 1250 2000; do
+                echo "Protocol lifecycle and boot defaults: profile=$profile motor=$motor manual=$manual filter=$cutoff"
+                TEST_BOARD_CURRENT_FILTER_HZ=$cutoff "$build_dir/test"
+            done
         done
     done
 done

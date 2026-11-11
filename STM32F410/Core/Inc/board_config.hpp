@@ -23,6 +23,7 @@ constexpr uint32_t ADC_LEAD_TICKS = 100; // TRGO falling edge 1 us before CNT=AR
 constexpr uint32_t CURRENT_SETTLING_NS = 2000; // UM1996: T-noise + T-rise; excludes timer dead time
 constexpr float SHUNT_OHMS = 0.010f;
 constexpr float CURRENT_GAIN = 57.0f / 11.0f;
+constexpr float CURRENT_FEEDBACK_FILTER_HZ = 2000.0f; // First-order Id/Iq LPF; 0 disables it.
 constexpr float ADC_REFERENCE = 3.3f;
 constexpr uint32_t BUS_R_UP = 169000;
 constexpr uint32_t BUS_R_DOWN = 9310;

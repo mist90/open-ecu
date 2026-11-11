@@ -29,6 +29,7 @@ constexpr uint32_t PWM_TIMER_FREQ = libecu::ActiveTiming::CURRENT_HZ;
 /* Nominal DC link voltage. Used only to tune the current-loop PI gains; the
  * loops themselves run off the measured bus voltage. */
 #define BLDC_NOMINAL_VBUS 31.3f
+#define BLDC_CURRENT_FEEDBACK_FILTER_HZ 0.0f // First-order Id/Iq LPF for this analog front end; 0 = off.
 /* Dead time, nanoseconds. MEASURED optimum - see docs/FOC_HANDOFF.md section 15.
  *
  * This board ran 235 ns for a long time (a units bug: a requested "200" became
@@ -278,6 +279,7 @@ public:
         info_.nominal_bus_voltage    = BLDC_NOMINAL_VBUS;
         info_.requested_dead_time_ns = BLDC_DEAD_TIME_NS;
         info_.actual_dead_time_ns    = pwm_driver.getActualDeadTimeNs();
+        info_.current_feedback_filter_hz = BLDC_CURRENT_FEEDBACK_FILTER_HZ;
 
         // DTG is quantised, so print what the hardware really got rather than
         // what was asked for - the two disagreed by 18 % until the conversion

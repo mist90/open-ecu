@@ -391,7 +391,8 @@ public:
         printf("Hall: TIM5 PB12/PC10/PC11, CKD=2 IC1F=0xF (5.12 us), Morpho jumpers required\n");
         info_ = {ActiveTiming::CURRENT_HZ, ActiveTiming::SPEED_HZ, ihm08::NOMINAL_BUS_VOLTAGE,
                  ihm08::DEAD_TIME_NS, pwm_driver.getActualDeadTimeNs(), ihm08::MAX_DUTY,
-                 ihm08::MAX_MODULATION, ihm08::MAX_BUS_VOLTAGE, ihm08::LOW_SIDE_CLAMPED_PWM};
+                 ihm08::MAX_MODULATION, ihm08::MAX_BUS_VOLTAGE, ihm08::LOW_SIDE_CLAMPED_PWM,
+                 ihm08::CURRENT_FEEDBACK_FILTER_HZ};
         CurrentSensorCalibration calibration{ihm08::SHUNT_OHMS, ihm08::CURRENT_GAIN, ihm08::ADC_REFERENCE, 12};
         calibration.injected_sample_sum = Stm32Adc::INJECTED_SAMPLE_SUM;
         VoltageSensorParameters voltage{float(ihm08::BUS_R_UP), float(ihm08::BUS_R_DOWN)};

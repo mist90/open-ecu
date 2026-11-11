@@ -63,6 +63,10 @@
 // 500 Hz ships because it never regresses; raise it if mean accuracy matters
 // more than worst-case excursion.
 #define BLDC_ILOOP_BW_HZ        500.0f
+// FOC uses lower gains with dq filtering: FPID ~= 0.549779 / 516.792.
+// This is the model's tuning input, not a measured closed-loop bandwidth.
+// F410 noise/transient comparison: docs/MOTOR_1_CURRENT_FILTER.md.
+#define BLDC_FOC_ILOOP_BW_HZ    125.0f
 #else
 // JK42BLS01, FOC qualified unloaded on STM32G431 at 20 V.
 #define BLDC_NUM_POLES 8
@@ -95,6 +99,7 @@
 #define BLDC_R_PHASE_OHM        1.6f
 #define BLDC_L_PHASE_H          0.0017f
 #define BLDC_ILOOP_BW_HZ        500.0f
+#define BLDC_FOC_ILOOP_BW_HZ    500.0f
 #endif
 
 #endif // LIBECU_MOTOR_CONFIG_HPP

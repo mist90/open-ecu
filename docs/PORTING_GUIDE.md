@@ -20,8 +20,9 @@ Keep the application in `libecu/src/main.cpp` and implement a board factory in
 - Implement the PWM, Hall and ADC interfaces under `libecu/hal/<platform>/`.
 
 `BoardInfo` contains hardware facts: PWM/control rates, nominal and maximum
-bus voltage, requested and actual dead time, duty/modulation limits and the
-low-side-clamped PWM choice. Motor poles, electrical model and loop tuning
+bus voltage, requested and actual dead time, duty/modulation limits, the
+low-side-clamped PWM choice and `current_feedback_filter_hz` for the current
+sensing front end. Motor poles, electrical model and PI tuning
 belong in `motor_config.hpp` / the control configuration.
 
 See [board.hpp](../libecu/include/board.hpp) and the
@@ -39,7 +40,8 @@ Auxiliary readiness and source age remain the board's responsibility.
 All current ports call `pwmInterruptHandler()` once after a complete current
 frame is available. STM32F410 uses injected U/V/W with a window-qualified second
 software scan; STM32G431 uses dual injected acquisition with hardware x2.
-Their regular auxiliary DMA scans are serviced by SysTick. Source ordering,
+Their regular auxiliary DMA scans are serviced by SysTick. ES32 HW050/HW051
+retain DMA current frames and pipelined injected auxiliaries. Source ordering,
 deadlines, raw protection and failure shutdown belong to each board port.
 
 Current STM32 contracts are documented in
@@ -47,6 +49,9 @@ Current STM32 contracts are documented in
 [G431 injected hardware x2](../STM32G431/ADC_REGULAR.md). Timing measurements below
 retain their historical acquisition/scheduling configuration.
 
+The STM32 platform/HAL sources and their acquisition tests are restored from
+`a55888245304c78c1d539f04383922c086feff48`; the ES32 DMA contract is described in
+[PIPELINED_ADC.md](../ES32F3553GLTE/docs/PIPELINED_ADC.md).
 The shared controller and numeric optimizations are retained. The STM32 ports
 use the single-call wrapper, with no separate source-IRQ preparation stage.
 
@@ -399,7 +404,7 @@ boundary. Include critical sections and worst-case Hall/PLL processing;
 do not infer deadlines from optimization flags. Debug builds can be unsuitable
 for an energized 20-kHz loop.
 
-### Current-model mismatch found during filter testing
+### Historical current-model mismatch in the removed second-order prototype
 
 The original MOTOR_1 tuning used L=0.7 mH, R=0.658 ohm, Kp=2.1991 and
 Ki=2067.168. A second-order 2-kHz filter with those gains developed a growing
@@ -421,24 +426,32 @@ from this region using an ideal PWM-to-voltage assumption.
 
 ### Portable filter implementation
 
-`current_feedback_filter.hpp` implements first-order and second-order
-Butterworth filters for both numeric profiles. Coefficients are prepared
+`current_feedback_filter.hpp` implements a first-order low-pass filter for
+both numeric profiles. The second-order implementation has been removed.
+Coefficients are prepared
 outside the ISR and states are reset on FOC entry/reset or an angle-offset
 change. Filter Id/Iq after selecting valid measurements and applying Park.
 Raw currents remain available for telemetry/protection.
 
-Opt in through `FocParams`:
+Set the cutoff in the board's electrical configuration and publish it through
+`BoardInfo`; the shared main selects first order for a positive cutoff and
+bypass for zero. For example, the F410/IHM08M1 port uses:
 
 ```cpp
-motor_params.foc.current_filter_order = libecu::CurrentFilterOrder::FIRST_ORDER;
-motor_params.foc.current_filter_cutoff_hz = 2000.0f;
-motor_params.foc.current_noise_floor_a = 0.10f;
-// Alternative for controlled comparison:
-// libecu::CurrentFilterOrder::BUTTERWORTH_SECOND_ORDER
+// STM32F410/Core/Inc/board_config.hpp
+constexpr float CURRENT_FEEDBACK_FILTER_HZ = 2000.0f;
+// BoardInfo published by the port:
+info_.current_feedback_filter_hz = ihm08::CURRENT_FEEDBACK_FILTER_HZ;
 ```
 
-The portable default is `OFF`; enabling a filter and selecting PI gains are
-explicit tuning decisions. The existing telemetry filter (`alpha=0.005`,
+The default board cutoff is zero (off). F410/IHM08M1 selects 2 kHz; G431 and
+both ES32 ports select zero. The cutoff follows the board even if the motor
+changes. MOTOR_1's separate motor configuration selects FPID=0.549779/516.792.
+See [MOTOR_1_CURRENT_FILTER.md](MOTOR_1_CURRENT_FILTER.md) for
+the 2026-11-11 comparison, including the quieter sound, slower current steps
+and increased lower-frequency ripple. Motor PI gains are independent of this
+board-owned feedback-filter setting.
+The existing telemetry filter (`alpha=0.005`,
 about 16 Hz at 20 kHz) is much too slow for the nominal fast feedback loop.
 
 ### Zero-current noise floor
@@ -460,7 +473,8 @@ active, because it must generate voltage to reject back-EMF. Direct voltage
 mode retains its command. Filtering or discarding all small phase-current
 samples unconditionally would lose these properties.
 
-At equal 2-kHz cutoffs and the reduced PI gains, first-order filtering gave
+In the earlier prototype comparison, at equal 2-kHz cutoffs and the reduced
+PI gains, first-order filtering gave
 about 28/37 mA filtered Id/Iq standard deviation; second order gave 24/31 mA.
 Second order required about 1.3 us more execution window and introduced more
 phase lag. With x2 acquisition the difference narrowed: approximately

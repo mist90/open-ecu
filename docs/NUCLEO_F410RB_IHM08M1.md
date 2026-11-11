@@ -201,6 +201,13 @@ the HAL publishes sums of two (`0..8190`), including `2*raw` for a single-scan
 fallback. Calibration, physical current/Vbus conversion and software
 protection account for that factor automatically. NTC and pot remain `0..4095`.
 
+The board's `CURRENT_FEEDBACK_FILTER_HZ=2000` setting in
+`STM32F410/Core/Inc/board_config.hpp` enables separate first-order Id/Iq
+low-pass filters after Park, before the current PI. The port supplies it through
+`BoardInfo::current_feedback_filter_hz`; zero disables the filter. It is a
+front-end setting independent of the selected motor. Raw OSC measurements
+and per-conversion overcurrent checks retain their unfiltered values.
+
 At startup the firmware averages the real zero of every phase with the
 bridge off. A zero far from mid-scale is rejected, which catches an
 unpowered amplifier, a wrong JP1 position or a broken analog connection. On
@@ -342,6 +349,10 @@ the largest compare. Otherwise one scan publishes `2*raw`, keeping identical
 scaling. The first frame and high-to-low duty transitions also use this
 fallback. Overcurrent checks inspect each unaveraged scan before the control
 update.
+
+For the 2026-11-11 comparison of always-one-scan acquisition against this
+window-qualified x2 path, with the same 2-kHz dq filter and PI gains, see
+[F410_ADC_X1_X2.md](F410_ADC_X1_X2.md).
 
 Unlike the G431, the currents are sampled sequentially, with no internal
 PGA and no hardware oversampling. Each current's sample-and-hold aperture

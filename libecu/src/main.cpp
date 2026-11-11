@@ -124,16 +124,19 @@ libecu::MotorControlParams makeMotorParams(const libecu::BoardInfo& board_info) 
     // feed-forward needs.
     motor_params.foc.flux_linkage_wb = BLDC_KE_V_S_PER_RAD_E;
     motor_params.foc.anti_windup_kb = 1.0f;
+    motor_params.foc.current_filter_order = board_info.current_feedback_filter_hz > 0.0f
+        ? libecu::CurrentFilterOrder::FIRST_ORDER : libecu::CurrentFilterOrder::OFF;
+    motor_params.foc.current_filter_cutoff_hz = board_info.current_feedback_filter_hz;
 
-    // d/q current regulators. Same motor model and same target bandwidth as the
-    // six-step loop, but the gains differ because the FOC regulators see one
-    // phase rather than two in series and output volts rather than duty.
+    // d/q current regulators. FOC has its own bandwidth tuning input so that
+    // feedback-filter tuning does not change the six-step regulator. FOC sees
+    // one phase rather than two in series and outputs volts rather than duty.
     {
         libecu::CurrentLoopModel floop;
         floop.l_phase_h    = BLDC_L_PHASE_H;
         floop.r_phase_ohm  = BLDC_R_PHASE_OHM;
         floop.bus_voltage  = board_info.nominal_bus_voltage;
-        floop.bandwidth_hz = BLDC_ILOOP_BW_HZ;
+        floop.bandwidth_hz = BLDC_FOC_ILOOP_BW_HZ;
         motor_params.foc_current_regulator = libecu::tuneFocCurrentPi(floop);
     }
 

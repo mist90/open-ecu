@@ -48,6 +48,7 @@ struct BoardInfo {
     float    max_modulation = 0.95f;///< FOC voltage-vector limit compatible with that window
     float    max_bus_voltage = 36.0f;///< DC link overvoltage cut-out (V)
     bool     low_side_clamped_pwm = false; ///< FOC zero vector uses only the low-side switches
+    float    current_feedback_filter_hz = 0.0f; ///< First-order Id/Iq cutoff for this analog front end; 0 = off
 };
 
 /**
