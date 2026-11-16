@@ -9,6 +9,7 @@
 #include "polygon_voltage_limit.hpp"
 #include "control_optimization.hpp"
 #include "current_feedback_filter.hpp"
+#include "loop_profile.hpp"
 
 namespace libecu {
 
@@ -116,6 +117,7 @@ public:
     LIBECU_HOT_LOOP Output update(const Input& in) noexcept {
         const Angle angle = multiplyTo<Angle>(in.angle_steps, RAD_PER_STEP) + params_.angle_offset_rad;
         const auto rotation = Transforms::rotation(angle);
+        recordLoopStage(LoopStage::FocTrig);
 
         const unsigned reconstructed = reconstructedPhase();
         next_reconstructed_phase_ = 3;
@@ -124,6 +126,7 @@ public:
         else if (reconstructed == 1) v = -(u + w);
         else w = -(u + v);
         const auto dq = Transforms::park(Transforms::clarkeZeroSum(u, v, w), rotation);
+        recordLoopStage(LoopStage::FocPark);
         const Current filtered_d = filter_d_.update(dq.d, params_.current_filter);
         const Current filtered_q = filter_q_.update(dq.q, params_.current_filter);
         const bool reverse = in.drive_mode == DriveMode::REVERSE;
@@ -156,6 +159,7 @@ public:
         const Current feedback_d = zero_current_idle_ ? Current{} : filtered_d;
         const Current feedback_q = zero_current_idle_ ? Current{} : filtered_q;
         if (zero_current_idle_) integral_d_ = integral_q_ = Integral{};
+        recordLoopStage(LoopStage::FocFilter);
         Current error_d{}, error_q{};
         Request requested_d{}, requested_q{};
         if (current_mode) {
@@ -176,9 +180,11 @@ public:
             integral_d_ = integral_q_ = Integral{};
         }
 
+        recordLoopStage(LoopStage::FocPi);
         const auto applied = voltage_limiter_.apply(requested_d, requested_q);
         const bool limited = applied.limited;
         const Voltage v_d = applied.d, v_q = applied.q;
+        recordLoopStage(LoopStage::FocLimit);
         if (current_mode) {
             addIntegral(integral_d_, multiplyTo<Integral>(ki_step_, error_d));
             addIntegral(integral_q_, multiplyTo<Integral>(ki_step_, error_q));
@@ -193,15 +199,19 @@ public:
             integral_q_ = numericClamp(integral_q_, -bound, bound);
         }
 
+        recordLoopStage(LoopStage::FocIntegral);
         const auto voltage = Transforms::invPark(DqVectorT<Voltage>{v_d, v_q}, rotation);
+        recordLoopStage(LoopStage::FocInvPark);
         auto duty = Transforms::svpwm(voltage.alpha, voltage.beta, modulation_bus_,
                                      params_.low_side_clamped_pwm);
+        recordLoopStage(LoopStage::FocSvpwm);
         const Duty low = params_.low_side_clamped_pwm ? Duty{} : number_v<Duty, 1> - params_.max_duty_cycle;
         duty.u = numericClamp(duty.u, low, params_.max_duty_cycle);
         duty.v = numericClamp(duty.v, low, params_.max_duty_cycle);
         duty.w = numericClamp(duty.w, low, params_.max_duty_cycle);
         previous_ = duty;
         const int8_t saturation = limited ? ((reverse ? -requested_q : requested_q) > Request{} ? 1 : -1) : 0;
+        recordLoopStage(LoopStage::FocOutput);
         return {duty.u, duty.v, duty.w, Duty{}, measured_current, dq.d, dq.q, v_d, v_q, angle, saturation};
     }
 

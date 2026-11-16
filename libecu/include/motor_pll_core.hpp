@@ -106,7 +106,18 @@ public:
             integral_ += increment;
             integral_ = numericClamp(integral_, -integral_limit_, integral_limit_);
         }
-        speed_ = multiplyTo<Speed>(error, kp_) + numberCast<Speed>(integral_);
+        if constexpr (std::is_same<Profile, FixedProfile>::value) {
+            // |error| <= 0.5; even INT32_MIN gain produces at most 2^30
+            // speed raw units. The rounded product cannot require saturation.
+            static_assert(Speed::FRACTION_BITS == Gain::FRACTION_BITS &&
+                          Angle::FRACTION_BITS > 0, "Bounded PLL proportional product");
+            const auto proportional = Speed::fromRaw(static_cast<int32_t>(
+                fixed_detail::roundedProduct<Angle::FRACTION_BITS>(error.raw(), kp_.raw())));
+            // Integral narrowing and the final sum still need their saturation.
+            speed_ = proportional + numberCast<Speed>(integral_);
+        } else {
+            speed_ = multiplyTo<Speed>(error, kp_) + numberCast<Speed>(integral_);
+        }
         if (reset_angle) {
             integral_ = numberCast<Integral>(speed_);
             phase_ = number<Phase>(hall_);
@@ -135,6 +146,14 @@ public:
     /** @brief Commutation step with the motor-specific torque alignment. */
     uint8_t getNextHall(DriveMode mode) const noexcept {
         const int offset = commutationOffset(mode, inverse_);
+        if constexpr (std::is_same<Profile, FixedProfile>::value) {
+            // getAngle() is in [0,6), offset is -2,0,1: the exact raw sum
+            // fits int32, and its rounded sector is in [-2,7]. Keep rounding
+            // AFTER adding the offset (negative half-ties round away from zero).
+            const int next = use_pll_ ? roundInteger(Angle::fromRaw(
+                getAngle().raw() + offset * int32_t(Angle::SCALE))) : int(hall_) + offset;
+            return static_cast<uint8_t>(next < 0 ? next + 6 : next >= 6 ? next - 6 : next);
+        }
         const int next = use_pll_ ? roundInteger(getAngle() + number<Angle>(offset)) : int(hall_) + offset;
         return static_cast<uint8_t>((next % 6 + 6) % 6);
     }

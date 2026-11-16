@@ -28,10 +28,24 @@ bool makeCurrentFilterCoefficients(CurrentFilterOrder order, float cutoff_hz, ui
     if (order == CurrentFilterOrder::OFF) { output = next; return true; }
     if (order != CurrentFilterOrder::FIRST_ORDER) return false;
     if (!(cutoff_hz > 0.0f && cutoff_hz < 0.5f * sample_hz)) return false;
+#if defined(LIBECU_CURRENT_FILTER_FIXED_HZ)
+    // A fixed-configuration port can fold the design at compile time, removing
+    // sinf/sqrtf and their tables from its image. Reject a different request;
+    // never silently substitute the compiled pole for a runtime configuration.
+    static_assert(LIBECU_CURRENT_FILTER_FIXED_RATE > 0, "Filter sample rate");
+    if (cutoff_hz != float(LIBECU_CURRENT_FILTER_FIXED_HZ) ||
+        sample_hz != LIBECU_CURRENT_FILTER_FIXED_RATE) return false;
+    constexpr float omega = 6.28318530718f * LIBECU_CURRENT_FILTER_FIXED_HZ /
+                            LIBECU_CURRENT_FILTER_FIXED_RATE;
+    constexpr float half_sine = __builtin_sinf(0.5f * omega);
+    constexpr float k = 2.0f * half_sine * half_sine;
+    constexpr float alpha = __builtin_sqrtf(k * k + 2.0f * k) - k;
+#else
     const float omega = 6.28318530718f * cutoff_hz / sample_hz;
     const float half_sine = std::sin(0.5f * omega);
     const float k = 2.0f * half_sine * half_sine; // 1-cos(omega), without cancellation near zero
     const float alpha = std::sqrt(k * k + 2.0f * k) - k;
+#endif
     if (!tryNumber(alpha, next.alpha)) return false;
     // The quantized pole 1-alpha must remain strictly inside the unit circle.
     const float quantized_alpha = numberCast<float>(next.alpha);

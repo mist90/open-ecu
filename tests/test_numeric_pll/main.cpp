@@ -93,8 +93,10 @@ static void exactTrace() {
     const int64_t phase_gain = roundRatio(unit_scale, Frequency);
     uint64_t random = 0x584db5ca918ef091ULL;
     bool exact = true;
+    for (bool inverse : {false, true})
     for (int32_t max_speed : {1, int32_t(6000 * speed_scale), INT32_MAX}) {
-        MotorPLLCore<FixedProfile, Frequency> actual(FixedProfile::PllSpeed::fromRaw(max_speed));
+        MotorPLLCore<FixedProfile, Frequency> actual(FixedProfile::PllSpeed::fromRaw(max_speed), inverse);
+        actual.setUsePLL(true);
         int64_t phase = 0, integral = 0, lock = 0;
         int32_t speed = 0, kp = 100 * speed_scale, ki = 5000 * speed_scale;
         int32_t ki_step = narrow(roundRatio(__int128(ki) * 1024, Frequency));
@@ -142,8 +144,23 @@ static void exactTrace() {
             actual.updateTick();
             const auto info = actual.getInfo();
             exact &= info.angle.raw() == angle() && info.angle_per_second.raw() == speed &&
-                     info.pll_integral.raw() == narrow(roundRatio(integral, 1024)) &&
-                     info.is_sync == synchronized && info.hall_state_raw == hall;
+                      info.pll_integral.raw() == narrow(roundRatio(integral, 1024)) &&
+                      info.is_sync == synchronized && info.hall_state_raw == hall;
+            for (DriveMode mode : {DriveMode::FORWARD, DriveMode::REVERSE, DriveMode::NEUTRAL}) {
+                const int offset = mode == DriveMode::NEUTRAL ? 0 :
+                    ((mode == DriveMode::FORWARD) != inverse ? 1 : -2);
+                const int64_t sector = roundRatio(angle() + offset * angle_scale, angle_scale);
+                exact &= actual.getNextHall(mode) == (sector % 6 + 6) % 6;
+            }
+        }
+        actual.setUsePLL(false);
+        for (uint8_t position = 0; position < 6; ++position) {
+            actual.updateHall(position);
+            for (DriveMode mode : {DriveMode::FORWARD, DriveMode::REVERSE, DriveMode::NEUTRAL}) {
+                const int offset = mode == DriveMode::NEUTRAL ? 0 :
+                    ((mode == DriveMode::FORWARD) != inverse ? 1 : -2);
+                exact &= actual.getNextHall(mode) == (int(position) + offset + 6) % 6;
+            }
         }
     }
     check(exact, "PLL exactly matches the independent rational model at full-range gains and state boundaries");

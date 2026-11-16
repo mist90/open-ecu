@@ -94,6 +94,7 @@ public:
         calibration_ = calibration;
         temp_params_ = temperature;
         initialized_ = true;
+        calibrationChanged();
         return true;
     }
 
@@ -127,7 +128,8 @@ public:
     Core::Duty convertNativeThrottle(uint32_t raw) const noexcept { return core_.throttle(raw); }
 
     NativeVoltage convertNativeAdcToVoltage(uint32_t raw) const noexcept { return core_.busVoltage(raw); }
-    NativeVoltage readNativeBusVoltage() noexcept { return convertNativeAdcToVoltage(getRawAdcValue()); }
+    /** @brief Latest complete bus sample; a port may reuse its per-frame protection conversion. */
+    virtual NativeVoltage readNativeBusVoltage() noexcept { return convertNativeAdcToVoltage(getRawAdcValue()); }
     Core::Temperature readNativeTemperature() noexcept { return core_.temperature(getRawTemperatureAdcValue()); }
     /** @brief Read the completed current frame without starting or waiting for acquisition.
      *  @note The port keeps the three raw getters coherent, or overrides this
@@ -174,6 +176,10 @@ public:
 
     const CurrentSensorCalibration& getCalibration() const noexcept { return calibration_; }
     const TemperatureSensorParameters& getTemperatureParams() const noexcept { return temp_params_; }
+
+protected:
+    /** @brief Invalidate port-owned converted snapshots after a successful reconfiguration. */
+    virtual void calibrationChanged() noexcept {}
 
 private:
     static bool unsignedParameter(float value, uint32_t& result) noexcept {

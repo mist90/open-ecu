@@ -218,19 +218,37 @@ LIBECU_SLOW_PATH void BldcController::update() noexcept
         }
     }
 
-    NativeMotorStatus status;
+    struct ControlSnapshot {
+#if LIBECU_FOC_DUTY_TELEMETRY
+        Profile::Voltage v_d, v_q, bus_voltage;
+        DriveAlgorithm algorithm;
+#endif
+        Speed target_speed_rps, current_speed_rps;
+        ControlMode control_mode;
+        ElectricMode electric_mode;
+        int8_t current_pi_saturation;
+        bool is_running;
+    } status;
     {
         CriticalSection cs;
         status_.current_speed_rps = filtered_measured_speed_;
-        status = status_;
+        status = {
+#if LIBECU_FOC_DUTY_TELEMETRY
+                  status_.v_d, status_.v_q, status_.bus_voltage, status_.algorithm,
+#endif
+                  status_.target_speed_rps, status_.current_speed_rps,
+                  status_.control_mode, status_.electric_mode,
+                  status_.current_pi_saturation, status_.is_running};
     }
 
+#if LIBECU_FOC_DUTY_TELEMETRY
     if (status.algorithm == DriveAlgorithm::FOC) {
         const Duty modulation = FocAlgorithm::Core::modulationMagnitude(status.v_d, status.v_q, status.bus_voltage);
         CriticalSection cs;
         if (algorithm_ == DriveAlgorithm::FOC)
             status_.duty_cycle = dmode_ == DriveMode::NEUTRAL ? Duty{} : modulation;
     }
+#endif
 
     // A parked drive still reaches here every tick, but NEUTRAL has already
     // high-Z'd the bridge, so the velocity loop has nothing to act on - and
@@ -285,16 +303,20 @@ LIBECU_SLOW_PATH void BldcController::update() noexcept
                 // Electric mode determines how to use PI output
                 if (status.electric_mode == ElectricMode::VOLTAGE_MODE) {
                     // VOLTAGE_MODE: PI outputs the duty command directly
+                    const Duty prepared_duty = numberCast<Duty>(pi_output);
+                    __asm__ volatile("" : : "m"(prepared_duty) : "memory");
                     {
                         CriticalSection cs;
-                        duty_command_ = numberCast<Duty>(pi_output);
+                        duty_command_ = prepared_duty;
                     }
                 } else {
                     // CURRENT_MODE: PI outputs target current
                     // Store for inner current loop (runs in pwmInterruptHandler)
+                    const Current prepared_current = numberCast<Current>(pi_output);
+                    __asm__ volatile("" : : "m"(prepared_current) : "memory");
                     {
                         CriticalSection cs;
-                        status_.target_current = numberCast<Current>(pi_output);
+                        status_.target_current = prepared_current;
                     }
 
                     // duty_cycle is calculated by pwmInterruptHandler() (atomic read)
@@ -337,6 +359,11 @@ bool BldcController::prepareNativeTargetSpeed(Speed target, PreparedTargetSpeed&
 
 bool BldcController::commitNativeTargetSpeed(const PreparedTargetSpeed& prepared) noexcept {
     CriticalSection cs;
+    return commitNativeTargetSpeed(prepared, cs);
+}
+
+bool BldcController::commitNativeTargetSpeed(const PreparedTargetSpeed& prepared,
+                                            const CriticalSection&) noexcept {
     if (prepared.owner_ != this || dmode_ == DriveMode::NEUTRAL) return false;
     open_loop_.applyPreparedRate(prepared.rate_);
     status_.target_speed_rps = prepared.limited_speed_;
@@ -425,6 +452,9 @@ void BldcController::setAlgorithm(DriveAlgorithm new_algorithm) noexcept
     algorithm().reset();
     algorithm_ = new_algorithm;
     status_.algorithm = algorithm_;
+#if !LIBECU_FOC_DUTY_TELEMETRY
+    if (algorithm_ == DriveAlgorithm::FOC) status_.duty_cycle = Duty{};
+#endif
     algorithm().onEnter();
 
     // The speed loop's anti-windup input came from the old inner loop.
@@ -583,12 +613,6 @@ bool BldcController::setPllGains(float kp, float ki) noexcept {
     CriticalSection cs;
     motor_pll_.applyPrepared(prepared);
     return true;
-}
-
-LIBECU_HOT_LOOP DriveMode BldcController::getDriveMode() const noexcept {
-    // One volatile scalar load is atomic on every supported Cortex-M. Callers
-    // committing several values already hold their own transaction mask.
-    return dmode_;
 }
 
 void BldcController::getSpeedPiGains(float& kp, float& ki) const noexcept {
@@ -779,6 +803,7 @@ LIBECU_HOT_LOOP void BldcController::preparePwmInterruptHandler() noexcept {
                                    dmode_ != DriveMode::NEUTRAL && status_.is_running;
     observeHall(hall_guard_active);
 
+    recordLoopStage(LoopStage::Hall);
     // Read shared data atomically (avoid torn reads from SysTick interrupt)
     auto& in = prepared_pwm_input_;
     {
@@ -801,6 +826,7 @@ LIBECU_HOT_LOOP void BldcController::preparePwmInterruptHandler() noexcept {
         }
         pwm_prepared_ = true;
     }
+    recordLoopStage(LoopStage::Pll);
 }
 
 LIBECU_HOT_LOOP void BldcController::completePwmInterruptHandler() noexcept {
@@ -813,6 +839,7 @@ LIBECU_HOT_LOOP void BldcController::completePwmInterruptHandler() noexcept {
     auto& in = prepared_pwm_input_;
     adc_interface_->readNativeCurrents(in.i_u, in.i_v, in.i_w);
     in.bus_voltage = adc_interface_->readNativeBusVoltage();
+    recordLoopStage(LoopStage::Currents);
 
     // Hall health. The monitor latches, so unlike the old PLL rule this does
     // not re-assert every cycle; it has to be cleared explicitly once the
@@ -830,6 +857,7 @@ LIBECU_HOT_LOOP void BldcController::completePwmInterruptHandler() noexcept {
     // inline it, and at 20 kHz in a `-O0` build every avoided indirection is
     // worth having. The base class still exists for the non-ISR paths
     // (reset/onEnter), where clarity is worth more than cycles.
+    recordLoopStage(LoopStage::Dispatch);
     const MotorAlgorithmOutputT<Profile> out = [&]() -> MotorAlgorithmOutputT<Profile> {
         if (dmode_ == DriveMode::NEUTRAL || in.drive_mode == DriveMode::NEUTRAL) {
             // Do not run the current regulators against an inactive bridge.
@@ -848,6 +876,7 @@ LIBECU_HOT_LOOP void BldcController::completePwmInterruptHandler() noexcept {
                 return six_step_.updateNative(in);
         }
     }();
+    recordLoopStage(LoopStage::Algorithm);
 
     {
         CriticalSection cs;
@@ -864,6 +893,9 @@ LIBECU_HOT_LOOP void BldcController::completePwmInterruptHandler() noexcept {
         status_.measured_current = out.measured_current;
         status_.measured_current_filtered = filtered_measured_current_;
         if (algorithm_ != DriveAlgorithm::FOC) status_.duty_cycle = out.duty;
+#if !LIBECU_FOC_DUTY_TELEMETRY
+        else status_.duty_cycle = Duty{};
+#endif
         status_.duty_u = out.duty_u;
         status_.duty_v = out.duty_v;
         status_.duty_w = out.duty_w;
@@ -877,6 +909,7 @@ LIBECU_HOT_LOOP void BldcController::completePwmInterruptHandler() noexcept {
         status_.v_q = out.v_q;
         status_.angle_e_rad = out.angle_e_rad;
     }
+    recordLoopStage(LoopStage::Status);
 }
 
 } // namespace libecu

@@ -4,6 +4,7 @@
 #include "../../libecu/include/bldc_controller.hpp"
 #include "../../libecu/include/at_command_processor.hpp"
 #include "../../libecu/include/crc16.hpp"
+#include "../../libecu/include/critical_section.hpp"
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -11,8 +12,9 @@
 
 static uint32_t fake_time_us = 0;
 uint32_t time_us() { return fake_time_us; }
-extern "C" void disable_interrupts() {}
-extern "C" void enable_interrupts() {}
+static unsigned mask_depth = 0, mask_entries = 0;
+extern "C" void disable_interrupts() { ++mask_depth; ++mask_entries; }
+extern "C" void enable_interrupts() { --mask_depth; }
 
 using namespace libecu;
 static int checks = 0;
@@ -644,6 +646,42 @@ static void testSplitCancellationAndGuards() {
           "ADC-less split/wrapper calls preserve the original no-work behavior");
 }
 
+static void testBorrowedTargetGuard() {
+    Pwm pwm;
+    Hall hall;
+    BldcController controller(pwm, hall, makeParams());
+    BldcController other(pwm, hall, makeParams());
+    BldcController::PreparedTargetSpeed prepared, foreign, invalid;
+    check(controller.prepareNativeTargetSpeed(number_v<BldcController::Speed, 3, 2>, prepared) &&
+          other.prepareNativeTargetSpeed(number_v<BldcController::Speed, 2>, foreign),
+          "prepare owner-bound commands without enabling the bridge");
+    check(mask_depth == 0, "preparation does not hold an IRQ mask");
+    {
+        CriticalSection guard;
+        const unsigned entries = mask_entries;
+        check(!controller.commitNativeTargetSpeed(prepared, guard) && !pwm.enabled,
+              "borrowed guard still rejects a freshly parked drive");
+        check(mask_depth == 1 && mask_entries == entries, "rejected commit does not nest the mask");
+    }
+    controller.setDriveMode(DriveMode::FORWARD);
+    {
+        CriticalSection guard;
+        const unsigned entries = mask_entries;
+        check(controller.commitNativeTargetSpeed(prepared, guard),
+              "borrowed guard accepts this controller's prepared command");
+        check(!controller.commitNativeTargetSpeed(foreign, guard) &&
+              !controller.commitNativeTargetSpeed(invalid, guard),
+              "borrowed guard rejects foreign and invalid commands without replacing the target");
+        check(controller.getNativeStatus().target_speed_rps == number_v<BldcController::Speed, 3, 2>,
+              "failed commits preserve the accepted target");
+        check(mask_depth == 1 && mask_entries == entries, "accepted commit does not nest the safety mask");
+    }
+    const unsigned entries = mask_entries;
+    check(controller.commitNativeTargetSpeed(prepared) && mask_entries == entries + 1 && mask_depth == 0,
+          "standalone commit still owns and restores exactly one mask");
+    controller.setDriveMode(DriveMode::NEUTRAL);
+}
+
 static void testNativePath() {
     Pwm pwm;
     Hall hall;
@@ -669,9 +707,15 @@ static void testNativePath() {
     const float expected_modulation = std::sqrt(fast.v_d * fast.v_d + fast.v_q * fast.v_q) *
                                       FOC_SQRT3 / fast.bus_voltage;
     controller.update();
+#if LIBECU_FOC_DUTY_TELEMETRY
     check(expected_modulation > 0.08f &&
           std::abs(controller.getStatus().duty_cycle - expected_modulation) < 0.00003f,
           "FOC modulation telemetry is computed from a slow coherent native snapshot");
+#else
+    check(expected_modulation > 0.08f && controller.getStatus().duty_cycle == 0.0f &&
+          controller.getStatus().v_q == fast.v_q && controller.getStatus().duty_u == fast.duty_u,
+          "host-math telemetry omits only scalar FOC duty; voltage and PWM control are preserved");
+#endif
     adc.bus = 8190;
     controller.pwmInterruptHandler();
     check(!pwm.enabled && controller.getDriveMode() == DriveMode::NEUTRAL,
@@ -1156,6 +1200,7 @@ int main() {
     testHallDuration();
     testInvalidHallRetry();
     testNativePath();
+    testBorrowedTargetGuard();
     testCapturedCurrentFrames();
     testSplitCurrentLoop();
     testSplitCancellationAndGuards();

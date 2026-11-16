@@ -24,6 +24,7 @@
 #include "hall_monitor.hpp"
 
 namespace libecu {
+class CriticalSection;
 
 /**
  * @brief Motor control mode (mechanical/commutation strategy)
@@ -293,6 +294,11 @@ public:
      * @return false for an invalid/foreign command or a drive currently in NEUTRAL
      */
     bool commitNativeTargetSpeed(const PreparedTargetSpeed& prepared) noexcept;
+    /**
+     * @brief Publish inside an existing safety transaction without nesting the mask
+     * @param guard Live guard owned by the caller for the entire call
+     */
+    bool commitNativeTargetSpeed(const PreparedTargetSpeed& prepared, const CriticalSection& guard) noexcept;
 
     /**
      * @brief Set duty cycle for open-loop control
@@ -458,7 +464,9 @@ public:
      * @brief Get current drive mode
      * @return Current drive mode
      */
-    DriveMode getDriveMode() const noexcept;
+    // One volatile scalar load is atomic on supported Cortex-M targets. Keep
+    // this in the caller's optimization domain, including size-optimized code.
+    DriveMode getDriveMode() const noexcept { return dmode_; }
 
     /**
      * @brief Get speed PI controller gains
