@@ -350,10 +350,6 @@ scaling. The first frame and high-to-low duty transitions also use this
 fallback. Overcurrent checks inspect each unaveraged scan before the control
 update.
 
-For the 2026-11-11 comparison of always-one-scan acquisition against this
-window-qualified x2 path, with the same 2-kHz dq filter and PI gains, see
-[F410_ADC_X1_X2.md](F410_ADC_X1_X2.md).
-
 Unlike the G431, the currents are sampled sequentially, with no internal
 PGA and no hardware oversampling. Each current's sample-and-hold aperture
 is 15/25 MHz = 0.60 µs; successive apertures start 1.08 µs apart. Relative

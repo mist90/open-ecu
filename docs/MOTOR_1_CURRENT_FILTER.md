@@ -1,8 +1,5 @@
 # F410/IHM08M1 dq feedback filtering with MOTOR_1
 
-The subsequent acquisition-only comparison, including the final post-refactor
-firmware hash, is in [F410_ADC_X1_X2.md](F410_ADC_X1_X2.md).
-
 ## Selected configuration, 2026-11-11
 
 | Setting | Value |
