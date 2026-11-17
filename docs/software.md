@@ -93,23 +93,28 @@ The standstill-release logic clears residual current demand after stopping.
 | Setting | Value |
 |---|---:|
 | Current-output speed Kp | 3 A / mechanical RPS |
-| Current-output speed Ki | 2 A / (mechanical RPS * s) |
+| Current-output speed Ki | 20 A / (mechanical RPS * s) |
 | Current output limits | -6 to +20 A |
 | Speed-PI integral limits | -4 to +12 A |
 | Speed-PI back-calculation gain | 2 / s |
 | Measured-speed LPF alpha | 0.5 per speed tick |
 | Target-speed LPF | Disabled; acceleration limiting is separate |
 
-These are shared MOTOR_1 settings. A board or command protocol can apply
-runtime overrides, including a more conservative acceleration ramp.
+These are shared MOTOR_1 settings: `SPID=3,20` in velocity/current mode on
+every port built with that motor selected. A board or command protocol can
+apply runtime overrides, including a more conservative acceleration ramp.
 
-Load inertia explains the tuning trade-off. For a surface-magnet motor:
+Load inertia explains the tuning trade-off. An ideal continuous model for a
+surface-magnet motor, before current/estimator/filter/sampling delays, gives:
 
 ```text
 Kt = 1.5 * pole_pairs * flux
 J_load = mass * wheel_radius^2
 a = Kt / (2*pi*J_total)                  # RPS/s per ampere
-speed-loop characteristic: s^2 + a*Kp*s + a*Ki
+b = viscous_torque_per_RPS / (2*pi*J_total)
+speed-loop characteristic: s^2 + (a*Kp + b)*s + a*Ki
+omega_n = sqrt(a*Ki)
+zeta = (a*Kp + b) / (2*omega_n)
 ```
 
 For the MOTOR_1 model, `Kt = 0.37008 N*m/A`. A 10-inch tire and 80-kg
@@ -119,12 +124,63 @@ Consequently, unloaded stability and loaded response impose very different
 requirements.
 
 An earlier `Kp/Ki = 3/0.15` experiment improved modeled loaded damping but
-responded too slowly to real load changes. The current `3/2` tuning restores
-that response. In the retained mechanical model it reduces the nominal
-80-kg load-step dip from 0.735 to 0.358 RPS, while increasing startup
-overshoot from 0.591 to 0.986 RPS. These are model results, not loaded
-hardware measurements. The model's older startup/rebound budgets remain
-unchanged and are exceeded by the current tuning in the loaded cases.
+responded too slowly to real load changes; it was replaced by `3/2`.
+On 2026-11-17, the shared default became **3/20**, following the user's
+successful free-wheel test on STM32F410. This is a speed-PI change; the
+electrical current-loop gains and the hybrid Iq correction gain are separate.
+
+### SPID 3/20 stability assessment
+
+The torque-driven mechanical model uses the production speed PI and Hall PLL,
+float/full-fixed arithmetic, and 8/16/20-kHz current clocks. Each case runs
+two 120-s phases; settled metrics use the last 20 s of each phase.
+
+The ideal nominal-wheel damping ratio falls from 3.309 to 1.046; at 80 kg
+it falls from 0.230 to 0.073. Including a 250-Hz current lag, the PLL's
+integral-speed estimate, 0.5 feedback LPF and 100-Hz trapezoidal PI in a
+sampled small-signal model gives the following at a 16-kHz fast clock:
+
+| Plant | Oscillatory-mode damping, 3/2 to 3/20 | 3/20 mode frequency | Largest pole magnitude, 3/20 |
+|---|---:|---:|---:|
+| Nominal free wheel | 0.265 to 0.209 | 4.945 Hz | 0.93582 |
+| Light/high-torque free wheel | 0.069 to 0.013 | 6.188 Hz | 0.99492 |
+| Nominal 80-kg road load | 0.225 to 0.056 | 0.152 Hz | 0.99947 |
+
+Pole magnitudes below one indicate local decay in this smooth-angle,
+unsaturated approximation. It omits Hall quantization and PLL lock/reseed
+events; their nonlinear result below is decisive for the sensitivity corner.
+The loaded mode rings with a period near 6.6 s and an amplitude decay time
+constant near 18.8 s. Faster load rejection therefore comes with weaker damping.
+
+| Model measurement | Previous 3/2 | Current 3/20 |
+|---|---:|---:|
+| Nominal free-wheel startup overshoot, 0 to 6 RPS | 0.031-0.033 RPS | 0.296-0.301 RPS |
+| Nominal free-wheel undershoot, 6 to 3 RPS | 0.130-0.132 RPS | 0.306-0.308 RPS |
+| Nominal 80-kg startup overshoot, 0 to 6 RPS | 0.986 RPS | 0.391 RPS |
+| Nominal 80-kg rolling-load speed dip | 0.357-0.358 RPS | 0.141-0.142 RPS |
+| Nominal 80-kg recovery rebound | 0.173 RPS | 0.118-0.119 RPS |
+
+The nominal free wheel converges at every tested rate/profile, with only
+0.0023-0.0054 RPS settled peak-to-peak variation. All 60-100-kg road cases
+also converge, but the load recovery remains underdamped. Current/integral
+clipping influences the large startup transient, so its smaller peak does
+not establish improved small-signal damping.
+
+The combined low-inertia/high-torque corner (`Jwheel*0.75`, `Kt*1.2`,
+1.6 times nominal acceleration per ampere) loses robustness: 11 of its
+12 rate/profile/current-bandwidth cases exceed settled-motion limits,
+with up to **1.643 RPS peak-to-peak** sustained motion. At a 500-Hz current
+bandwidth, the outcome depends on rate and numeric profile; a single pass
+does not establish a robust margin. This is a sensitivity case, not a
+measurement of the user's F410 wheel.
+
+The unchanged characterization limits reject **53 of 54** cases: 42 exceed
+only transient/rebound budgets, and 11 also fail settled-motion checks.
+With `3/2`, 24 cases exceeded transient budgets, with no settled-motion
+failures. Thus the successful nominal free-wheel result does not imply
+stability over the full uncertainty range. The model approximates torque
+response by a bounded 125-500-Hz first-order lag; it does not qualify
+voltage saturation, six-step ripple, or the full hybrid Uq/Iq dynamics.
 
 Sources: [PI implementation](../libecu/include/pi_controller.hpp),
 [motor configuration](../libecu/include/motor_config.hpp),
@@ -634,7 +690,9 @@ one-frame actuation delay and rotor motion at 8/16/20 kHz. Shared-main tests
 verify board opt-in and motor-resistance wiring in both numeric profiles.
 
 The [speed-loop characterization](../tests/test_speed_loop/README.md) has its
-own retained comparison budgets: the current 3/2 tuning passes the unloaded
-cases but exits nonzero on the earlier loaded startup/rebound limits.
+own retained comparison budgets: the current 3/20 tuning exits nonzero in
+53/54 cases, including 11 settled-motion failures in the light/high-torque
+corner. See [the stability assessment](#spid-320-stability-assessment) for
+the distinction between transient-budget failures and sustained motion.
 Keep model results, binary-specific hardware measurements and subjective
 sound observations distinct when interpreting control changes.

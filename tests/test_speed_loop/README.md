@@ -1,16 +1,20 @@
 # MOTOR_1 mechanical speed-loop characterization
 
-Current MOTOR_1 tuning is **3/2**: the user restored Ki=2 after observing poor
-real load-step response with the experimental Ki=0.15. The transient budgets
-below characterize that earlier damping-oriented design; they are retained
+Current MOTOR_1 tuning is **3/20**, selected on 2026-11-17 after the user
+reported successful free-wheel operation on STM32F410. The transient budgets
+below characterize the earlier damping-oriented design; they are retained
 as comparative diagnostics, not relaxed to make a different tuning pass.
 Use `./tests/test_speed_loop/run.sh 3 0.15` to reproduce its 54-case result.
-With the current 3/2 settings, all 30 unloaded cases pass; 24 loaded cases
-fail the earlier startup/rebound budgets and the command exits nonzero.
-Their final-convergence and sustained-oscillation checks still pass.
+The current default exits nonzero: **53 of 54 cases** fail at least one
+budget (135 checks). Of those, 42 fail only transient/rebound budgets;
+11 also fail settled-motion checks, all in the combined light/high-Kt
+free-wheel corner. Nominal free-wheel and all road cases converge.
+See [the SPID stability assessment](../../docs/software.md#spid-320-stability-assessment)
+for the interpretation and model limitations.
 
 ```sh
 ./tests/test_speed_loop/run.sh          # shared motor_config.hpp, -DMOTOR_1
+./tests/test_speed_loop/run.sh 3 2      # previous default, same acceptance limits
 ./tests/test_speed_loop/run.sh 3 0.1    # exploratory override; does not edit firmware tuning
 ./tests/test_speed_loop/run.sh 2 2      # old tuning comparison
 ```
@@ -114,12 +118,29 @@ mechanical RPS, not the PLL's reported speed.
 | Kp / Ki | Nominal 80 kg startup overshoot | Nominal road-load dip | Other findings |
 |---|---:|---:|---|
 | 2 / 2 | 1.084 | 0.391 | All road cases fail damping; heavy tail 0.123 RPS peak-to-peak. |
-| 3 / 2 (current) | 0.986 | 0.358 | Free cases pass; road cases settle but exceed earlier transient/rebound budgets. |
+| 3 / 2 (previous) | 0.986 | 0.358 | Free cases pass; road cases settle but exceed earlier transient/rebound budgets. |
+| 3 / 20 (current) | 0.391 | 0.141-0.142 | Nominal free/road cases settle; 11/12 light/high-Kt cases fail settled limits, up to 1.643 RPS peak-to-peak. |
 | 3 / 0.1 | 0.292 | 0.784 | Passes uncertainty and settled low-speed checks. |
 | 3 / 0.15 | 0.591 | 0.735 | Free-wheel stable; 100 kg overshoot 0.662–0.788 is within its 15% budget. |
 | 3 / 0.2 | 0.832 | 0.692 | Free-wheel stable; nominal/high-inertia road startup checks fail. |
 | 3.5 / 0.15 | 0.418 | 0.665 | Nominal stable; light/high-Kt corner 1.0–1.34 RPS peak-to-peak. |
 | 4 / 0.2 | 0.307 | 0.581 | Nominal stable; light/high-Kt corner 1.3–3.9 RPS peak-to-peak. |
+
+The 3/2 and 3/20 results were rerun on 2026-11-17 with identical model and
+acceptance code. At 3/2, 24 cases fail 42 transient checks; all settled-motion
+checks pass. At 3/20, nominal free-wheel startup overshoot increases from
+0.031-0.033 to 0.296-0.301 RPS, and 6-to-3-RPS undershoot from 0.130-0.132
+to 0.306-0.308 RPS. Its settled variation remains only 0.0023-0.0054 RPS
+peak-to-peak. The low-speed 0.3-to-1-RPS overshoot increases to 0.333-0.342
+RPS but decays to at most 0.017 RPS peak-to-peak.
+
+At 80 kg, the load dip improves but recovery rebound remains 0.118-0.119
+RPS, exceeding the unchanged damping budget. All 60-100-kg cases pass
+settled-motion checks. In the severe light/high-Kt corner, all six 125-Hz
+current-bandwidth cases sustain 1.1375-1.6430 RPS peak-to-peak motion. The
+500-Hz cases depend on rate/profile: five of six fail settled-motion checks,
+whereas full-fixed at 20 kHz passes. This isolated pass does not demonstrate
+robustness across arithmetic and timing changes.
 
 The low-speed 0.3→1 RPS experiment finds 0.11–0.14 RPS finite transient overshoot
 for 3/0.1, 3/0.15, 3/0.2 and 3.5/0.15. This decays; it is not sustained

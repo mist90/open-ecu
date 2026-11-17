@@ -27,10 +27,10 @@
 #define BLDC_SPEED_VOLTAGE_KP 0.1f
 #define BLDC_SPEED_VOLTAGE_KI 0.2f
 // Mechanical-RPS -> current PI: 10-inch wheel, 80 kg effective road mass.
-// Kp is limited by the unloaded wheel/PLL delay; Ki restores load-step response.
+// Kp is limited by the unloaded wheel/PLL delay; Ki trades damping for load-step response.
 // Shared by every MOTOR_1 port; tuning rationale: docs/software.md#speed-loop-tuning.
 #define BLDC_SPEED_CURRENT_KP 3.0f
-#define BLDC_SPEED_CURRENT_KI 2.0f
+#define BLDC_SPEED_CURRENT_KI 20.0f
 #define BLDC_SIX_STEP_USE_MOTOR_MODEL true
 #define BLDC_CURRENT_FALLBACK_KP 0.1f
 #define BLDC_CURRENT_FALLBACK_KI 50.0f
