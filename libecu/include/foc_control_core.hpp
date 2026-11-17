@@ -9,6 +9,7 @@
 #include "polygon_voltage_limit.hpp"
 #include "control_optimization.hpp"
 #include "current_feedback_filter.hpp"
+#include "hybrid_iq_control.hpp"
 #include "loop_profile.hpp"
 
 namespace libecu {
@@ -26,6 +27,7 @@ struct FocParamsT {
     bool low_side_clamped_pwm = false;
     CurrentFilterCoefficients<P> current_filter{};
     typename P::Current current_noise_floor{};
+    HybridIqParamsT<P> hybrid_iq{};
 };
 
 /** @brief Pure, allocation-free electrical FOC loop with profile-owned math. */
@@ -48,16 +50,20 @@ public:
     using Params = FocParamsT<Profile>;
     using Input = MotorAlgorithmInputT<Profile>;
     using Output = MotorAlgorithmOutputT<Profile>;
+    using Frame = MotorAlgorithmFrameT<Profile>;
     inline static constexpr Angle RAD_PER_STEP = number<Angle>(10471975511966LL, 10000000000000LL);
 
     void setParams(const Params& params) noexcept {
+        if (params.hybrid_iq.enabled != params_.hybrid_iq.enabled) integral_q_ = Integral{};
         params_ = params;
+        bemf_per_step_ = multiplyTo<typename Profile::Flux>(params.flux_linkage_wb, RAD_PER_STEP);
         const Duty ceiling = VoltageLimiter::modulationCeiling(params_.max_duty_cycle,
                                                                params_.low_side_clamped_pwm);
         modulation_ = params_.max_modulation < ceiling ? params_.max_modulation : ceiling;
         bus_valid_ = false;
         filter_d_.reset();
         filter_q_.reset();
+        hybrid_iq_.reset();
         zero_current_idle_ = false;
         next_reconstructed_phase_ = 3;
     }
@@ -67,9 +73,10 @@ public:
         params_.current_filter = coefficients;
         filter_d_.reset();
         filter_q_.reset();
+        hybrid_iq_.reset();
         zero_current_idle_ = false;
     }
-    /** @brief Feedback values; the main output retains unfiltered dq measurements. */
+    /** @brief PI feedback values; hybrid without idle suppression publishes raw q here. */
     DqVectorT<Current> filteredCurrents() const noexcept {
         return zero_current_idle_ ? DqVectorT<Current>{} : DqVectorT<Current>{filter_d_.value(), filter_q_.value()};
     }
@@ -78,18 +85,21 @@ public:
         ki_ = ki;
         ki_step_ = divideByInteger<StepGain>(ki, FrequencyHz);
         integral_d_ = integral_q_ = Integral{};
+        hybrid_iq_.reset();
     }
     void getCurrentPiGains(Gain& kp, Gain& ki) const noexcept { kp = kp_; ki = ki_; }
     void setAngleOffset(Angle angle) noexcept {
         params_.angle_offset_rad = angle;
         filter_d_.reset();
         filter_q_.reset();
+        hybrid_iq_.reset();
         zero_current_idle_ = false;
     }
     void reset() noexcept {
         integral_d_ = integral_q_ = Integral{};
         filter_d_.reset();
         filter_q_.reset();
+        hybrid_iq_.reset();
         zero_current_idle_ = false;
         next_reconstructed_phase_ = 3;
         const Duty zero = params_.low_side_clamped_pwm ? Duty{} : number<Duty>(1, 2);
@@ -113,8 +123,16 @@ public:
         return previous_.v >= previous_.w ? 1u : 2u;
     }
 
-    /** @brief Run one sample. Voltages and current magnitudes are physical SI values. */
-    LIBECU_HOT_LOOP Output update(const Input& in) noexcept {
+    /** @brief Value-facing adapter; the PWM path uses caller-owned frame storage. */
+    Output update(const Input& in) noexcept {
+        Frame frame{in, {}};
+        update(frame);
+        return frame.output;
+    }
+
+    /** @brief Run one sample in place. Voltages and currents are physical SI values. */
+    LIBECU_HOT_LOOP void update(Frame& frame) noexcept {
+        const auto& in = frame.input;
         const Angle angle = multiplyTo<Angle>(in.angle_steps, RAD_PER_STEP) + params_.angle_offset_rad;
         const auto rotation = Transforms::rotation(angle);
         recordLoopStage(LoopStage::FocTrig);
@@ -128,7 +146,11 @@ public:
         const auto dq = Transforms::park(Transforms::clarkeZeroSum(u, v, w), rotation);
         recordLoopStage(LoopStage::FocPark);
         const Current filtered_d = filter_d_.update(dq.d, params_.current_filter);
-        const Current filtered_q = filter_q_.update(dq.q, params_.current_filter);
+        // Hybrid filters the error itself. Do not also pay for an unused q PI
+        // filter unless the optional standstill noise-floor detector needs it.
+        const Current filtered_q = filter_q_.update(dq.q,
+            params_.hybrid_iq.enabled && params_.current_noise_floor == Current{}
+                ? CurrentFilterCoefficients<Profile>{} : params_.current_filter);
         const bool reverse = in.drive_mode == DriveMode::REVERSE;
         const Current measured_current = reverse ? -dq.q : dq.q;
         // Auxiliary ADC samples commonly span several current-loop ticks. Keep
@@ -158,26 +180,40 @@ public:
         }
         const Current feedback_d = zero_current_idle_ ? Current{} : filtered_d;
         const Current feedback_q = zero_current_idle_ ? Current{} : filtered_q;
-        if (zero_current_idle_) integral_d_ = integral_q_ = Integral{};
+        if (zero_current_idle_) {
+            integral_d_ = integral_q_ = Integral{};
+            hybrid_iq_.reset();
+        }
         recordLoopStage(LoopStage::FocFilter);
         Current error_d{}, error_q{};
         Request requested_d{}, requested_q{};
         if (current_mode) {
+            const Current target_q = reverse ? -in.target_current : in.target_current;
             error_d = params_.id_target - feedback_d;
-            error_q = (reverse ? -in.target_current : in.target_current) - feedback_q;
             requested_d = multiplyTo<Request>(kp_, error_d) + numberCast<Request>(integral_d_);
-            requested_q = multiplyTo<Request>(kp_, error_q) + numberCast<Request>(integral_q_);
+            if (params_.hybrid_iq.enabled) {
+                requested_q = hybrid_iq_.request(target_q, zero_current_idle_ ? Current{} : dq.q, params_.hybrid_iq);
+                if (!zero_current_idle_) requested_q += multiplyTo<Request>(in.speed_steps_s, bemf_per_step_);
+            } else {
+                error_q = target_q - feedback_q;
+                requested_q = multiplyTo<Request>(kp_, error_q) + numberCast<Request>(integral_q_);
+            }
             if (params_.use_decoupling && !zero_current_idle_) {
                 const auto omega = multiplyTo<typename Profile::PllSpeed>(in.speed_steps_s, RAD_PER_STEP);
                 const Gain omega_l = multiplyTo<Gain>(omega, params_.l_phase_h);
-                requested_d -= multiplyTo<Request>(omega_l, dq.q);
-                requested_q += multiplyTo<Request>(omega_l, dq.d) +
-                               multiplyTo<Request>(omega, params_.flux_linkage_wb);
+                // Hybrid feed-forward must not bypass its slow error filter
+                // through a raw-current cross-coupling term.
+                requested_d -= multiplyTo<Request>(omega_l, params_.hybrid_iq.enabled ? target_q : dq.q);
+                const Request coupling_q = multiplyTo<Request>(
+                    omega_l, params_.hybrid_iq.enabled ? params_.id_target : dq.d);
+                requested_q += params_.hybrid_iq.enabled ? coupling_q
+                    : coupling_q + multiplyTo<Request>(omega, params_.flux_linkage_wb);
             }
         } else {
             requested_q = multiplyTo<Request>(in.duty_command, limit);
             if (reverse) requested_q = -requested_q;
             integral_d_ = integral_q_ = Integral{};
+            hybrid_iq_.reset();
         }
 
         recordLoopStage(LoopStage::FocPi);
@@ -187,16 +223,22 @@ public:
         recordLoopStage(LoopStage::FocLimit);
         if (current_mode) {
             addIntegral(integral_d_, multiplyTo<Integral>(ki_step_, error_d));
-            addIntegral(integral_q_, multiplyTo<Integral>(ki_step_, error_q));
+            if (params_.hybrid_iq.enabled) {
+                hybrid_iq_.integrate(requested_q, v_q, params_.hybrid_iq);
+            } else {
+                addIntegral(integral_q_, multiplyTo<Integral>(ki_step_, error_q));
+            }
             if (limited && params_.anti_windup_kb > Unit{}) {
                 addIntegral(integral_d_, multiplyTo<Integral>(params_.anti_windup_kb,
                                                             numberCast<Request>(v_d) - requested_d));
-                addIntegral(integral_q_, multiplyTo<Integral>(params_.anti_windup_kb,
-                                                            numberCast<Request>(v_q) - requested_q));
+                if (!params_.hybrid_iq.enabled) {
+                    addIntegral(integral_q_, multiplyTo<Integral>(params_.anti_windup_kb,
+                                                                numberCast<Request>(v_q) - requested_q));
+                }
             }
             const Integral bound = numberCast<Integral>(limit);
             integral_d_ = numericClamp(integral_d_, -bound, bound);
-            integral_q_ = numericClamp(integral_q_, -bound, bound);
+            if (!params_.hybrid_iq.enabled) integral_q_ = numericClamp(integral_q_, -bound, bound);
         }
 
         recordLoopStage(LoopStage::FocIntegral);
@@ -212,7 +254,18 @@ public:
         previous_ = duty;
         const int8_t saturation = limited ? ((reverse ? -requested_q : requested_q) > Request{} ? 1 : -1) : 0;
         recordLoopStage(LoopStage::FocOutput);
-        return {duty.u, duty.v, duty.w, Duty{}, measured_current, dq.d, dq.q, v_d, v_q, angle, saturation};
+        auto& out = frame.output;
+        out.duty_u = duty.u;
+        out.duty_v = duty.v;
+        out.duty_w = duty.w;
+        out.duty = Duty{};
+        out.measured_current = measured_current;
+        out.i_d = dq.d;
+        out.i_q = dq.q;
+        out.v_d = v_d;
+        out.v_q = v_q;
+        out.angle_e_rad = angle;
+        out.saturation = saturation;
     }
 
     /** @brief Scalar modulation depth for a slow telemetry snapshot. */
@@ -242,9 +295,11 @@ private:
     Params params_{};
     Duty modulation_ = VoltageLimiter::modulationCeiling(number<Duty>(95, 100), false);
     Gain kp_{}, ki_{};
+    typename Profile::Flux bemf_per_step_{};
     StepGain ki_step_{};
     Integral integral_d_{}, integral_q_{};
     CurrentFeedbackFilter<Profile> filter_d_, filter_q_;
+    HybridIqControl<Profile> hybrid_iq_;
     Voltage cached_bus_{};
     VoltageLimiter voltage_limiter_{};
     typename Transforms::ModulationBus modulation_bus_{};

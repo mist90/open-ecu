@@ -160,6 +160,9 @@ struct FocParams {
     float current_filter_cutoff_hz = 2000.0f;
     /// @brief dq noise floor in amperes for zero-demand standstill; zero disables it.
     float current_noise_floor_a = 0.0f;
+
+    /// @brief Optional model-led q-axis voltage with slow current trim; d-axis keeps its PI.
+    HybridIqParams hybrid_iq{};
 };
 
 /**
@@ -173,6 +176,8 @@ public:
     /** @brief Select one frame's discarded phase; caller qualifies both retained phases and owns the ISR. */
     bool setNextReconstructedPhase(unsigned phase) noexcept { return core_.setNextReconstructedPhase(phase); }
     Core::Output updateNative(const Core::Input& input) noexcept;
+    /** @brief PWM path: fill/apply the caller's persistent frame without a returned aggregate. */
+    void updateNative(Core::Frame& frame) noexcept;
     /**
      * @brief Constructor
      * @param pwm_interface PWM interface this algorithm drives
@@ -188,8 +193,10 @@ public:
     /**
      * @brief Set the d/q current regulator gains
      *
-     * Both axes share one set of gains, which is correct for a motor with
-     * Ld == Lq. The output of these regulators is in **volts**, not duty, so
+     * In ordinary current mode both axes share one set of gains, which is
+     * correct for a motor with Ld == Lq. Hybrid Iq uses these gains for Id
+     * only; its q-axis correction is configured through HybridIqParams.
+     * The output of these regulators is in **volts**, not duty, so
      * the gains are not interchangeable with the six-step current PI: see
      * tuneFocCurrentPi() in current_loop_tuning.hpp.
      *

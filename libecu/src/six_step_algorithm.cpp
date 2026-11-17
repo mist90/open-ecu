@@ -78,7 +78,15 @@ MotorAlgorithmOutput SixStepAlgorithm::update(const MotorAlgorithmInput& in) noe
 
 SixStepAlgorithm::Output SixStepAlgorithm::updateNative(const Input& in) noexcept
 {
-    Output out{};
+    Frame frame{in, {}};
+    updateNative(frame);
+    return frame.output;
+}
+
+LIBECU_HOT_LOOP void SixStepAlgorithm::updateNative(Frame& frame) noexcept
+{
+    const auto& in = frame.input;
+    auto& out = frame.output;
 
     // Read the shunt *before* this cycle's commutation: the sample belongs to
     // the period that just ended, under the switching states still cached.
@@ -144,11 +152,13 @@ SixStepAlgorithm::Output SixStepAlgorithm::updateNative(const Input& in) noexcep
     out.duty_w = duty;
     out.duty = duty;
     out.measured_current = measured_current;
+    out.i_d = Current{};
+    out.i_q = Current{};
+    out.v_d = Profile::Voltage{};
     out.v_q = multiplyTo<Profile::Voltage>(duty, in.bus_voltage);
     out.angle_e_rad = multiplyTo<Profile::Angle>(in.angle_steps,
         number_v<Profile::Angle, 10471975511966LL, 10000000000000LL>);
     out.saturation = saturation;
-    return out;
 }
 
 void SixStepAlgorithm::applyCommutationStep(const CommutationStep& step, Duty duty_cycle) noexcept

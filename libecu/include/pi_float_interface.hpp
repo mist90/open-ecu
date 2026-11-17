@@ -6,6 +6,7 @@
 #define LIBECU_PI_FLOAT_INTERFACE_HPP
 
 #include "pi_controller.hpp"
+#include "control_optimization.hpp"
 #include <cmath>
 #include <type_traits>
 
@@ -48,7 +49,7 @@ public:
     using StepGain = typename Kernel::StepGain;
 
     /** @brief Configure atomically with respect to update(); reject unrepresentable tuning. */
-    bool setParameters(const PiParameters& params) noexcept {
+    LIBECU_SLOW_PATH bool setParameters(const PiParameters& params) noexcept {
         using pi_interface_detail::convert;
         typename Kernel::Parameters converted{};
         if (!(convert(params.kp, converted.kp) && convert(params.ki, converted.ki) &&

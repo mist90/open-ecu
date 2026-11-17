@@ -127,6 +127,8 @@ libecu::MotorControlParams makeMotorParams(const libecu::BoardInfo& board_info) 
     motor_params.foc.current_filter_order = board_info.current_feedback_filter_hz > 0.0f
         ? libecu::CurrentFilterOrder::FIRST_ORDER : libecu::CurrentFilterOrder::OFF;
     motor_params.foc.current_filter_cutoff_hz = board_info.current_feedback_filter_hz;
+    motor_params.foc.hybrid_iq.enabled = board_info.hybrid_iq_control;
+    motor_params.foc.hybrid_iq.r_phase_ohm = BLDC_R_PHASE_OHM;
 
     // d/q current regulators. FOC has its own bandwidth tuning input so that
     // feedback-filter tuning does not change the six-step regulator. FOC sees

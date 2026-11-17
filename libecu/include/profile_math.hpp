@@ -105,11 +105,14 @@ private:
     static int32_t sample(unsigned index) noexcept {
         return SIN_TABLE[index & 255u];
     }
-    static int32_t interpolate(unsigned index, uint32_t fraction) noexcept {
+    [[gnu::always_inline]] static int32_t interpolate(unsigned index, uint32_t fraction) noexcept {
         const int32_t first = sample(index);
         const int32_t delta = sample(index + 1u) - first;
-        const int64_t product = int64_t(delta) * fraction;
-        return first + static_cast<int32_t>((product + (int64_t(1) << 23) - int64_t(product < 0)) >> 24);
+        // fraction is a 24-bit interpolation position; both signed operands
+        // fit a word. Use the same rounded signed product as the transforms,
+        // avoiding mixed signed/unsigned long multiplication on Cortex-M3.
+        return first + static_cast<int32_t>(
+            fixed_detail::roundedProduct<24>(delta, static_cast<int32_t>(fraction)));
     }
     // round(sin(pi*i/128) * 2^30), i=0..64. Quadrant symmetry gives 256 samples.
     inline static constexpr int32_t SIN_QUARTER[65] = {

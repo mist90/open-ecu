@@ -88,6 +88,32 @@ static void frequencyResponse() {
     }
 }
 
+static void boundedFixedStep() {
+    using P = FixedProfile;
+    using Filter = CurrentFeedbackFilter<P>;
+    // Independent widened oracle, including the two saturation boundaries.
+    auto clamp = [](int64_t value) {
+        return int32_t(std::max<int64_t>(INT32_MIN, std::min<int64_t>(INT32_MAX, value)));
+    };
+    uint32_t random = 123456789u;
+    for (int32_t raw_alpha : {INT32_MIN, -1073741824, -1, 0, 1, 345117824,
+                              1073741823, 1073741824, INT32_MAX}) {
+        int32_t value = INT32_MIN;
+        for (unsigned n = 0; n < 10000; ++n) {
+            random = random * 1664525u + 1013904223u;
+            const int32_t input = n % 3 ? int32_t(random) : n % 2 ? INT32_MIN : INT32_MAX;
+            const int32_t difference = clamp(int64_t(input) - value);
+            const long double product = static_cast<long double>(difference) * raw_alpha / 1073741824.0L;
+            const int32_t increment = clamp(int64_t(std::round(product)));
+            const int32_t expected = clamp(int64_t(value) + increment);
+            const auto actual = Filter::advance(P::Current::fromRaw(value), P::Current::fromRaw(input),
+                                                 P::Fraction::fromRaw(raw_alpha));
+            check(actual.raw() == expected, "bounded fixed LPF matches widened rounded/saturated oracle");
+            value = actual.raw();
+        }
+    }
+}
+
 template<class P, uint32_t FrequencyHz = 20000>
 static void delayedLoop(const char* profile, float plant_r = 0.658f, float plant_l = 0.0007f,
                         float gain_scale = 1.0f) {
@@ -229,6 +255,7 @@ static void noiseFloor() {
 }
 
 int main() {
+    boundedFixedStep();
     frequencyResponse<FloatProfile>();
     frequencyResponse<FixedProfile>();
     delayedLoop<FloatProfile>("float");

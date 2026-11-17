@@ -614,7 +614,7 @@ private:
     bool initialized_;
 
     // Reused in place across the two serialized current-ISR stages; never heap allocated.
-    MotorAlgorithmInputT<Profile> prepared_pwm_input_{};
+    MotorAlgorithmFrameT<Profile> prepared_pwm_frame_{};
     Profile::Angle prepared_pwm_measured_angle_{};
     bool prepared_hall_controls_drive_ = false;
     bool pwm_prepared_ = false;

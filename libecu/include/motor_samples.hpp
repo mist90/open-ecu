@@ -28,6 +28,17 @@ struct MotorAlgorithmOutputT {
     int8_t saturation = 0;
 };
 
+/** @brief Caller-owned storage shared by acquisition, control and PWM application.
+ *
+ * The serialized current ISR fills input in place. An algorithm overwrites
+ * every output field before the caller publishes the completed sample.
+ */
+template<class P>
+struct MotorAlgorithmFrameT {
+    MotorAlgorithmInputT<P> input{};
+    MotorAlgorithmOutputT<P> output{};
+};
+
 /** @brief Explicit adaptation between a native sample and a compatibility interface. */
 template<class Out, class In>
 Out motorInputCast(const In& input) noexcept {

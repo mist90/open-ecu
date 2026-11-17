@@ -26,6 +26,12 @@ bool FocAlgorithm::setParams(const FocParams& params) noexcept {
     typed.low_side_clamped_pwm = params.low_side_clamped_pwm;
     if (!makeCurrentFilterCoefficients(params.current_filter_order, params.current_filter_cutoff_hz,
                                        ActiveTiming::CURRENT_HZ, typed.current_filter)) return false;
+    if (!makeHybridIqParams<ActiveNumericProfile, ActiveTiming::CURRENT_HZ>(
+            params.hybrid_iq, typed.hybrid_iq)) return false;
+    if (params.hybrid_iq.enabled && (params.flux_linkage_wb <= 0.0f || params.l_phase_h < 0.0f)) return false;
+    ActiveNumericProfile::Flux bemf_per_step{};
+    if (params.hybrid_iq.enabled &&
+        !tryNumber(params.flux_linkage_wb * FOC_RAD_PER_STEP, bemf_per_step)) return false;
     core_.setParams(typed);
     params_ = params;
     return true;
@@ -95,11 +101,17 @@ MotorAlgorithmOutput FocAlgorithm::update(const MotorAlgorithmInput& in) noexcep
     return out;
 }
 
-LIBECU_HOT_LOOP FocAlgorithm::Core::Output FocAlgorithm::updateNative(const Core::Input& input) noexcept {
-    const auto output = core_.update(input);
+FocAlgorithm::Core::Output FocAlgorithm::updateNative(const Core::Input& input) noexcept {
+    Core::Frame frame{input, {}};
+    updateNative(frame);
+    return frame.output;
+}
+
+LIBECU_HOT_LOOP void FocAlgorithm::updateNative(Core::Frame& frame) noexcept {
+    core_.update(frame);
+    const auto& output = frame.output;
     pwm_interface_.updateNativeDutyCycle(output.duty_u, output.duty_v, output.duty_w);
     recordLoopStage(LoopStage::Pwm);
-    return output;
 }
 
 float FocAlgorithm::modulationMagnitude(float d, float q, float bus) noexcept {

@@ -128,6 +128,8 @@ public:
         record('I');
         if (const char* cutoff = std::getenv("TEST_BOARD_CURRENT_FILTER_HZ"))
             info_.current_feedback_filter_hz = std::strtof(cutoff, nullptr);
+        if (const char* hybrid = std::getenv("TEST_BOARD_HYBRID_IQ"))
+            info_.hybrid_iq_control = std::strcmp(hybrid, "1") == 0;
         return pwm_.initialize(info_.pwm_frequency_hz, info_.requested_dead_time_ns) && hall_.initialize();
     }
     const BoardInfo& info() const noexcept override { return info_; }
@@ -145,6 +147,9 @@ public:
               "board enables dq filtering independently of the selected motor");
         check(foc.current_filter_cutoff_hz == info_.current_feedback_filter_hz,
               "shared main loads the board's actual dq cutoff without a motor override");
+        check(foc.hybrid_iq.enabled == info_.hybrid_iq_control &&
+              foc.hybrid_iq.r_phase_ohm == BLDC_R_PHASE_OHM,
+              "board selects hybrid strategy while the motor supplies its resistance");
         static Protocol protocol(&controller);
         return protocol;
     }

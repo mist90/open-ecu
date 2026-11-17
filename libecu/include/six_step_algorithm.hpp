@@ -70,7 +70,10 @@ public:
     using Duty = Profile::Duty;
     using Input = MotorAlgorithmInputT<Profile>;
     using Output = MotorAlgorithmOutputT<Profile>;
+    using Frame = MotorAlgorithmFrameT<Profile>;
     Output updateNative(const Input& input) noexcept;
+    /** @brief PWM path: overwrite and apply one caller-owned current frame. */
+    void updateNative(Frame& frame) noexcept;
     /**
      * @brief Constructor
      * @param pwm_interface PWM interface this algorithm drives

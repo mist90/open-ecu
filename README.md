@@ -77,9 +77,17 @@ port rather than a new main.
 - Routes the Hall and PWM interrupts, and arms the speed and current loops
 
 ### Key Features
+
+See [Software and control algorithms](docs/software.md) for the control pipeline,
+FOC, six-step, PLL, filtering, hybrid Iq and voltage-limiter implementation.
+
 - **FOC** with Hall sensor position feedback
+- **Experimental hybrid Iq**: opt-in model-led voltage with slow averaged-current
+  trim; [algorithm and tuning](docs/software.md#hybrid-iq-control-through-uq)
+- **Reusable current frames**: in-place acquisition, control and PWM application;
+  [frame ownership and optional IRQ-state hooks](docs/CURRENT_FRAME.md)
 - **Root-free voltage limiting** with a d-priority circumscribed 32-gon and
-  consistent anti-windup: [geometry, duty margins and tests](docs/VOLTAGE_LIMIT.md)
+  consistent anti-windup: [geometry and duty margins](docs/software.md#polygon-voltage-limiting)
 - **6-step trapezoidal control** with Hall sensor position feedback
 - **Closed-loop speed control** using PI algorithm
 - **Safety monitoring** with overcurrent, overtemperature, and undervoltage protection
@@ -92,16 +100,19 @@ port rather than a new main.
 
 The firmware implements a dual-rate control architecture:
 
-**1kHz Speed Control Loop (TIM2 periodic timer):**
-1. Reads Hall sensor states (async GPIO interrupts)
-2. Calculates motor speed from position history
-3. Executes PI speed controller (setpoint → current or duty cycle)
-4. Monitors safety parameters in real-time
+**100-Hz speed control loop:**
+1. Reads the PLL's speed estimate and applies feedback filtering
+2. Limits the target acceleration
+3. Runs the speed PI (setpoint → current or duty request)
+4. Updates slow status and protection checks
 
-**40kHz Current Loop (PWM ISR):**
-1. Updates commutation sequence based on rotor position
-2. Applies PWM duty cycles to all three phases
-3. Synchronized with PWM timer for minimal latency
+**Board-clocked current loop (normally 20 kHz on STM32):**
+1. Observes pending Hall changes and advances the PLL
+2. Consumes PWM-synchronized current samples
+3. Runs six-step or FOC and applies the resulting PWM duties
+
+The loop rates are configured through the board and shared sampling clocks;
+see the [control pipeline](docs/software.md#control-pipeline-and-units).
 
 ### Safety Features
 - Overcurrent protection (120% of rated current)
@@ -211,8 +222,9 @@ Additional host regressions:
 - `tests/test_profile_math/run.sh` — LUT/transforms, voltage limits and Cortex-M0 helper audit
 - `tests/test_numeric_adc/run.sh` — full-range current, bus, NTC and PWM comparisons
 - `tests/test_foc/run.sh float|fixed` — closed-loop motor model and anti-windup recovery
+- `tests/test_hybrid_iq/run.sh` — float/fixed hybrid current control, delayed motor model, noise and recovery
 - `tests/test_current_filter/run.sh` — dq filters, delayed-loop stability and zero-current noise suppression
-- `tests/test_control/run.sh float|numeric-fixed` — commands, native I/O, protection, ramp and OSC
+- `tests/test_control/run.sh float|numeric-fixed` — commands, native I/O, reusable current frames, protection, ramp and OSC
 
 Host tests live under `tests/`; each directory has a standalone `run.sh`.
 

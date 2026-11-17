@@ -805,7 +805,7 @@ LIBECU_HOT_LOOP void BldcController::preparePwmInterruptHandler() noexcept {
 
     recordLoopStage(LoopStage::Hall);
     // Read shared data atomically (avoid torn reads from SysTick interrupt)
-    auto& in = prepared_pwm_input_;
+    auto& in = prepared_pwm_frame_.input;
     {
         CriticalSection cs;
         in.electric_mode = status_.electric_mode;
@@ -836,7 +836,8 @@ LIBECU_HOT_LOOP void BldcController::completePwmInterruptHandler() noexcept {
     // The board has now published one coherent current frame and a complete,
     // source-dated auxiliary measurement. Fill the reusable input in place:
     // no copy/clearing of the prepared command and rotor fields in this stage.
-    auto& in = prepared_pwm_input_;
+    auto& frame = prepared_pwm_frame_;
+    auto& in = frame.input;
     adc_interface_->readNativeCurrents(in.i_u, in.i_v, in.i_w);
     in.bus_voltage = adc_interface_->readNativeBusVoltage();
     recordLoopStage(LoopStage::Currents);
@@ -858,24 +859,25 @@ LIBECU_HOT_LOOP void BldcController::completePwmInterruptHandler() noexcept {
     // worth having. The base class still exists for the non-ISR paths
     // (reset/onEnter), where clarity is worth more than cycles.
     recordLoopStage(LoopStage::Dispatch);
-    const MotorAlgorithmOutputT<Profile> out = [&]() -> MotorAlgorithmOutputT<Profile> {
-        if (dmode_ == DriveMode::NEUTRAL || in.drive_mode == DriveMode::NEUTRAL) {
-            // Do not run the current regulators against an inactive bridge.
-            MotorAlgorithmOutputT<Profile> parked{};
-            parked.angle_e_rad = multiplyTo<Profile::Angle>(in.angle_steps, FocAlgorithm::Core::RAD_PER_STEP);
-            return parked;
-        }
-        // Construct only the selected result: no redundant clearing/copying
-        // of a second fixed-point output structure on every current-loop tick.
+    if (dmode_ == DriveMode::NEUTRAL || in.drive_mode == DriveMode::NEUTRAL) {
+        // Do not run the current regulators against an inactive bridge.
+        frame.output = {};
+        frame.output.angle_e_rad = multiplyTo<Profile::Angle>(in.angle_steps, FocAlgorithm::Core::RAD_PER_STEP);
+    } else {
+        // Acquisition, the selected algorithm and PWM use this same frame.
+        // Results never return through a temporary aggregate on the ISR stack.
         switch (algorithm_) {
             case DriveAlgorithm::FOC:
-                return foc_.updateNative(in);
+                foc_.updateNative(frame);
+                break;
 
             case DriveAlgorithm::SIX_STEP:
             default:
-                return six_step_.updateNative(in);
+                six_step_.updateNative(frame);
+                break;
         }
-    }();
+    }
+    const auto& out = frame.output;
     recordLoopStage(LoopStage::Algorithm);
 
     {
@@ -885,8 +887,8 @@ LIBECU_HOT_LOOP void BldcController::completePwmInterruptHandler() noexcept {
         // into the telemetry. Control and +OSC keep the raw value.
         const Fraction i_alpha = limits_.current_alpha;
         if (i_alpha > Fraction{} && i_alpha < number_v<Fraction, 1>) {
-            filtered_measured_current_ += multiplyTo<Current>(i_alpha,
-                                                             out.measured_current - filtered_measured_current_);
+            filtered_measured_current_ = CurrentFeedbackFilter<Profile>::advance(
+                filtered_measured_current_, out.measured_current, i_alpha);
         } else {
             filtered_measured_current_ = out.measured_current;
         }

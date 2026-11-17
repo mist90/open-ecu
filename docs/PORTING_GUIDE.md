@@ -50,8 +50,8 @@ Current STM32 contracts are documented in
 retain their historical acquisition/scheduling configuration.
 
 The STM32 platform/HAL sources and their acquisition tests are restored from
-`a55888245304c78c1d539f04383922c086feff48`; the ES32 DMA contract is described in
-[PIPELINED_ADC.md](../ES32F3553GLTE/docs/PIPELINED_ADC.md).
+`a55888245304c78c1d539f04383922c086feff48`; the portable ownership contract is
+described in [current frames and interrupt-state hooks](CURRENT_FRAME.md).
 The shared controller and numeric optimizations are retained. The STM32 ports
 use the single-call wrapper, with no separate source-IRQ preparation stage.
 
@@ -444,10 +444,10 @@ constexpr float CURRENT_FEEDBACK_FILTER_HZ = 2000.0f;
 info_.current_feedback_filter_hz = ihm08::CURRENT_FEEDBACK_FILTER_HZ;
 ```
 
-The default board cutoff is zero (off). F410/IHM08M1 selects 2 kHz; G431 and
-both ES32 ports select zero. The cutoff follows the board even if the motor
-changes. MOTOR_1's separate motor configuration selects FPID=0.549779/516.792.
-See [MOTOR_1_CURRENT_FILTER.md](MOTOR_1_CURRENT_FILTER.md) for
+The default board cutoff is zero (off). F410/IHM08M1 selects 2 kHz and G431
+selects bypass. The cutoff follows the board even if the motor changes.
+MOTOR_1's separate motor configuration selects FPID=0.549779/516.792.
+See [current-feedback filtering](software.md#current-feedback-filtering) for
 the 2026-11-11 comparison, including the quieter sound, slower current steps
 and increased lower-frequency ripple. Motor PI gains are independent of this
 board-owned feedback-filter setting.

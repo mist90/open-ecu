@@ -60,6 +60,25 @@ class CurrentFeedbackFilter {
 public:
     using Current = typename Profile::Current;
     using Coefficients = CurrentFilterCoefficients<Profile>;
+    using Coefficient = typename Profile::Fraction;
+
+    /** @brief One saturated LPF step; normalized coefficients permit bounded word arithmetic.
+     *
+     * Keep the saturated innovation. For alpha in [0,1], its rounded product
+     * fits Current and moves the state towards the input without overshooting,
+     * even at both signed endpoints. Other coefficients retain generic saturation.
+     */
+    [[gnu::always_inline]] static Current advance(Current value, Current input, Coefficient alpha) noexcept {
+        const Current difference = input - value;
+        if constexpr (std::is_same<Profile, FixedProfile>::value) {
+            if (uint32_t(alpha.raw()) <= uint32_t(Coefficient::SCALE)) {
+                const int32_t increment = static_cast<int32_t>(
+                    fixed_detail::roundedProduct<Coefficient::FRACTION_BITS>(alpha.raw(), difference.raw()));
+                return Current::fromRaw(value.raw() + increment);
+            }
+        }
+        return value + multiplyTo<Current>(alpha, difference);
+    }
 
     /** @brief Forget history; the next measurement initializes the DC state. */
     void reset() noexcept { initialized_ = false; value_ = Current{}; }
@@ -77,7 +96,7 @@ public:
             initialized_ = true;
             value_ = input;
         } else {
-            value_ += multiplyTo<Current>(c.alpha, input - value_);
+            value_ = advance(value_, input, c.alpha);
         }
         return value_;
     }

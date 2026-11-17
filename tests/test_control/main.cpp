@@ -34,6 +34,7 @@ public:
         ++calls;
         ++native_writes;
         check(u >= NativeDuty{} && v >= NativeDuty{} && w >= NativeDuty{}, "native PWM is nonnegative");
+        if (on_native_write) on_native_write(context);
     }
     void enable(bool value) override { ++calls; enabled = value; if (value) ++enables; }
     void apply() override { ++calls; }
@@ -41,6 +42,8 @@ public:
     unsigned enables = 0;
     unsigned native_writes = 0;
     bool enabled = false;
+    void (*on_native_write)(void*) = nullptr;
+    void* context = nullptr;
 };
 class Hall final : public HallInterface {
 public:
@@ -545,6 +548,68 @@ static void testSplitCurrentLoop() {
             }
         }
     }
+}
+
+static void testReusableCurrentFrame() {
+    Pwm pwm;
+    Hall hall;
+    CapturedAdc adc;
+    auto params = makeParams();
+    params.algorithm = DriveAlgorithm::FOC;
+    params.foc_current_regulator.kp = 0.5f;
+    params.foc_current_regulator.ki = 20.0f;
+    BldcController controller(pwm, hall, params, &adc);
+    check(controller.initialize(), "reusable current-frame controller initializes");
+    controller.start();
+    controller.setDriveMode(DriveMode::FORWARD);
+    controller.setControlMode(ControlMode::CLOSED_LOOP_TORQUE);
+    controller.setCurrent(2);
+    adc.currents[0] = 4000; adc.currents[1] = 4200; adc.currents[2] = 4300;
+    controller.pwmInterruptHandler();
+    struct Observer {
+        BldcController* controller;
+        NativeMotorStatus previous;
+        unsigned calls = 0;
+    } observer{&controller, controller.getNativeStatus()};
+    check(observer.previous.i_q != BldcController::Current{} &&
+          observer.previous.v_q != BldcController::Voltage{}, "prior frame has real dq state");
+    pwm.context = &observer;
+    pwm.on_native_write = [](void* context) {
+        auto& observer = *static_cast<Observer*>(context);
+        const auto& actual = observer.controller->getNativeStatus();
+        const auto& old = observer.previous;
+        check(actual.i_d == old.i_d && actual.i_q == old.i_q &&
+              actual.v_d == old.v_d && actual.v_q == old.v_q &&
+              actual.measured_current == old.measured_current &&
+              actual.duty_u == old.duty_u && actual.duty_v == old.duty_v && actual.duty_w == old.duty_w,
+              "PWM callback sees the complete previous status, never a half-written frame");
+        ++observer.calls;
+    };
+    adc.currents[0] = 4300; adc.currents[1] = 4000; adc.currents[2] = 4200;
+    controller.pwmInterruptHandler();
+    check(observer.calls == 1 && controller.getNativeStatus().i_q != observer.previous.i_q,
+          "completed new frame is published after PWM application");
+    pwm.on_native_write = nullptr;
+
+    controller.setAlgorithm(DriveAlgorithm::SIX_STEP);
+    controller.pwmInterruptHandler();
+    const auto& six = controller.getNativeStatus();
+    check(six.i_d == BldcController::Current{} && six.i_q == BldcController::Current{} &&
+          six.v_d == BldcController::Voltage{},
+          "reusing the FOC frame for six-step clears dq fields the new algorithm does not produce");
+    controller.setAlgorithm(DriveAlgorithm::FOC);
+    controller.pwmInterruptHandler();
+    check(controller.getNativeStatus().i_q != BldcController::Current{},
+          "return to FOC overwrites the reused six-step output");
+    controller.setDriveMode(DriveMode::NEUTRAL);
+    const auto writes = pwm.native_writes;
+    controller.pwmInterruptHandler();
+    const auto& parked = controller.getNativeStatus();
+    check(pwm.native_writes == writes && parked.i_d == BldcController::Current{} &&
+          parked.i_q == BldcController::Current{} && parked.v_d == BldcController::Voltage{} &&
+          parked.v_q == BldcController::Voltage{} && parked.duty_u == BldcController::Duty{} &&
+          parked.duty_v == BldcController::Duty{} && parked.duty_w == BldcController::Duty{},
+          "parked reused frame clears every electrical output without applying PWM");
 }
 
 static void testSplitCancellationAndGuards() {
@@ -1189,6 +1254,7 @@ static void testRejectedModeTuning() {
 #endif
 
 int main() {
+    testReusableCurrentFrame();
     testSpeedClock();
     testSlewClock();
     for (auto mode : {ElectricMode::CURRENT_MODE, ElectricMode::VOLTAGE_MODE})

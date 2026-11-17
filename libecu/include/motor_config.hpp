@@ -28,7 +28,7 @@
 #define BLDC_SPEED_VOLTAGE_KI 0.2f
 // Mechanical-RPS -> current PI: 10-inch wheel, 80 kg effective road mass.
 // Kp is limited by the unloaded wheel/PLL delay; Ki restores load-step response.
-// Shared by every MOTOR_1 port; calculation and bench checks: docs/MOTOR_1_SPEED_PI.md.
+// Shared by every MOTOR_1 port; tuning rationale: docs/software.md#speed-loop-tuning.
 #define BLDC_SPEED_CURRENT_KP 3.0f
 #define BLDC_SPEED_CURRENT_KI 2.0f
 #define BLDC_SIX_STEP_USE_MOTOR_MODEL true
@@ -65,7 +65,7 @@
 #define BLDC_ILOOP_BW_HZ        500.0f
 // FOC uses lower gains with dq filtering: FPID ~= 0.549779 / 516.792.
 // This is the model's tuning input, not a measured closed-loop bandwidth.
-// F410 noise/transient comparison: docs/MOTOR_1_CURRENT_FILTER.md.
+// F410 noise/transient comparison: docs/software.md#current-feedback-filtering.
 #define BLDC_FOC_ILOOP_BW_HZ    125.0f
 #else
 // JK42BLS01, FOC qualified unloaded on STM32G431 at 20 V.

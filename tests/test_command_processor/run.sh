@@ -21,6 +21,10 @@ for profile in float fixed; do
                 echo "Protocol lifecycle and boot defaults: profile=$profile motor=$motor manual=$manual filter=$cutoff"
                 TEST_BOARD_CURRENT_FILTER_HZ=$cutoff "$build_dir/test"
             done
+            if [[ $motor == scooter ]]; then
+                echo "Hybrid Iq boot: profile=$profile manual=$manual"
+                TEST_BOARD_HYBRID_IQ=1 TEST_BOARD_CURRENT_FILTER_HZ=1000 "$build_dir/test"
+            fi
         done
     done
 done
