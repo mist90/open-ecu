@@ -25,7 +25,6 @@ static DMA_InitTypeDef dma_config{};
 static uint16_t* dma_buffer = nullptr;
 static bool fail_dma_start = false;
 static unsigned critical_depth = 0, critical_entries = 0;
-static bool inject_before_start = false;
 static Stm32Adc* adc = nullptr;
 static bool observe_publication = false;
 static uint32_t old_values[3]{}, new_values[3]{};
@@ -39,15 +38,6 @@ using InjectedConfigArgument = const ADC_InjectionConfTypeDef;
 #endif
 
 extern "C" void disable_interrupts() {
-#if defined(STM32F410Rx)
-    // The injected IRQ can run immediately before the short CR2 critical
-    // section. Its new trigger state must survive the regular-start RMW.
-    if (inject_before_start) {
-        inject_before_start = false;
-        CLEAR_BIT(ADC1->CR2, ADC_CR2_JEXTEN);
-        SET_BIT(ADC1->CR2, ADC_CR2_JSWSTART);
-    }
-#endif
     ++critical_depth;
     ++critical_entries;
 }
@@ -247,12 +237,12 @@ static void acquisition() {
     check(cachedValues(old_values), "DMA completion does not publish outside SysTick");
     new_values[0] = 2029; new_values[1] = 1309; new_values[2] = 2048;
     observe_publication = true;
-    inject_before_start = true;
     check(adc->serviceRegular(1000) && scanRequested(), "next SysTick publishes and launches exactly one new scan");
     observe_publication = false;
 #if defined(STM32F410Rx)
-    check((ADC1->CR2 & ADC_CR2_JSWSTART) && !(ADC1->CR2 & ADC_CR2_JEXTEN),
-          "regular-start RMW preserves an injected IRQ's software-x2 trigger state");
+    check(!(ADC1->CR2 & ADC_CR2_JSWSTART) &&
+          (ADC1->CR2 & ADC_CR2_JEXTEN) == ADC_EXTERNALTRIGINJECCONVEDGE_FALLING,
+          "regular start preserves the PWM-triggered injected scan");
 #endif
     acknowledgeLaunch();
     check(adc->regularReady() && cachedValues(new_values), "complete frame is ready with all distinct channels");

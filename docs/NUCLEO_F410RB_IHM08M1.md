@@ -196,10 +196,10 @@ Vzero = 3.3 × 680/(6800+680) × 5.7 ≈ 1.710 V ≈ 2122 counts
 I = (raw - zero) × 3.3 / (4095 × 0.010 × G)
 ```
 
-These formulas use single-conversion counts. With the default software x2,
-the HAL publishes sums of two (`0..8190`), including `2*raw` for a single-scan
-fallback. Calibration, physical current/Vbus conversion and software
-protection account for that factor automatically. NTC and pot remain `0..4095`.
+These formulas use the port's permanent single-conversion counts (`0..4095`).
+Current calibration, raw-current protection, Vbus, NTC and pot all use that
+scale; `Stm32Adc::INJECTED_SAMPLE_SUM` is **1**. Software double-scan acquisition
+has been removed.
 
 The board's `CURRENT_FEEDBACK_FILTER_HZ=2000` setting in
 `STM32F410/Core/Inc/board_config.hpp` enables separate first-order Id/Iq
@@ -337,18 +337,10 @@ inputs to the XOR only and are never enabled as outputs.
 The ADC is triggered **once per full PWM period**, by the falling OC4REF
 while counting up, 1 µs before the CNT peak. The three current conversions
 take about 3×(15+12)/25 MHz = **3.24 µs**, plus a small trigger synchronization.
-Software x2 is enabled by
-default: the first JEOC snapshots U/V/W and starts another injected
-scan when the low-side window permits. The second JEOC publishes their sums
-and runs the controller once. There is still one control frame per 50 µs.
-
-Pairing and trigger switching are entirely inside `Stm32Adc`. Both previous
-and current duties must be below 60%, the timer period must be unchanged,
-and TIM1 must be running down with PSC=0 and more than 450 ticks left before
-the largest compare. Otherwise one scan publishes `2*raw`, keeping identical
-scaling. The first frame and high-to-low duty transitions also use this
-fallback. Overcurrent checks inspect each unaveraged scan before the control
-update.
+The JEOC handler snapshots U/V/W, checks raw overcurrent and runs the controller
+once: one 12-bit scan and one control frame per 50 µs. `captureInjected()` returns
+`void`. There is no second software scan, pairing/window-fallback state or
+trigger switching for a second conversion.
 
 Unlike the G431, the currents are sampled sequentially, with no internal
 PGA and no hardware oversampling. Each current's sample-and-hold aperture
@@ -391,8 +383,7 @@ loop; the virtual field never overwrites them.
 `f410_diagnostics` is reachable over SWD:
 
 * `samples`: number of complete control frames, not individual injected scans;
-* `max_current_loop_cycles`: maximum first-JEOC-to-controller/OSC completion
-interval, including the second-scan gap when software x2 is used;
+* `max_current_loop_cycles`: maximum JEOC-to-controller/OSC completion interval;
 * `overruns`: the whole-frame guard, including recorder bookkeeping, reaches
   5000 cycles or finds a new JEOC pending on exit;
 * `faults`: bitmask — 1=BKIN, 2=|I|>25 A, 4=Vbus<10 V, 8=ADC/DMA/stale,
@@ -407,6 +398,10 @@ stays latched off until reset. The 5000-cycle budget is the full 50 µs PWM
 period.
 
 ### Measured current-loop timing after the SysTick migration (2026-11-08)
+
+**Historical comparison:** the software ×2 acquisition measured below was
+removed on 2026-11-18. These results describe the earlier images, not selectable
+modes of the current port; current acquisition is permanently single-scan.
 
 NUCLEO-F410RB, ST-LINK `066EFF535752877167082532`, about40.5 V,95 RPM, FOC,
 current mode, stock F410 gains2.1991/2067.1680 and speed PI2/2. Each variant
@@ -428,15 +423,17 @@ not a hardware WCET proof. The peak-relative sum is conservative because CNT is
 read after the DWT start; recorder bookkeeping and final exception return follow
 the reported end. The deadline guard runs after bookkeeping.
 
-`F410TimingCapture` now contains15 uint32 words (60 bytes). The first six retain
+The historical recorder included a paired-frame counter. The current
+`F410TimingCapture` contains **14 uint32 words (56 bytes)**. The first six retain
 their old ABI. Words6/7 are flags and selected frames to skip; flag1 selects MOE
-enabled frames. Words8–10 accumulate first-entry phase, words11–13 peak-to-end,
-and word14 counts paired frames. All totals are32-bit: use bounded captures such
+enabled frames. Words8–10 accumulate first-entry phase and words11–13 peak-to-end;
+there is no paired-frame word. All totals are32-bit: use bounded captures such
 as200000 frames. Clear the record, set flags/skip, then arm `remaining` last,
 while parked; collect/read after neutral. Validate DWT before interpreting cycles.
 
-The verified fixed×2 image was left on the MCU, with neutral/zero demand and
-capture disabled, as requested. Original Flash backup and complete evidence:
+At the end of that 2026-11-08 trial, the verified fixed×2 image was left on the
+MCU, with neutral/zero demand and capture disabled, as requested.
+Original Flash backup and complete evidence:
 `/home/ropewalker/ecu-bench/f410-systick-hardware-20261108/`.
 
 ## 5. Code, build and first bring-up
@@ -468,16 +465,10 @@ From the repository root:
 ./build.sh --platform STM32F410 --debug
 ./flash.sh --platform STM32F410 --debug --verify
 
-# Optional single-scan build (software x2 is ON by default):
-cmake -S STM32F410 -B STM32F410/build-adc-x1 -DCMAKE_BUILD_TYPE=Release \
-  -DENABLE_ADC_SOFTWARE_X2=OFF
-cmake --build STM32F410/build-adc-x1 -j
 ```
 
-The HAL's compile-time switch is `STM32F4_ADC_SOFTWARE_X2=1`; CMake sets it
-from `ENABLE_ADC_SOFTWARE_X2`. Setting it to `0` removes the pairing state and
-restores single-scan acquisition and calibration units. Apply the define
-consistently to all translation units that include `stm32_adc.hpp`.
+All builds use the same single-scan ADC path; there is no acquisition-mode build
+switch. Run `bash tests/test_f410_adc/run.sh` for the float/fixed HAL regression.
 
 Release uses **`-O2 -mfpu=fpv4-sp-d16 -mfloat-abi=hard`** with the CPU at
 100 MHz and float arithmetic by default. Artifacts land in

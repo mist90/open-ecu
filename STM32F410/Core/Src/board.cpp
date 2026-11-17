@@ -32,7 +32,6 @@ bool uart_ready = false;
 uint32_t interrupt_depth = 0;
 uint32_t saved_primask = 0;
 int32_t zero_counts[3]{};
-uint32_t timing_entry_cycles = 0;
 constexpr int32_t CURRENT_TRIP_COUNTS =
     static_cast<int32_t>(libecu::Stm32Adc::INJECTED_SAMPLE_SUM * 25.0f * ihm08::SHUNT_OHMS *
                          ihm08::CURRENT_GAIN * 4095.0f / ihm08::ADC_REFERENCE);
@@ -119,7 +118,7 @@ bool configureConsole() {
 } // namespace
 
 // Accessible through SWD, including in optimized builds. Cycle counts span the
-// first JEOC through the current controller/OSC, including any second ADC scan.
+// JEOC entry through the current controller/OSC for one PWM-triggered scan.
 extern "C" {
 struct F410Diagnostics {
     uint32_t samples;
@@ -229,23 +228,19 @@ extern "C" void board_adc_interrupt() {
     const bool timing = f410_timing_capture.remaining != 0;
     const uint32_t entry_count = timing ? TIM1->CNT : 0;
     const uint32_t entry_control = timing ? TIM1->CR1 : 0;
-    const bool frame_ready = adc_driver.captureInjected(started);
-    if (timing && adc_driver.frameStartedCycles() == started) {
-        // TIM1 and the core both run at100 MHz. Capture the first JEOC phase,
-        // retaining it across an optional second scan. A CNT read after the
-        // DWT start makes entry+body slightly conservative by those few cycles.
-        timing_entry_cycles = entry_control & TIM_CR1_DIR ? TIM1->ARR - entry_count : TIM1->ARR + entry_count;
-    }
-    // Inspect every conversion, including the first scan of an x2 frame:
-    // averaging must not hide a short overcurrent pulse from software protection.
+    adc_driver.captureInjected();
+    // TIM1 and the core both run at100 MHz. A CNT read after the DWT start
+    // makes entry+body slightly conservative by those few cycles.
+    const uint32_t timing_entry_cycles = timing ?
+        (entry_control & TIM_CR1_DIR ? TIM1->ARR - entry_count : TIM1->ARR + entry_count) : 0;
+    // Protect every PWM frame using its original, unaveraged12-bit conversions.
     if (controller && controller->getDriveMode() != libecu::DriveMode::NEUTRAL) {
         for (unsigned phase = 0; phase < 3; ++phase) {
-            const int32_t delta = int32_t(adc_driver.getRawProtectionCurrent(static_cast<libecu::PwmChannel>(phase)))
+            const int32_t delta = int32_t(adc_driver.getRawAdcValue(static_cast<libecu::PwmChannel>(phase)))
                                 - zero_counts[phase];
             if (delta > CURRENT_TRIP_COUNTS || delta < -CURRENT_TRIP_COUNTS) trip(OVERCURRENT);
         }
     }
-    if (!frame_ready) return;
     ++f410_diagnostics.samples;
     if (!controller) return;
     // This still runs if SysTick is lost: no drive on an uninitialized or stale
@@ -270,7 +265,7 @@ extern "C" void board_adc_interrupt() {
     if (console->wantsCurrentSample()) {
         console->captureCurrentSample(controller->getNativeStatus());
     }
-    const uint32_t cycles = DWT->CYCCNT - adc_driver.frameStartedCycles();
+    const uint32_t cycles = DWT->CYCCNT - started;
     if (cycles > f410_diagnostics.max_current_loop_cycles) f410_diagnostics.max_current_loop_cycles = cycles;
     const bool selected = f410_timing_capture.remaining &&
         (!(f410_timing_capture.flags & F410_TIMING_DRIVE_ONLY) || (TIM1->BDTR & TIM_BDTR_MOE));
@@ -291,13 +286,12 @@ extern "C" void board_adc_interrupt() {
         if (!f410_timing_capture.samples || from_peak < f410_timing_capture.peak_min_cycles)
             f410_timing_capture.peak_min_cycles = from_peak;
         if (from_peak > f410_timing_capture.peak_max_cycles) f410_timing_capture.peak_max_cycles = from_peak;
-        if (adc_driver.frameStartedCycles() != started) ++f410_timing_capture.paired_frames;
         ++f410_timing_capture.samples;
         --f410_timing_capture.remaining;
     }
     // Include recorder bookkeeping in the existing whole-frame guard. The
     // reported body/peak observations above end before this bookkeeping.
-    const bool overrun = DWT->CYCCNT - adc_driver.frameStartedCycles() >=
+    const bool overrun = DWT->CYCCNT - started >=
                          SystemCoreClock / libecu::ActiveTiming::CURRENT_HZ || (ADC1->SR & ADC_SR_JEOC);
     if (record && overrun) ++f410_timing_capture.overruns;
     if (overrun) {
@@ -419,8 +413,7 @@ public:
                                     4095.0f / ihm08::ADC_REFERENCE + 0.5f);
         printf("PWM %lu Hz, dead time %u ns, DPWMMIN duty <=95%%; ADC zeros %.3f %.3f %.3f V\n",
                 (unsigned long)info_.pwm_frequency_hz, info_.actual_dead_time_ns, values[0], values[1], values[2]);
-        printf("ADC: software sampling x%u, injected sum %u\n",
-               Stm32Adc::INJECTED_SAMPLE_SUM, Stm32Adc::INJECTED_SAMPLE_SUM);
+        printf("ADC: one 12-bit three-phase scan per PWM period\n");
         return true;
     }
     const BoardInfo& info() const noexcept override { return info_; }
