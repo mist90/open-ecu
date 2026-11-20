@@ -89,6 +89,11 @@ public:
         return kernel_.update(setpoint, feedback, external_saturation);
     }
 
+    /** @brief As updateNative, with a per-sample upper bound on the integral contribution. */
+    Output updateNativeCapped(Input setpoint, Input feedback, int external_saturation, Output ceiling) noexcept {
+        return kernel_.updateCapped(setpoint, feedback, external_saturation, ceiling);
+    }
+
     /** @brief Clear accumulated state. */
     void reset() noexcept { kernel_.reset(); }
     /** @return Last successfully accepted physical tuning. */

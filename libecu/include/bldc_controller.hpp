@@ -6,6 +6,9 @@
 #ifndef LIBECU_BLDC_CONTROLLER_HPP
 #define LIBECU_BLDC_CONTROLLER_HPP
 
+#if defined(LIBECU_MOTOR1_SPAN_BENCH) && LIBECU_MOTOR1_SPAN_BENCH
+#include "order_feedback.hpp"
+#endif
 #include <cstddef>
 #include <cstdint>
 #include <array>
@@ -405,6 +408,10 @@ public:
      *
      * @param rate_rps2 Rate in RPS per second, 0 disables the limiter
      */
+#if defined(LIBECU_MOTOR1_SPAN_BENCH) && LIBECU_MOTOR1_SPAN_BENCH
+    /** @brief Snapshot drive state and publish a held command on the 1-kHz board tick. */
+    void updateBenchTrims1k() noexcept;
+#endif
     void setAccelerationRate(float rate_rps2) noexcept;
 
     /// @brief Get the target-speed slew rate limit (RPS/s), 0 = disabled
@@ -583,6 +590,10 @@ private:
     // Owned components
     HallMonitor hall_monitor_;
     MotorPLL motor_pll_;
+#if defined(LIBECU_MOTOR1_SPAN_BENCH) && LIBECU_MOTOR1_SPAN_BENCH
+    Order144Feedback shoulder_{};
+    bool bench_held_live_{};
+#endif
     OpenLoopPhase<Profile, ActiveTiming::CURRENT_HZ> open_loop_;
     PiFloatInterface<ActivePiProfile::SpeedPiTypes, ActiveTiming::SPEED_HZ> pi_speed_controller_;
 

@@ -10,6 +10,9 @@ FocAlgorithm::FocAlgorithm(PwmInterface& pwm) noexcept : pwm_interface_(pwm) {
 }
 
 bool FocAlgorithm::setParams(const FocParams& params) noexcept {
+#if defined(LIBECU_MOTOR1_SPAN_BENCH) && LIBECU_MOTOR1_SPAN_BENCH
+    if (params.hybrid_iq.enabled || params.use_decoupling) return false;
+#endif
     Core::Params typed{};
     if (!tryNumber(params.max_modulation, typed.max_modulation) ||
         !tryNumber(params.max_duty_cycle, typed.max_duty_cycle) ||

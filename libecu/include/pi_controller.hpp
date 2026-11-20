@@ -84,6 +84,20 @@ public:
         return output_;
     }
 
+    /**
+     * @brief Tighten the integral bound for one update, including externally saturated ticks.
+     * Like update() and setParameters(), this operation has a single owner. The configured
+     * tuning is restored before return; only the bounded dynamic state survives.
+     */
+    Output updateCapped(Input setpoint, Input feedback, int external_saturation, Output ceiling) noexcept {
+        const Output configured = params_.integral_max;
+        params_.integral_max = std::clamp(ceiling, params_.integral_min, configured);
+        integral_ = clampIntegral(integral_);
+        const Output applied = update(setpoint, feedback, external_saturation);
+        params_.integral_max = configured;
+        return applied;
+    }
+
     /** @brief Update continuous gains and cache their per-sample equivalents. */
     void setParameters(const Parameters& params) noexcept {
         params_ = params;

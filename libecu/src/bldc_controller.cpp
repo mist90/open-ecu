@@ -5,6 +5,9 @@
 
 #include "../include/bldc_controller.hpp"
 #include "../include/critical_section.hpp"
+#if defined(LIBECU_MOTOR1_T60_LOAD)
+#include "../include/motor_config.hpp"
+#endif
 #include <algorithm>
 #include <stdio.h>
 #include <cmath>
@@ -182,6 +185,9 @@ LIBECU_SLOW_PATH void BldcController::update() noexcept
     // yields a *positive* error and therefore corrective torque, while turning
     // with it behaves exactly as before.
     const auto speed_steps_s = motor_pll_.getNativeSpeedStepsSec();
+#if defined(LIBECU_MOTOR1_SMOOTH_BENCH) && LIBECU_MOTOR1_SMOOTH_BENCH
+    const auto bench_point = Motor1BenchPoint::fromSpeed(speed_steps_s);
+#endif
     Speed speed_rps = divideByInteger<Speed>(speed_steps_s, params_.num_poles * BLDC_NUM_PHASES);
     if (dmode_ == DriveMode::REVERSE) speed_rps = -speed_rps;
 
@@ -231,6 +237,9 @@ LIBECU_SLOW_PATH void BldcController::update() noexcept
     } status;
     {
         CriticalSection cs;
+#if defined(LIBECU_MOTOR1_SMOOTH_BENCH) && LIBECU_MOTOR1_SMOOTH_BENCH
+        foc_.applyBenchPoint(bench_point);
+#endif
         status_.current_speed_rps = filtered_measured_speed_;
         status = {
 #if LIBECU_FOC_DUTY_TELEMETRY
@@ -293,11 +302,22 @@ LIBECU_SLOW_PATH void BldcController::update() noexcept
                     limited_target_speed_ = Accumulator{};
                 } else {
                     const Speed limited_target = applyAccelerationLimit(status.target_speed_rps);
+#if defined(LIBECU_MOTOR1_T60_LOAD)
+                    if (status.electric_mode == ElectricMode::CURRENT_MODE) {
+                        pi_output = pi_speed_controller_.updateNativeCapped(
+                            numberCast<PiSpeed>(limited_target), numberCast<PiSpeed>(status.current_speed_rps),
+                            status.current_pi_saturation,
+                            motor1RollingIntegralCeiling<Profile, int(BLDC_MAX_CURRENT)>(status.current_speed_rps));
+                    } else {
+#endif
                     pi_output = pi_speed_controller_.updateNative(
                         numberCast<PiSpeed>(limited_target),
                         numberCast<PiSpeed>(status.current_speed_rps),
                         status.current_pi_saturation
                     );
+#if defined(LIBECU_MOTOR1_T60_LOAD)
+                    }
+#endif
                 }
 
                 // Electric mode determines how to use PI output
@@ -531,6 +551,36 @@ LIBECU_HOT_LOOP void BldcController::setDriveMode(DriveMode mode) noexcept
     }
 }
 
+#if defined(LIBECU_MOTOR1_SPAN_BENCH) && LIBECU_MOTOR1_SPAN_BENCH
+void BldcController::updateBenchTrims1k() noexcept {
+    // A zero trim remains zero outside its speed envelope. One naturally
+    // aligned speed read avoids periodically masking the current IRQ at 550 RPM.
+    constexpr int32_t unit=Profile::PllSpeed::SCALE;
+    const auto estimate=status_.current_speed_rps.raw();
+    if (!bench_held_live_ && (estimate<=16*int32_t(Speed::SCALE)/60 ||
+                              estimate>=64*int32_t(Speed::SCALE)/60)) return;
+    Profile::Angle angle{}; Profile::PllSpeed speed{}; Current demand{},feedback{};
+    {
+        CriticalSection lock;
+        angle = status_.pll_angle;
+        speed = motor_pll_.getNativeSpeedStepsSec();
+        if (dmode_ == DriveMode::FORWARD && status_.is_running &&
+            status_.control_mode==ControlMode::CLOSED_LOOP_VELOCITY &&
+            status_.electric_mode==ElectricMode::CURRENT_MODE && algorithm_==DriveAlgorithm::FOC) {
+            demand=status_.target_current;
+            feedback=status_.i_q;
+        }
+    }
+    auto trims=Motor1BenchTrims::prepare(angle,speed,demand);
+    // Zero signed gain. Preserve the tested one-byte A/B layout; there is no runtime setter.
+    static const volatile uint8_t gain=64;
+    trims.current+=Current::fromRaw(shoulder_.step(angle.raw(),speed.raw(),demand.raw(),feedback.raw(),int32_t(gain)-64));
+    bench_held_live_=speed.raw()>40*unit && speed.raw()<116*unit;
+    __asm__ volatile("" : : "m"(trims) : "memory");
+    CriticalSection lock;
+    foc_.applyBenchTrims(trims);
+}
+#endif
 void BldcController::setAccelerationRate(float rate_rps2) noexcept
 {
     Speed rate{};

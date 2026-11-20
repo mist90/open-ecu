@@ -62,7 +62,11 @@ libecu::MotorControlParams makeMotorParams(const libecu::BoardInfo& board_info) 
     motor_params.pi_voltage_mode.kb = 2.0f;
 
     motor_params.pi_current_mode = {BLDC_SPEED_CURRENT_KP, BLDC_SPEED_CURRENT_KI};
+#if defined(LIBECU_MOTOR1_T60_LOAD)
+    motor_params.pi_current_mode.integral_max = BLDC_MAX_CURRENT; // rolling ceiling; 12 A at standstill
+#else
     motor_params.pi_current_mode.integral_max = 12.0f;
+#endif
     motor_params.pi_current_mode.integral_min = -4.0f;
     motor_params.pi_current_mode.kb = 2.0f;
 

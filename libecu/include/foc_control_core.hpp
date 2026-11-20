@@ -11,6 +11,12 @@
 #include "current_feedback_filter.hpp"
 #include "hybrid_iq_control.hpp"
 #include "loop_profile.hpp"
+#if defined(LIBECU_MOTOR1_T60_LOAD)
+#include "motor1_t60_load.hpp"
+#endif
+#if defined(LIBECU_MOTOR1_SMOOTH_BENCH) && LIBECU_MOTOR1_SMOOTH_BENCH
+#include "motor1_bench_compensation.hpp"
+#endif
 
 namespace libecu {
 
@@ -68,6 +74,13 @@ public:
         next_reconstructed_phase_ = 3;
     }
     const Params& getParams() const noexcept { return params_; }
+#if defined(LIBECU_MOTOR1_SMOOTH_BENCH) && LIBECU_MOTOR1_SMOOTH_BENCH
+    /** @brief Publish a precomputed point. Caller serializes this copy with the current ISR. */
+#if defined(LIBECU_MOTOR1_SPAN_BENCH) && LIBECU_MOTOR1_SPAN_BENCH
+    void applyBenchTrims(Motor1BenchTrims trims) noexcept { held_ = trims; }
+#endif
+    void applyBenchPoint(const Motor1BenchPoint& point) noexcept { bench_ = point; }
+#endif
     /** @brief Set precomputed feedback coefficients, resetting both axes' histories. */
     void setCurrentFilter(const CurrentFilterCoefficients<Profile>& coefficients) noexcept {
         params_.current_filter = coefficients;
@@ -133,7 +146,13 @@ public:
     /** @brief Run one sample in place. Voltages and currents are physical SI values. */
     LIBECU_HOT_LOOP void update(Frame& frame) noexcept {
         const auto& in = frame.input;
-        const Angle angle = multiplyTo<Angle>(in.angle_steps, RAD_PER_STEP) + params_.angle_offset_rad;
+        Angle park_steps = in.angle_steps;
+#if defined(LIBECU_MOTOR1_SMOOTH_BENCH) && LIBECU_MOTOR1_SMOOTH_BENCH
+        if constexpr (std::is_same<Profile, FixedProfile>::value) {
+            park_steps = motor1BenchParkAngle(park_steps, bench_.angle_gain);
+        }
+#endif
+        const Angle angle = multiplyTo<Angle>(park_steps, RAD_PER_STEP) + params_.angle_offset_rad;
         const auto rotation = Transforms::rotation(angle);
         recordLoopStage(LoopStage::FocTrig);
 
@@ -149,7 +168,7 @@ public:
         // Hybrid filters the error itself. Do not also pay for an unused q PI
         // filter unless the optional standstill noise-floor detector needs it.
         const Current filtered_q = filter_q_.update(dq.q,
-            params_.hybrid_iq.enabled && params_.current_noise_floor == Current{}
+            (!BENCH_PI_ONLY && params_.hybrid_iq.enabled) && params_.current_noise_floor == Current{}
                 ? CurrentFilterCoefficients<Profile>{} : params_.current_filter);
         const bool reverse = in.drive_mode == DriveMode::REVERSE;
         const Current measured_current = reverse ? -dq.q : dq.q;
@@ -190,23 +209,45 @@ public:
         if (current_mode) {
             const Current target_q = reverse ? -in.target_current : in.target_current;
             error_d = params_.id_target - feedback_d;
+#if defined(LIBECU_MOTOR1_SMOOTH_BENCH) && LIBECU_MOTOR1_SMOOTH_BENCH
+            error_d = Motor1BenchPoint::weight(error_d, bench_.d);
+#elif defined(LIBECU_MOTOR1_T60_LOAD)
+            error_d = motor1T60Error<false>(error_d, in.speed_steps_s);
+#endif
             requested_d = multiplyTo<Request>(kp_, error_d) + numberCast<Request>(integral_d_);
-            if (params_.hybrid_iq.enabled) {
+            if (!BENCH_PI_ONLY && params_.hybrid_iq.enabled) {
                 requested_q = hybrid_iq_.request(target_q, zero_current_idle_ ? Current{} : dq.q, params_.hybrid_iq);
                 if (!zero_current_idle_) requested_q += multiplyTo<Request>(in.speed_steps_s, bemf_per_step_);
             } else {
                 error_q = target_q - feedback_q;
+#if defined(LIBECU_MOTOR1_SMOOTH_BENCH) && LIBECU_MOTOR1_SMOOTH_BENCH
+#if defined(LIBECU_MOTOR1_SPAN_BENCH) && LIBECU_MOTOR1_SPAN_BENCH
+                const bool allow_trim = !reverse && in.drive_mode==DriveMode::FORWARD && in.speed_steps_s.raw()>0 &&
+                    target_q.raw()>0 && target_q.raw()<3*int32_t(Current::SCALE);
+                if (allow_trim) error_q += held_.current;
+#else
+                if constexpr (std::is_same<Profile, FixedProfile>::value) {
+                    error_q += motor1BenchRipple(in, target_q, bench_.ripple_gain);
+                }
+#endif
+                error_q = Motor1BenchPoint::weight(error_q, bench_.q);
+#elif defined(LIBECU_MOTOR1_T60_LOAD)
+                error_q = motor1T60Error<true>(error_q, in.speed_steps_s);
+#endif
                 requested_q = multiplyTo<Request>(kp_, error_q) + numberCast<Request>(integral_q_);
+#if defined(LIBECU_MOTOR1_SPAN_BENCH) && LIBECU_MOTOR1_SPAN_BENCH
+                if (allow_trim) requested_q += held_.voltage;
+#endif
             }
-            if (params_.use_decoupling && !zero_current_idle_) {
+            if (!BENCH_PI_ONLY && params_.use_decoupling && !zero_current_idle_) {
                 const auto omega = multiplyTo<typename Profile::PllSpeed>(in.speed_steps_s, RAD_PER_STEP);
                 const Gain omega_l = multiplyTo<Gain>(omega, params_.l_phase_h);
                 // Hybrid feed-forward must not bypass its slow error filter
                 // through a raw-current cross-coupling term.
-                requested_d -= multiplyTo<Request>(omega_l, params_.hybrid_iq.enabled ? target_q : dq.q);
+                requested_d -= multiplyTo<Request>(omega_l, (!BENCH_PI_ONLY && params_.hybrid_iq.enabled) ? target_q : dq.q);
                 const Request coupling_q = multiplyTo<Request>(
-                    omega_l, params_.hybrid_iq.enabled ? params_.id_target : dq.d);
-                requested_q += params_.hybrid_iq.enabled ? coupling_q
+                    omega_l, (!BENCH_PI_ONLY && params_.hybrid_iq.enabled) ? params_.id_target : dq.d);
+                requested_q += (!BENCH_PI_ONLY && params_.hybrid_iq.enabled) ? coupling_q
                     : coupling_q + multiplyTo<Request>(omega, params_.flux_linkage_wb);
             }
         } else {
@@ -223,7 +264,7 @@ public:
         recordLoopStage(LoopStage::FocLimit);
         if (current_mode) {
             addIntegral(integral_d_, multiplyTo<Integral>(ki_step_, error_d));
-            if (params_.hybrid_iq.enabled) {
+            if (!BENCH_PI_ONLY && params_.hybrid_iq.enabled) {
                 hybrid_iq_.integrate(requested_q, v_q, params_.hybrid_iq);
             } else {
                 addIntegral(integral_q_, multiplyTo<Integral>(ki_step_, error_q));
@@ -231,14 +272,14 @@ public:
             if (limited && params_.anti_windup_kb > Unit{}) {
                 addIntegral(integral_d_, multiplyTo<Integral>(params_.anti_windup_kb,
                                                             numberCast<Request>(v_d) - requested_d));
-                if (!params_.hybrid_iq.enabled) {
+                if (BENCH_PI_ONLY || !params_.hybrid_iq.enabled) {
                     addIntegral(integral_q_, multiplyTo<Integral>(params_.anti_windup_kb,
                                                                 numberCast<Request>(v_q) - requested_q));
                 }
             }
             const Integral bound = numberCast<Integral>(limit);
             integral_d_ = numericClamp(integral_d_, -bound, bound);
-            if (!params_.hybrid_iq.enabled) integral_q_ = numericClamp(integral_q_, -bound, bound);
+            if (BENCH_PI_ONLY || !params_.hybrid_iq.enabled) integral_q_ = numericClamp(integral_q_, -bound, bound);
         }
 
         recordLoopStage(LoopStage::FocIntegral);
@@ -275,6 +316,18 @@ public:
     }
 
 private:
+#if defined(LIBECU_MOTOR1_SPAN_BENCH) && LIBECU_MOTOR1_SPAN_BENCH
+    static constexpr bool BENCH_PI_ONLY = true;
+#else
+    static constexpr bool BENCH_PI_ONLY = false;
+#endif
+#if defined(LIBECU_MOTOR1_SMOOTH_BENCH) && LIBECU_MOTOR1_SMOOTH_BENCH
+    static_assert(std::is_same<Profile, FixedProfile>::value, "The MOTOR_1 bench profile is fixed-point");
+    Motor1BenchPoint bench_{};
+#if defined(LIBECU_MOTOR1_SPAN_BENCH) && LIBECU_MOTOR1_SPAN_BENCH
+    Motor1BenchTrims held_{};
+#endif
+#endif
     static void addIntegral(Integral& state, Integral delta) noexcept {
         if constexpr (std::is_same<Profile, FixedProfile>::value) {
             // Each sample begins voltage-clamped, then adds at most one Ki

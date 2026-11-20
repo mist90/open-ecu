@@ -4,6 +4,7 @@
  */
 #include "pi_float_interface.hpp"
 #include "motor_config.hpp"
+#include "motor1_t60_load.hpp"
 #include <cmath>
 #include <cstdio>
 #include <limits>
@@ -91,11 +92,51 @@ static void validation() {
           "scooter speed tuning fits the fixed profile");
 }
 
+static void rollingLoadTrace() {
+    using P = FixedProfile;
+    PiFloatInterface<P::SpeedPiTypes, 100> pi;
+    constexpr int max_iq = int(BLDC_MAX_CURRENT);
+    check(pi.setParameters({6.f, 24.f, BLDC_MAX_CURRENT, BLDC_MIN_CURRENT, BLDC_MAX_CURRENT, -4.f, 2.f}),
+          "loaded speed PI representable");
+    auto step = [&](int eighths, int sat) {
+        const auto v = number<P::Speed>(eighths, 8);
+        return pi.updateNativeCapped(v + number_v<P::Speed, 1>, v, sat, motor1RollingIntegralCeiling<P, max_iq>(v));
+    };
+    for (int i = 0; i < 300; ++i) step(0, 0);
+    check(pi.getIntegral() == 12.f, "a stationary speed error cannot earn rolling headroom");
+    for (int i = 0; i < 200; ++i) step(2, 0);
+    check(pi.getIntegral() == 14.f, "partial rolling authority");
+    const auto at_37rpm = motor1RollingIntegralCeiling<P, max_iq>(number_v<P::Speed, 5, 8>);
+    check(at_37rpm == number_v<P::Current, 20>, "20 A integral at 37.5 RPM in both profiles");
+    for (int i = 0; i < 300; ++i) step(40, 0);
+    check(pi.getIntegral() > max_iq - 6.f && pi.getOutput() == float(max_iq),
+          "sustained rolling demand reaches the profile's actual positive command limit");
+    step(-1, 1);
+    check(pi.getIntegral() == 12.f && pi.getOutput() == 18.f, "loss of motion drops stored excess even under saturation");
+    step(8, 1);
+    check(pi.getIntegral() == 12.f, "no stale integral on recovery");
+    pi.updateNativeCapped(number_v<P::Speed, 0>, number_v<P::Speed, 10>, 0,
+                          motor1RollingIntegralCeiling<P, max_iq>(number_v<P::Speed, 10>));
+    check(pi.getOutput() == -6.f, "negative current limit remains -6 A");
+    for (int sign : {-1, 1}) {
+        const auto q = number<P::Current>(sign * 16);
+        for (int dir : {-1, 1}) {
+            check(motor1T60Error<false>(q, number<P::PllSpeed>(dir*60)) == number<P::Current>(sign) &&
+                  motor1T60Error<true>(q, number<P::PllSpeed>(dir*360)) == q &&
+                  motor1T60Error<true>(q, number<P::PllSpeed>(dir*420)) == number<P::Current>(sign*17,2) &&
+                  motor1T60Error<true>(q, number<P::PllSpeed>(dir*480)) == number<P::Current>(sign) &&
+                  motor1T60Error<false>(q, number<P::PllSpeed>(dir*480)) == q,
+                  "historical T60 current-error schedule on both axes and directions");
+        }
+    }
+}
+
 int main() {
     currentTrace();
     speedTrace(false);
     speedTrace(true);
     validation();
+    rollingLoadTrace();
     std::printf("PI interface: %d checks, %d failures\n", checks, failures);
     return failures != 0;
 }

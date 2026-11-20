@@ -15,7 +15,11 @@
 
 #ifdef MOTOR_1
 #define BLDC_NUM_POLES 40
+#if defined(LIBECU_MOTOR1_T60_45A) && defined(LIBECU_MOTOR1_T60_LOAD)
+#define BLDC_MAX_CURRENT 45.0f
+#else
 #define BLDC_MAX_CURRENT 20.0f
+#endif
 #define BLDC_MIN_CURRENT  -6.0f
 #define BLDC_MAX_SPEED 12.0f
 #define BLDC_MAX_ACCELERATION 6.0f
@@ -26,16 +30,31 @@
 #define BLDC_INVERTION false
 #define BLDC_SPEED_VOLTAGE_KP 0.1f
 #define BLDC_SPEED_VOLTAGE_KI 0.2f
+#if defined(LIBECU_MOTOR1_T60_LOAD)
+// T60's Hall tuning, with a firmer outer speed loop for sustained rolling load.
+#define BLDC_SPEED_CURRENT_KP 6.0f
+#define BLDC_SPEED_CURRENT_KI 24.0f
+#define BLDC_PLL_KP 50.0f
+#define BLDC_PLL_KI 1250.0f
+#elif defined(LIBECU_MOTOR1_SMOOTH_BENCH) && LIBECU_MOTOR1_SMOOTH_BENCH
+// Unloaded wheel with the cascaded dq current PI. Pair the softer speed loop
+// with the narrower Hall PLL rather than running the road PI against its delay.
+#define BLDC_SPEED_CURRENT_KP 1.25f
+#define BLDC_SPEED_CURRENT_KI 5.0f
+#define BLDC_PLL_KP 50.0f
+#define BLDC_PLL_KI 1250.0f
+#else
 // Mechanical-RPS -> current PI: 10-inch wheel, 80 kg effective road mass.
 // Kp is limited by the unloaded wheel/PLL delay; Ki trades damping for load-step response.
-// Shared by every MOTOR_1 port; tuning rationale: docs/software.md#speed-loop-tuning.
+// Default MOTOR_1 tuning rationale: docs/software.md#speed-loop-tuning.
 #define BLDC_SPEED_CURRENT_KP 3.0f
 #define BLDC_SPEED_CURRENT_KI 20.0f
+#define BLDC_PLL_KP 100.0f
+#define BLDC_PLL_KI 5000.0f
+#endif
 #define BLDC_SIX_STEP_USE_MOTOR_MODEL true
 #define BLDC_CURRENT_FALLBACK_KP 0.1f
 #define BLDC_CURRENT_FALLBACK_KI 50.0f
-#define BLDC_PLL_KP 100.0f
-#define BLDC_PLL_KI 5000.0f
 #define BLDC_START_WITH_FOC true
 #define BLDC_FOC_ANGLE_OFFSET_DEG -60.0f
 // Electrical model of one phase, used to compute the current-loop PI gains
