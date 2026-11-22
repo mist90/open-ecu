@@ -80,6 +80,7 @@
 #include "foc_control_core.hpp"
 
 namespace libecu {
+template<class Profile> struct MotorStatusT;
 
 /**
  * @brief Tuning for the FOC algorithm
@@ -183,8 +184,28 @@ public:
     /** @brief Select one frame's discarded phase; caller qualifies both retained phases and owns the ISR. */
     bool setNextReconstructedPhase(unsigned phase) noexcept { return core_.setNextReconstructedPhase(phase); }
     Core::Output updateNative(const Core::Input& input) noexcept;
+#if defined(LIBECU_PWM_BUS_LOOKAHEAD) && LIBECU_PWM_BUS_LOOKAHEAD
+    void prepareBus(Core::Voltage voltage) noexcept { core_.prepareBus(voltage); }
+#endif
     /** @brief PWM path: fill/apply the caller's persistent frame without a returned aggregate. */
     void updateNative(Core::Frame& frame) noexcept;
+    /** @brief Same kernel/commit, with a known concrete PWM on synchronous boards. */
+    template<class Pwm> void updateNative(Core::Frame& frame, Pwm& pwm) noexcept {
+        core_.update(frame);
+        const auto& out = frame.output;
+        pwm.updateNativeDutyCycle(out.duty_u, out.duty_v, out.duty_w);
+        recordLoopStage(LoopStage::Pwm);
+    }
+    template<class Status, class Pwm>
+    void updateOwnedCarrier(const Core::Input& in, Status& status, Pwm& pwm) noexcept {
+#if defined(LIBECU_PWM_DEADLINE_ONLY) && LIBECU_PWM_DEADLINE_ONLY
+        updateDriveStatus(in, status);
+#else
+        core_.update(in, status, status);
+#endif
+        pwm.writeCarrierDuty(status.duty_u, status.duty_v, status.duty_w);
+        recordLoopStage(LoopStage::Pwm);
+    }
     /**
      * @brief Constructor
      * @param pwm_interface PWM interface this algorithm drives
@@ -211,24 +232,38 @@ public:
      * @param ki Integral gain (V/A/s)
      */
     bool setCurrentPiGains(float kp, float ki) noexcept;
+    struct PreparedGains { Core::Gain kp, ki; Core::StepGain step; };
+    /** @brief Validate and convert outside the critical section; publish with the integrator reset. */
+    static bool prepareCurrentPiGains(float kp, float ki, PreparedGains& out) noexcept;
+    void applyCurrentPiGains(const PreparedGains& gains) noexcept {
+        core_.setCurrentPiGains(gains.kp, gains.ki, gains.step);
+    }
+    void getNativeCurrentPiGains(Core::Gain& kp, Core::Gain& ki) const noexcept { core_.getCurrentPiGains(kp, ki); }
 
     /// @brief Get the d/q current regulator gains
     void getCurrentPiGains(float& kp, float& ki) const noexcept;
 
     /// @brief Set the electrical angle offset (radians)
     bool setAngleOffsetRad(float offset_rad) noexcept;
+    void applyAngleOffset(float rad, Core::Angle angle) noexcept {
+        core_.setAngleOffset(angle);
+        params_.angle_offset_rad = rad;
+    }
 
     /// @brief Get the electrical angle offset (radians)
     float getAngleOffsetRad() const noexcept { return params_.angle_offset_rad; }
 
     void reset() noexcept override;
     void onEnter() noexcept override;
-    MotorAlgorithmOutput update(const MotorAlgorithmInput& in) noexcept override;
+    MotorAlgorithmOutput update(const MotorAlgorithmInput& in) noexcept;
 
     /// @brief Modulation magnitude for a slow telemetry snapshot, outside the PWM ISR.
     static float modulationMagnitude(float d, float q, float bus) noexcept;
 
 private:
+#if defined(LIBECU_PWM_DEADLINE_ONLY) && LIBECU_PWM_DEADLINE_ONLY
+    void updateDriveStatus(const Core::Input& in, MotorStatusT<ActiveNumericProfile>& status) noexcept;
+#endif
     PwmInterface& pwm_interface_;
     FocParams params_{};
     Core core_;

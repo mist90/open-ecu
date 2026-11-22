@@ -84,6 +84,8 @@ static void testFixed() {
               "wide requests preserve d priority and both output signs");
         check(actual.limited == (d != expected_d || q != expected_q),
               "saturation flag means an actual output clamp, including sub-request-LSB clamps");
+        check(actual.d_limited == (d != expected_d) && actual.q_limited == (q != expected_q),
+              "only the clamped axes get a back-calculation correction");
     }
     limiter.prepare(number<V>(20));
     auto out = limiter.apply(number<R>(1), number<R>(20));

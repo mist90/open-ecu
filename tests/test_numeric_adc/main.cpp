@@ -65,6 +65,18 @@ int main() {
     check(floating.configure(calibration<FloatProfile>(2)), "float calibration accepted");
     check(fixed.configure(calibration<FixedProfile>(2)), "fixed calibration accepted");
     check(single.configure(calibration<FixedProfile>(1)), "single-sample calibration accepted");
+    // The board uses fractional voltage zeros at startup. Verify the direct
+    // fixed-width division against an independent exact rational, at both scales.
+    const int32_t ref = calibration<FixedProfile>(1).reference.raw();
+    for (int32_t v : {0, 1, ref / 2 - 1, ref / 2, ref / 2 + 1, ref - 1, ref}) {
+        single.setZeroVoltage(1, FixedProfile::Voltage::fromRaw(v));
+        fixed.setZeroVoltage(2, FixedProfile::Voltage::fromRaw(v));
+        const auto expected = [&](unsigned count) {
+            return (int64_t(v) * count * FixedProfile::AdcCount::SCALE + ref / 2) / ref;
+        };
+        check(uint64_t(single.zeroCount(1).raw()) == expected(4095) &&
+              uint64_t(fixed.zeroCount(2).raw()) == expected(8190), "fractional calibration offset rounds once");
+    }
     floating.setZero(0, 500025, 100);
     fixed.setZero(0, 500025, 100);
     float current_error = 0.0f, voltage_error = 0.0f, temperature_error = 0.0f;

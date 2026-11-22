@@ -31,9 +31,18 @@
 #define BLDC_SPEED_VOLTAGE_KP 0.1f
 #define BLDC_SPEED_VOLTAGE_KI 0.2f
 #if defined(LIBECU_MOTOR1_T60_LOAD)
-// T60's Hall tuning, with a firmer outer speed loop for sustained rolling load.
-#define BLDC_SPEED_CURRENT_KP 6.0f
+// T60 outer speed PI, A/(rev/s). Keep the Hall loop and the integral gain
+// independent; a configurable Kp allows matched, single-variable dyno tests.
+#ifndef LIBECU_T60_SPEED_KP
+#define LIBECU_T60_SPEED_KP 3.0f
+#endif
+#if defined(LIBECU_T60_UNLOADED_PI) && LIBECU_T60_UNLOADED_PI
+#define BLDC_SPEED_CURRENT_KP 1.25f
+#define BLDC_SPEED_CURRENT_KI 5.0f
+#else
+#define BLDC_SPEED_CURRENT_KP LIBECU_T60_SPEED_KP
 #define BLDC_SPEED_CURRENT_KI 24.0f
+#endif
 #define BLDC_PLL_KP 50.0f
 #define BLDC_PLL_KI 1250.0f
 #elif defined(LIBECU_MOTOR1_SMOOTH_BENCH) && LIBECU_MOTOR1_SMOOTH_BENCH

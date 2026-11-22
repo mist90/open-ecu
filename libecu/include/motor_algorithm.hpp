@@ -98,7 +98,7 @@ struct MotorAlgorithmOutput {
 };
 
 /**
- * @brief Base class for an electrical control algorithm
+ * @brief Common lifecycle for electrical control algorithms
  *
  * Implementations hold a reference to the PWM interface and are the only thing
  * in the system that writes to it while the drive is running.
@@ -127,12 +127,12 @@ public:
      */
     virtual void onEnter() noexcept = 0;
 
-    /**
-     * @brief Run one control cycle and drive the PWM outputs
-     * @param in Measurements and commands for this cycle
-     * @return Duties applied plus diagnostics
-     */
+#if !defined(LIBECU_NATIVE_CARRIER_ONLY) || !LIBECU_NATIVE_CARRIER_ONLY
+    /** Value-facing compatibility path on ports using erased algorithms. */
     virtual MotorAlgorithmOutput update(const MotorAlgorithmInput& in) noexcept = 0;
+#endif
+    // Native-only ports dispatch by concrete type; a vtable reference here
+    // would retain a second, unused numerical kernel in the resident OTA slot.
 };
 
 } // namespace libecu

@@ -11,6 +11,29 @@
 #define LIBECU_FOC_DUTY_TELEMETRY 1
 #endif
 
+// Port opt-in: the link script must collect .RamFunc.* and .data.* in
+// executable SRAM, with a flash load image copied before any interrupts.
+// Keep the annotated entry out of line so LTO cannot silently put its body
+// back into its flash caller. Use ordinary (non-COMDAT) definitions for LUTs.
+#if defined(__GNUC__) && defined(LIBECU_PWM_RAM) && LIBECU_PWM_RAM
+#define LIBECU_RAM_CODE(name) __attribute__((section(".RamFunc." name), noinline))
+#define LIBECU_RAM_DATA(name) __attribute__((section(".data.libecu." name)))
+#define LIBECU_RAM_INLINE __attribute__((always_inline))
+#else
+#define LIBECU_RAM_CODE(name)
+#define LIBECU_RAM_DATA(name)
+#define LIBECU_RAM_INLINE
+#endif
+
+// In tight SRAM layouts reserve the deadline path for code needed in the PWM frame.
+#if defined(LIBECU_PWM_DEADLINE_ONLY) && LIBECU_PWM_DEADLINE_ONLY
+#define LIBECU_DEADLINE_CODE(name) LIBECU_RAM_CODE(name)
+#define LIBECU_DEADLINE_INLINE __attribute__((always_inline))
+#else
+#define LIBECU_DEADLINE_CODE(name)
+#define LIBECU_DEADLINE_INLINE
+#endif
+
 // GCC -Os outlines many saturating arithmetic operations. Keep the image at
 // -Os, but let the two largest 20 kHz kernels simplify/in-line at -O2. Debug
 // builds retain -O0; other compilers use their selected optimization policy.

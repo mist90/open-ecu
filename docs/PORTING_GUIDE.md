@@ -2,8 +2,6 @@
 
 This guide describes the hardware contract of `libecu` and the issues found
 during STM32G431 / STM32F410 bring-up and the October 2026 current-noise work.
-The Wind5 reconstruction is a useful hardware reference, but is a separate
-controller: its q-axis voltage policy is not equivalent to Open ECU's Iq PI.
 
 ## 1. Port boundary
 
@@ -37,24 +35,23 @@ registers, hardware oversampling or DMA. Raw getters retain one fixed configured
 scale: single-conversion counts on F410, sums of two on G431.
 Auxiliary readiness and source age remain the board's responsibility.
 
-All current ports call `pwmInterruptHandler()` once after a complete current
-frame is available. STM32F410 uses one 12-bit injected U/V/W scan at 20 kHz;
-STM32G431 uses dual injected acquisition with hardware x2.
-Their regular auxiliary DMA scans are serviced by SysTick. ES32 HW050/HW051
-retain DMA current frames and pipelined injected auxiliaries. Source ordering,
-deadlines, raw protection and failure shutdown belong to each board port.
+Both STM32 ports call `pwmInterruptHandler()` once per PWM period. STM32F410
+uses one 12-bit injected U/V/W scan at 20 kHz; STM32G431 uses dual injected
+acquisition with hardware x2. SysTick services their regular auxiliary DMA
+scans. The port is responsible for sample readiness, deadlines, raw-current
+protection and shutdown on failure.
 
 Current STM32 contracts are documented in
 [F410 single-scan injected acquisition](../STM32F410/ADC_REGULAR.md) and
 [G431 injected hardware x2](../STM32G431/ADC_REGULAR.md). Timing measurements below
 retain their historical acquisition/scheduling configuration.
 
-The STM32 platform/HAL restoration baseline was
-`a55888245304c78c1d539f04383922c086feff48`; F410 software double-scan acquisition
-was subsequently removed on 2026-11-18. The portable ownership contract is
-described in [current frames and interrupt-state hooks](CURRENT_FRAME.md).
-The shared controller and numeric optimizations are retained. The STM32 ports
-use the single-call wrapper, with no separate source-IRQ preparation stage.
+The STM32 HAL returned to injected acquisition in `35e6dce`; F410 software
+double-scan acquisition was removed in `7e7f46c` on 2026-11-18. These ports
+use the single-call wrapper and retain the shared controller and numeric
+optimizations. For a new port, see [current frames and interrupt-state
+hooks](CURRENT_FRAME.md) before choosing split acquisition or direct status
+writes from a single PWM interrupt.
 
 ### Command protocol and transport
 
@@ -132,13 +129,10 @@ At 100 MHz, PSC=0 and ARR=2500 give 20 kHz. Check whether the peripheral's clock
 differs from PCLK because of APB prescaling. The dead-time/filter clock divider
 is a separate concern from the counter prescaler.
 
-The current ports and reconstructed Wind5 all use center-aligned PWM1.
-The modulation policy is separate:
+Both STM32 ports use center-aligned PWM1 with different modulation policies:
 
 - G431 uses centered min/max SVPWM: zero voltage gives equal duties near 50%.
 - F410 uses DPWMMIN: one low side is clamped, and zero voltage gives 0/0/0%.
-- Wind5 calculates centered compares; its stopped-drive policy can disable
-  the bridge entirely.
 
 ### Driver-specific electrical levels
 
@@ -181,7 +175,7 @@ frame is valid and seed digital filters from a valid frame.
 | Current conversion | Two ADCs, simultaneous injected mode | One ADC, sequential injected scan |
 | ADC clock | 42.5 MHz | 25 MHz |
 | Sampling time | 6.5 ADC cycles | 15 ADC cycles |
-| Injected ranks | ADC1: U, Vbus; ADC2: V, W | U, V, W; Vbus is regular DMA |
+| Injected ranks | ADC1: U, U (padding); ADC2: V, W; Vbus is regular DMA | U, V, W; Vbus is regular DMA |
 | Oversampling | Hardware x2, no right shift | None; one 12-bit conversion per phase |
 | Trigger | TIM1 OC4REF/TRGO2, rising near the peak | TIM1 OC4REF/TRGO, falling 1 us before the peak |
 | Fast-loop entry | Timer update callback in current code | JEOC after one complete three-phase scan |
@@ -296,15 +290,10 @@ the noise-floor state held all three CCRs at zero throughout both measurements.
 The fixed image was restored after the comparison:
 `1.2.0-f410-idle-adc2-fixed`, BIN SHA-256
 `b5106248147270aaecb477b47da5bbaf93a6c0fe8dfe5f6ea3b373bbc222d386`.
-Raw timing data and the measurement script are under
-`/tmp/opencode/ecu-pwm-acoustics/timing-float-fixed-x2-idle/` and
-`/tmp/opencode/ecu-pwm-acoustics/profile_float_fixed_x2.py`.
 
 Those historical measurements describe the diagnostic tuning and full-Clarke
 policy of the removed software-double-scan implementation. The main application's
 optional feedback filters and noise floor retain independent defaults.
-The prototype source is retained under
-`/tmp/opencode/ecu-pwm-acoustics/diagnostic-src/` for comparison.
 
 #### Historical main HAL validation (2026-10-27)
 
@@ -342,9 +331,6 @@ stationary capture.
 The final installed image in that 2026-10-27 trial was the main float/x2 build, with its startup-default
 PI gains and the bridge parked: `1.2.0-f410-float`, BIN SHA-256
 `c431869a8e57318b533eaa3bc690e874c03e9102f7272892ee2b30f6dd2eaadd`.
-Builds and captures are under
-`/tmp/opencode/ecu-pwm-acoustics/main-hal-x2-builds/`,
-`main-hal-x2-hardware-authorized/` and `main-hal-x2-hardware-idle/`.
 
 ## 5. Analog front end
 
@@ -358,10 +344,10 @@ load/stability requirements. A digital filter cannot repair invalid samples
 or undo aliasing. VESC hardware using phase shunts and switchable analog
 filters is not an electrically interchangeable model for this low-side board.
 
-For Wind5, verify the exact HW revision and current-sensing transfer function.
-The recovered VDS/RDS(on)-based acquisition must not inherit the STM32 boards'
-shunt/gain constants. A quiet voltage-controlled reference firmware does not
-validate that acquisition path for a fast Iq PI.
+Verify the current-sensing transfer function on the target inverter. If the
+sensor measures a MOSFET voltage drop instead of a shunt, the STM32 boards'
+shunt and amplifier calibration do not apply. Quiet voltage-mode operation
+alone does not validate current feedback for a fast Iq PI.
 
 ## 6. Timing, control tuning and digital filters
 
@@ -526,5 +512,5 @@ Relevant host suites:
 
 Board-specific wiring and setup are documented in
 [NUCLEO_F410RB_IHM08M1.md](NUCLEO_F410RB_IHM08M1.md).
-The experiment source, raw captures and analysis scripts are retained under
-`/tmp/opencode/ecu-pwm-acoustics/`.
+The [F410 PWM profiler](../utility/profile_f410_pwm.py) measures the
+ADC/current ISR on a bridge-disabled timing build.

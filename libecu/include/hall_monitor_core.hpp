@@ -50,6 +50,13 @@ public:
         uint8_t last_position;
         HallFault fault;
     };
+    struct Snapshot {
+        State invalid, edges_accum, reversals;
+        Count min_edges;
+        uint32_t invalid_events, invalid_ticks, edges;
+        uint8_t invalid_run, last_position;
+        HallFault fault;
+    };
 
     HallMonitorCore() noexcept {
         static_assert(defaultWindowFits(), "Widen the Hall count format for this sampling rate");
@@ -96,6 +103,15 @@ public:
     }
 
     void tick(bool active) noexcept {
+        if constexpr (std::is_same<Profile, FixedProfile>::value) {
+            // Only edge density changes on a healthy, unidirectional run.
+            // Zero invalid/reversal scores cannot cross either threshold;
+            // an existing latched fault is never cleared here.
+            if (!last_invalid_ && invalid_score_ == State{} && reversals_accum_ == State{}) {
+                decay(edges_accum_);
+                return;
+            }
+        }
         decay(invalid_score_);
         decay(edges_accum_);
         decay(reversals_accum_);
@@ -162,14 +178,18 @@ public:
     bool isFaulted() const noexcept { return fault_ != HallFault::NONE; }
     HallFault faultCause() const noexcept { return fault_; }
     const Params& getParameters() const noexcept { return params_; }
-    Info getInfo() const noexcept {
-        const Count edges = toCount(edges_accum_);
-        const Count reversals = toCount(reversals_accum_);
-        const Fraction erratic = edges > Count{} && edges >= params_.erratic_min_edges
+    Snapshot snapshot() const noexcept {
+        return {invalid_score_, edges_accum_, reversals_accum_, params_.erratic_min_edges,
+                invalid_events_, invalid_ticks_, edges_, invalid_run_, last_position_, fault_};
+    }
+    Info getInfo() const noexcept { return describe(snapshot()); }
+    static Info describe(const Snapshot& s) noexcept {
+        const Count edges = toCount(s.edges_accum);
+        const Count reversals = toCount(s.reversals);
+        const Fraction erratic = edges > Count{} && edges >= s.min_edges
                                ? divideTo<Fraction>(reversals, edges) : Fraction{};
-        return {toCount(invalid_score_), erratic, edges,
-                reversals, invalid_events_, invalid_run_,
-                Clock::ticksToUs(invalid_ticks_), edges_, last_position_, fault_};
+        return {toCount(s.invalid), erratic, edges, reversals, s.invalid_events, s.invalid_run,
+                Clock::ticksToUs(s.invalid_ticks), s.edges, s.last_position, s.fault};
     }
 
 private:

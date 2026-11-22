@@ -72,6 +72,11 @@ static void testConversion() {
             exact = false;
         }
         if constexpr (In::FRACTION_BITS == 0) exact &= Out::fromInteger(raw).raw() == expected;
+        if constexpr (sizeof(S) == 8 && In::FRACTION_BITS > 0 && In::FRACTION_BITS < 32 &&
+                      std::is_same<Out, FixedPointType<0, int64_t>>::value) {
+            // This helper returns the low word even if the full quotient is outside int32.
+            exact &= fixed_detail::roundedLowWord<In::FRACTION_BITS>(raw) == uint32_t(expected);
+        }
     };
     visitRawInputs<S>(verify);
     // Rounding ties and adjacent inputs at zero and both saturation thresholds.

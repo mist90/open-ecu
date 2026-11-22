@@ -2,15 +2,35 @@
  * @brief PWM ownership and float-facing boundary of the typed FOC kernel
  */
 #include "../include/foc_algorithm.hpp"
+#if defined(LIBECU_PWM_DEADLINE_ONLY) && LIBECU_PWM_DEADLINE_ONLY
+#include "../include/bldc_controller.hpp"
+#endif
 
 namespace libecu {
+#if defined(LIBECU_PWM_DEADLINE_ONLY) && LIBECU_PWM_DEADLINE_ONLY
+// A non-template definition keeps its named SRAM section through GCC LTO.
+LIBECU_RAM_CODE("drive_foc") LIBECU_HOT_LOOP
+void FocAlgorithm::updateDriveStatus(const Core::Input& in, NativeMotorStatus& status) noexcept {
+    core_.update(in, status, status);
+}
+#endif
+
+#if defined(LIBECU_PWM_RAM) && LIBECU_PWM_RAM
+// Unlike an inline constexpr COMDAT, this definition retains its section
+// through GCC LTO. Only the load image is in flash; interpolation reads SRAM.
+LIBECU_RAM_DATA("sine") const std::array<int32_t, 129> FixedMath::RAM_SINE = FixedMath::SIN_TABLE;
+LIBECU_RAM_CODE("rotation") LIBECU_HOT_LOOP
+void FixedMath::sinCos(Angle angle, Fraction& sine, Fraction& cosine) noexcept {
+    sinCosKernel(angle, sine, cosine);
+}
+#endif
 
 FocAlgorithm::FocAlgorithm(PwmInterface& pwm) noexcept : pwm_interface_(pwm) {
     setParams(FocParams{0.95f, 0.95f, -FOC_RAD_PER_STEP, 0.0f, false, 0.0f, 0.0f, 1.0f});
 }
 
 bool FocAlgorithm::setParams(const FocParams& params) noexcept {
-#if defined(LIBECU_MOTOR1_SPAN_BENCH) && LIBECU_MOTOR1_SPAN_BENCH
+#if (defined(LIBECU_MOTOR1_SPAN_BENCH) && LIBECU_MOTOR1_SPAN_BENCH) || defined(LIBECU_MOTOR1_T60_LOAD)
     if (params.hybrid_iq.enabled || params.use_decoupling) return false;
 #endif
     Core::Params typed{};
@@ -40,12 +60,19 @@ bool FocAlgorithm::setParams(const FocParams& params) noexcept {
     return true;
 }
 
-bool FocAlgorithm::setCurrentPiGains(float kp, float ki) noexcept {
+bool FocAlgorithm::prepareCurrentPiGains(float kp, float ki, PreparedGains& out) noexcept {
     Core::Gain p{}, i{};
     Core::StepGain step{};
     if (!tryNumber(kp, p) || !tryNumber(ki, i) ||
         !tryNumber(numberCast<float>(i) / ActiveTiming::CURRENT_HZ, step)) return false;
-    core_.setCurrentPiGains(p, i);
+    out = {p, i, divideByInteger<Core::StepGain>(i, ActiveTiming::CURRENT_HZ)};
+    return true;
+}
+
+bool FocAlgorithm::setCurrentPiGains(float kp, float ki) noexcept {
+    PreparedGains gains;
+    if (!prepareCurrentPiGains(kp, ki, gains)) return false;
+    applyCurrentPiGains(gains);
     return true;
 }
 
@@ -59,8 +86,7 @@ void FocAlgorithm::getCurrentPiGains(float& kp, float& ki) const noexcept {
 bool FocAlgorithm::setAngleOffsetRad(float angle) noexcept {
     Core::Angle typed{};
     if (!tryNumber(angle, typed)) return false;
-    core_.setAngleOffset(typed);
-    params_.angle_offset_rad = angle;
+    applyAngleOffset(angle, typed);
     return true;
 }
 
@@ -111,10 +137,7 @@ FocAlgorithm::Core::Output FocAlgorithm::updateNative(const Core::Input& input) 
 }
 
 LIBECU_HOT_LOOP void FocAlgorithm::updateNative(Core::Frame& frame) noexcept {
-    core_.update(frame);
-    const auto& output = frame.output;
-    pwm_interface_.updateNativeDutyCycle(output.duty_u, output.duty_v, output.duty_w);
-    recordLoopStage(LoopStage::Pwm);
+    updateNative(frame, pwm_interface_);
 }
 
 float FocAlgorithm::modulationMagnitude(float d, float q, float bus) noexcept {

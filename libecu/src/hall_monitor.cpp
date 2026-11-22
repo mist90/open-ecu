@@ -38,7 +38,10 @@ void HallMonitor::clearFault() noexcept { core_.clearFault(); }
 void HallMonitor::reset() noexcept { core_.reset(); }
 
 HallMonitor::Info HallMonitor::getInfo() const noexcept {
-    const auto info = core_.getInfo();
+    return describe(snapshot());
+}
+HallMonitor::Info HallMonitor::describe(const Core::Snapshot& state) noexcept {
+    const auto info = Core::describe(state);
     return {numberCast<float>(info.invalid_score), numberCast<float>(info.erratic_score),
             numberCast<float>(info.edge_accum), numberCast<float>(info.reversal_accum),
             info.invalid_events, info.invalid_run, info.invalid_time_us, info.edges,

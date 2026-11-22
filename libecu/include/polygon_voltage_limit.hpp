@@ -6,6 +6,7 @@
 
 #include "numeric_profiles.hpp"
 #include "numeric_ops.hpp"
+#include "control_optimization.hpp"
 
 namespace libecu {
 
@@ -23,7 +24,10 @@ public:
     using Voltage = typename Profile::Voltage;
     using Request = typename Profile::VoltageRequest;
     using Duty = typename Profile::Duty;
-    struct Output { Voltage d{}, q{}; bool limited = false; };
+    struct Output {
+        Voltage d{}, q{};
+        bool limited = false, d_limited = false, q_limited = false;
+    };
 
     /** @brief Largest inradius modulation whose corners fit the PWM duty span. */
     static Duty modulationCeiling(Duty max_duty, bool low_side_clamped) noexcept {
@@ -41,8 +45,28 @@ public:
 
     /** @brief Positive q headroom after d is clamped; no root or division. */
     Voltage qLimit(Voltage d) const noexcept {
-        d = numericAbs(numericClamp(d, -limit_, limit_));
+        return qLimitMagnitude(numericAbs(numericClamp(d, -limit_, limit_)));
+    }
+
+private:
+    // Already in [0,limit_]: apply() has just made exactly this comparison.
+    LIBECU_DEADLINE_INLINE Voltage qLimitMagnitude(Voltage d) const noexcept {
+        if constexpr (FIXED) {
+            // At either d rail the last tangent is the minimum. Both products
+            // have the same factor: subtract the Q28 constants before multiplying.
+            if (d == limit_)
+                return Voltage::fromRaw(int32_t(fixed_detail::wideProduct(
+                    d.raw(), INTERCEPT[7] - SLOPE[7]) >> 28));
+        }
         if (d <= crossing(0)) return limit_;
+        if constexpr (FIXED) {
+            // The flat preceding face is L. Before crossing(1) the exact
+            // quantized envelope is min(L, face1), including their seam.
+            if (d <= crossing(1)) {
+                const Voltage room = faceLimit(1, d);
+                return room < limit_ ? room : limit_;
+            }
+        }
         // Seven sorted crossings select one of eight faces in three comparisons.
         unsigned face = d > crossing(3) ? 4u : 0u;
         if (d > crossing(face + 1)) face += 2;
@@ -66,9 +90,11 @@ public:
         return numericClamp(room, Voltage{}, limit_);
     }
 
+public:
     /** @brief Clamp wide PI requests before narrowing, retaining d priority. */
     Output apply(Request d, Request q) const noexcept {
         Output out;
+        Voltage q_bound;
         // The axis-to-axis diamond lies inside every tangent half-plane. Most
         // unsaturated samples need no face lookup at all; compare BEFORE any
         // narrow conversion so extreme PI requests cannot enter this shortcut.
@@ -77,18 +103,28 @@ public:
             const uint32_t aq = q.raw() < 0 ? 0u - uint32_t(q.raw()) : uint32_t(q.raw());
             constexpr unsigned shift = Voltage::FRACTION_BITS - Request::FRACTION_BITS;
             const uint32_t bound = uint32_t(limit_.raw()) >> shift;
-            if (ad <= bound && aq <= bound - ad) {
+            if (ad <= bound) {
                 out.d = Voltage::fromRaw(d.raw() * (int32_t(1) << shift));
-                out.q = Voltage::fromRaw(q.raw() * (int32_t(1) << shift));
-                return out;
+                if (aq <= bound - ad) {
+                    out.q = Voltage::fromRaw(q.raw() * (int32_t(1) << shift));
+                    return out;
+                }
+                q_bound = qLimitMagnitude(Voltage::fromRaw(int32_t(ad << shift)));
+            } else {
+                out.d_limited = true;
+                out.d = Voltage::fromRaw(d.raw() < 0 ? -limit_.raw() : limit_.raw());
+                q_bound = qLimitMagnitude(limit_);
             }
         } else if (numericAbs(d) + numericAbs(q) <= limit_) {
             out.d = d;
             out.q = q;
             return out;
+        } else {
+            out.d = clampRequest(d, limit_, out.d_limited);
+            q_bound = qLimit(out.d);
         }
-        out.d = clampRequest(d, limit_, out.limited);
-        out.q = clampRequest(q, qLimit(out.d), out.limited);
+        out.q = clampRequest(q, q_bound, out.q_limited);
+        out.limited = out.d_limited || out.q_limited;
         return out;
     }
 
@@ -131,7 +167,7 @@ private:
         }
     }
 
-    Voltage faceLimit(unsigned face, Voltage d) const noexcept {
+    LIBECU_DEADLINE_INLINE Voltage faceLimit(unsigned face, Voltage d) const noexcept {
         if (!face) return limit_;
         if constexpr (FIXED) {
             // Both products are <2^62. After >>28, the selected/preceding

@@ -27,3 +27,6 @@ extern "C" __attribute__((used, externally_visible)) int32_t reciprocal(int32_t 
 extern "C" __attribute__((used, externally_visible)) uint32_t integer_root(uint32_t low, uint32_t high) {
     return integerSqrt((uint64_t(high) << 32) | low);
 }
+extern "C" __attribute__((used, externally_visible)) uint32_t round_q30(int64_t raw) {
+    return fixed_detail::roundedLowWord<30>(raw);
+}

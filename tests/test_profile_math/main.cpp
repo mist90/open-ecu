@@ -70,6 +70,10 @@ static void testExactIntegerMath() {
         }
     }
     check(roots_exact, "integer sqrt is the exact floor across fast-path and uint64 boundary cases");
+    for (uint32_t divisor = (30u << 18) - 1; divisor <= (60u << 18) + 1; ++divisor) {
+        reciprocals_exact &= uint32_t(FixedMath::inverseBusVoltage(FixedProfile::Voltage::fromRaw(divisor)).raw()) ==
+                             ((uint64_t(1) << 48) + divisor / 2u) / divisor;
+    }
     check(reciprocals_exact, "normalized reciprocal is bit-exact against rounded 64-bit division");
 }
 
@@ -137,6 +141,31 @@ static void testBoundedRotation() {
     }
     check(coefficients_bounded, "rotation coefficients retain their [-1, 1] construction invariant");
     check(dots_exact, "fused rotations exactly match the wide rounded/saturated integer oracle");
+    for (unsigned i = 0; i < 50000; ++i) {
+        // Cross the fast reconstruction boundary as well as both signed endpoints.
+        const auto a = P::Current::fromRaw(i % 2 ? next() / 8 : next());
+        const auto b = P::Current::fromRaw(i % 2 ? next() / 8 : next());
+        const auto c = P::Current::fromRaw(i % 2 ? next() / 8 : next());
+        const auto rot = T::rotation(P::Angle::fromRaw(next()));
+        for (unsigned missing = 0; missing < 3; ++missing) {
+            P::Current phase[] = {-a, -b, -c};
+            phase[missing] = -(phase[(missing + 1) % 3] + phase[(missing + 2) % 3]);
+            const auto reference = T::park(T::clarkeZeroSum(phase[0], phase[1], phase[2]), rot);
+            const auto actual = T::parkPhaseCurrents(a, b, c, missing, rot);
+            check(reference.d == actual.d && reference.q == actual.q, "bounded phase transform matches all rails");
+        }
+        const auto d = P::Voltage::fromRaw(next() / (i % 2 ? 16 : 1));
+        const auto q = P::Voltage::fromRaw(next() / (i % 2 ? 16 : 1));
+        const auto limit = std::max(numericAbs(d), numericAbs(q));
+        const auto bus = T::modulationBus(i % 3 ? number<P::Voltage>(38) : number<P::Voltage>(1));
+        const auto cap = number_v<P::Duty, 968, 1000>;
+        const auto result = T::limitedDuties({d, q}, rot, limit, bus, true, cap);
+        const auto ab = T::invPark(DqVectorT<P::Voltage>{d, q}, rot);
+        const auto expected = T::svpwm(ab.alpha, ab.beta, bus, true);
+        check(result.u == numericClamp(expected.u, P::Duty{}, cap) &&
+              result.v == numericClamp(expected.v, P::Duty{}, cap) &&
+              result.w == numericClamp(expected.w, P::Duty{}, cap), "limited DPWM is bit-exact");
+    }
     // Single rounding differs by <=1 LSB away from the scalar endpoints. At
     // INT32_MIN, eliminating the old saturating negation/product can recover
     // one more count (e.g. cosine=-1 and a half-LSB tie in the other product).
@@ -210,6 +239,10 @@ static void testBusCache() {
         in.duty_command = number<D>(int(tick % 9) - 4, 5);
         in.drive_mode = tick % 3 ? DriveMode::FORWARD : DriveMode::REVERSE;
         in.electric_mode = tick % 5 ? ElectricMode::CURRENT_MODE : ElectricMode::VOLTAGE_MODE;
+#if LIBECU_PWM_BUS_LOOKAHEAD
+        // Mix exact prefetches, deliberately stale voltages and no prefetch.
+        if (tick % 3) cached.prepareBus(tick % 3 == 1 ? in.bus_voltage : number<V>(31));
+#endif
         refreshed.setParams(params);
         const auto actual = cached.update(in), expected = refreshed.update(in);
         exact &= actual.duty_u == expected.duty_u && actual.duty_v == expected.duty_v &&

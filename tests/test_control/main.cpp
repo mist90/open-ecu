@@ -5,6 +5,7 @@
 #include "../../libecu/include/at_command_processor.hpp"
 #include "../../libecu/include/crc16.hpp"
 #include "../../libecu/include/critical_section.hpp"
+#include "../../libecu/include/traction_acceleration.hpp"
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -13,8 +14,15 @@
 static uint32_t fake_time_us = 0;
 uint32_t time_us() { return fake_time_us; }
 static unsigned mask_depth = 0, mask_entries = 0;
+static void (*unmasked_hook)() = nullptr;
 extern "C" void disable_interrupts() { ++mask_depth; ++mask_entries; }
-extern "C" void enable_interrupts() { --mask_depth; }
+extern "C" void enable_interrupts() {
+    if (--mask_depth == 0 && unmasked_hook) {
+        const auto hook = unmasked_hook;
+        unmasked_hook = nullptr;
+        hook();
+    }
+}
 
 using namespace libecu;
 static int checks = 0;
@@ -190,6 +198,158 @@ static void testSlewClock() {
           "changing acceleration refreshes the cached increment");
 }
 
+static void testTractionAcceleration() {
+    using Profile = ActiveNumericProfile;
+    using S = Profile::Speed;
+    using C = Profile::Current;
+    TractionAcceleration<Profile> limiter;
+    const auto amp = [](auto c) { return numberCast<float>(c); };
+    const auto step = number_v<S, 2, 100>;
+    const auto eight = number_v<C, 8>;
+    const auto max = number_v<C, 45>;
+    // Same current command and speed setpoint, only the *measured* trajectory differs.
+    const C first = limiter.ceiling(number_v<S, 3>, step, eight, max);
+    const C brisk = limiter.ceiling(number_v<S, 31, 10>, step, eight, max);
+    check(std::abs(amp(first) - 8.04f) < 0.001f && std::abs(amp(brisk) - 7.84f) < 0.001f,
+          "real acceleration folds back positive torque; a coasting engagement has no fictitious impulse");
+    check(limiter.ceiling(number_v<S, 4>, step, C{}, max) == C{},
+          "external positive acceleration can remove traction but cannot demand braking");
+    check(limiter.ceiling(number_v<S, 4>, S{}, C{}, max) == max,
+          "disabled feedback preserves the original current ceiling");
+    limiter.reset();
+    check(limiter.ceiling(number_v<S, -4>, step, eight, max) == first,
+          "reversing the direction frame does not differentiate across directions");
+    // A periodic Hall speed error has zero net acceleration. Rectifying the
+    // changes here would ratchet the torque ceiling down on every full period.
+    limiter.reset();
+    C applied = limiter.ceiling(number_v<S, 2>, step, eight, max);
+    for (int i = 0; i < 10; ++i) {
+        applied = limiter.ceiling(number_v<S, 21, 10>, step, applied, max);
+        applied = limiter.ceiling(number_v<S, 2>, step, applied, max);
+    }
+    check(std::abs(amp(applied) - 8.84f) < 0.002f, "alternating signed speed error does not consume net headroom");
+#if LIBECU_TRACTION_ACCEL_RPS2
+    using Pi = PiFloatInterface<ActivePiProfile::SpeedPiTypes, ActiveTiming::SPEED_HZ>;
+    Pi pi;
+    PiParameters limits{};
+    limits.kp = 6; limits.ki = 24; limits.kb = 0;
+    limits.min_output = -6; limits.max_output = 45;
+    limits.integral_min = -4; limits.integral_max = 12;
+    check(pi.setParameters(limits), "configure bounded speed PI");
+    for (int i = 0; i < 100; ++i) {
+        pi.updateNativeCapped(number_v<Pi::Input, 2>, Pi::Input{}, 0,
+                              number_v<Pi::Output, 12>, number_v<Pi::Output, 1>);
+    }
+    check(pi.getOutput() == 1.0f && pi.getIntegral() < 0.25f && pi.saturationSign() == 1,
+          "without Kb, a positive traction limit blocks continuing integral windup");
+    for (int i = 1; i <= 50; ++i) {
+        pi.updateNativeCapped(number_v<Pi::Input, 2>, Pi::Input{}, 0, number_v<Pi::Output, 12>,
+                              numberCast<Pi::Output>(1.0f + i * 0.04f));
+    }
+    check(pi.getIntegral() < 0.25f && std::abs(pi.getOutput() - 3.0f) < 0.00001f,
+          "rising but still binding ceiling does not accumulate positive integral without Kb");
+    const auto brake = pi.updateNativeCapped(Pi::Input{}, number_v<Pi::Input, 2>, 0,
+                                              number_v<Pi::Output, 12>, Pi::Output{});
+    check(amp(brake) == -6.0f && pi.saturationSign() == -1,
+          "zero traction authority does not mask speed PI braking or the hard current floor");
+    Pwm pwm;
+    Hall hall;
+    auto params = makeParams();
+    params.traction_acceleration_rps2 = 2.0f;
+    params.pi_current_mode.kp = 6.0f;
+    params.pi_current_mode.ki = 24.0f;
+    params.pi_current_mode.kb = 2.0f;
+    BldcController drive(pwm, hall, params);
+    check(drive.initialize(), "measured-acceleration controller accepts T60 calibration");
+    drive.start();
+    drive.setDriveMode(DriveMode::FORWARD);
+    drive.setTargetSpeed(4.0f);
+    drive.update();
+    check(std::abs(drive.getStatus().target_current - 0.04f) < 0.001f,
+          "unramped speed step is bounded at the speed PI output");
+    for (unsigned i = 0; i < 25; ++i) drive.update();
+    check(std::abs(drive.getStatus().target_current - 1.04f) < 0.002f,
+          "a loaded stationary rotor recovers more torque without bypassing the ceiling");
+    drive.setControlMode(ControlMode::CLOSED_LOOP_TORQUE);
+    drive.setCurrent(-3.0f);
+    drive.update();
+    check(drive.getStatus().target_current == -3.0f, "torque mode still accepts the commanded braking current");
+    drive.setDriveMode(DriveMode::NEUTRAL);
+    drive.update();
+    check(!pwm.enabled && drive.getStatus().target_current == 0, "park immediately removes torque");
+    drive.setControlMode(ControlMode::CLOSED_LOOP_VELOCITY);
+    drive.setDriveMode(DriveMode::REVERSE);
+    drive.setTargetSpeed(4.0f);
+    drive.update();
+    check(std::abs(drive.getStatus().target_current - 0.04f) < 0.001f, "reverse launch starts without stored torque");
+#endif
+}
+
+static void testLiveSpeedPiGains() {
+    Pwm pwm, reference_pwm;
+    Hall hall;
+    auto params = makeParams();
+    params.pi_current_mode.kp = 6.0f;
+    params.pi_current_mode.ki = 24.0f;
+    params.pi_current_mode.integral_max = 18.0f;
+    BldcController motor(pwm, hall, params), reference(reference_pwm, hall, params);
+    for (auto* drive : {&motor, &reference}) {
+        check(drive->initialize(), "speed retune fixture initializes");
+        drive->start();
+        drive->setDriveMode(DriveMode::FORWARD);
+        drive->setTargetSpeed(1.0f);
+        for (unsigned i = 0; i < 25; ++i) drive->update();
+    }
+    const float before = motor.getStatus().target_current;
+    check(std::abs(before - 11.88f) < 0.00002f, "loaded PI has accumulated a nonzero integral");
+    check(motor.setSpeedPi(6, 24), "repeating speed gains succeeds under load");
+    motor.update();
+    reference.update();
+    const auto held = motor.getNativeStatus().target_current;
+    check(held == reference.getNativeStatus().target_current, "identical gains preserve the untouched PI trajectory");
+    check(motor.setSpeedPi(4, 0), "changed speed gains have a feasible integral rebase");
+    motor.update();
+    check(motor.getNativeStatus().target_current == held, "changing Kp with zero Ki holds the exact last command");
+    motor.setTargetSpeed(1.5f);
+    motor.update();
+    check(std::abs(motor.getStatus().target_current - (numberCast<float>(held) + 2.0f)) < 0.000003f,
+          "subsequent speed error uses the new proportional gain");
+    check(motor.setSpeedPi(4, 10), "Ki-only speed edit succeeds");
+    motor.setTargetSpeed(1.0f);
+    motor.update();
+    check(std::abs(motor.getStatus().target_current - (numberCast<float>(held) + 0.125f)) < 0.000003f,
+          "Ki-only edit retains I and both trapezoidal error endpoints");
+
+    const auto command = motor.getNativeStatus().target_current;
+    check(!motor.setSpeedPi(100, 5), "unreachable compensated integral is rejected");
+    float kp, ki;
+    motor.getSpeedPiGains(kp, ki);
+    check(kp == 4 && ki == 10 && motor.getNativeStatus().target_current == command,
+          "rejected transfer preserves gains and the active command");
+#if defined(LIBECU_MOTOR1_T60_LOAD)
+    check(!motor.setSpeedPi(0, 0), "stationary T60 rejects a rebase above 12 A but below the static limit");
+#endif
+    static BldcController* interrupted;
+    interrupted = &motor;
+    unmasked_hook = [] { interrupted->setDriveMode(DriveMode::NEUTRAL); };
+    check(!motor.setSpeedPi(5, 10) && !pwm.enabled && motor.getNativeStatus().target_current == BldcController::Current{},
+          "parking between snapshot and publish cancels a retune and keeps zero torque");
+    motor.getSpeedPiGains(kp, ki);
+    check(kp == 4 && ki == 10, "a cancelled retune cannot change stored gains");
+
+    motor.setDriveMode(DriveMode::FORWARD);
+    motor.setTargetSpeed(10.0f);
+    motor.update();
+    check(motor.getStatus().target_current == params.max_current && !motor.setSpeedPi(2, 5) &&
+          motor.setSpeedPi(4, 10), "active output rail refuses changed gains but accepts an identical write");
+    check(motor.setElectricMode(ElectricMode::VOLTAGE_MODE), "voltage mode is available after a rejected edit");
+    motor.getSpeedPiGains(kp, ki);
+    check(kp == params.pi_voltage_mode.kp && ki == params.pi_voltage_mode.ki,
+          "current-mode retune does not change voltage-mode gains");
+    std::printf("Speed PI 6/24: %.5f -> %.5f A (unchanged twin); live Kp retune held %.5f A\n",
+                before, reference.getStatus().target_current, numberCast<float>(held));
+}
+
 static void testCommands() {
     Pwm pwm;
     Hall hall;
@@ -342,7 +502,8 @@ static void testHallDuration() {
 #ifdef ECU_FIXED_NUMERIC
     const auto previous = monitor.getParameters();
     auto oversized = previous;
-    oversized.decay_time_us = 2000000;
+    constexpr auto too_many = uint32_t(INT32_MAX / FixedProfile::Count::SCALE + 1);
+    oversized.decay_time_us = ActiveTiming::CurrentClock::ticksToUs(too_many);
     check(!monitor.setParameters(oversized), "Hall window exceeding the count range is rejected");
     check(monitor.getParameters().decay_time_us == previous.decay_time_us,
           "rejected Hall tuning preserves the running configuration");
@@ -466,9 +627,9 @@ static void testSplitCurrentLoop() {
     for (auto algorithm : {DriveAlgorithm::SIX_STEP, DriveAlgorithm::FOC}) {
         for (auto mode : {ControlMode::CLOSED_LOOP_TORQUE, ControlMode::OPEN_LOOP}) {
             for (auto electric : {ElectricMode::VOLTAGE_MODE, ElectricMode::CURRENT_MODE}) {
-                Pwm wrapped_pwm, split_pwm;
-                Hall wrapped_hall, split_hall;
-                CapturedAdc wrapped_adc, split_adc;
+                Pwm wrapped_pwm, split_pwm, owned_pwm;
+                Hall wrapped_hall, split_hall, owned_hall;
+                CapturedAdc wrapped_adc, split_adc, owned_adc;
                 auto params = makeParams();
                 params.algorithm = algorithm;
                 params.pi_current_regulator.kp = 0.1f;
@@ -476,7 +637,8 @@ static void testSplitCurrentLoop() {
                 params.foc_current_regulator.ki = 20.0f;
                 BldcController wrapped(wrapped_pwm, wrapped_hall, params, &wrapped_adc);
                 BldcController split(split_pwm, split_hall, params, &split_adc);
-                for (auto* next : {&wrapped, &split}) {
+                BldcController owned(owned_pwm, owned_hall, params, &owned_adc);
+                for (auto* next : {&wrapped, &split, &owned}) {
                     check(next->initialize(), "split/wrapper controller initializes");
                     next->start();
                     next->setControlMode(mode);
@@ -484,13 +646,13 @@ static void testSplitCurrentLoop() {
                     next->setDriveMode(DriveMode::FORWARD);
                 }
                 for (unsigned tick = 0; tick < 32; ++tick) {
-                    for (auto* next : {&wrapped, &split}) {
+                    for (auto* next : {&wrapped, &split, &owned}) {
                         next->setDutyCycle(.25f);
                         next->setCurrent(1.0f);
                         next->setTargetSpeed(1.0f);
                         next->hallSensorInterruptHandler();
                     }
-                    wrapped_hall.position = split_hall.position = (tick / 4) % 6;
+                    wrapped_hall.position = split_hall.position = owned_hall.position = (tick / 4) % 6;
                     fake_time_us += 1000000 / ActiveTiming::CURRENT_HZ;
                     // Acquisition has not published this carrier's physical values yet.
                     split_adc.currents[0] = 8000;
@@ -499,6 +661,7 @@ static void testSplitCurrentLoop() {
                     check(!split.hasPreparedPwmFrame() && !wrapped.hasPreparedPwmFrame(),
                           "completed wrapper/split frame leaves no pending preparation");
                     split.preparePwmInterruptHandler();
+                    owned.prepareOwnedCarrier();
                     check(split.hasPreparedPwmFrame() && split.hasPreparedPwmFrame() &&
                           split_adc.reads() == reads && split_adc.frame_reads == frames &&
                           split_pwm.calls == writes && split_hall.reads == halls + 1,
@@ -513,12 +676,13 @@ static void testSplitCurrentLoop() {
                           "duplicate prepare retains the first snapshot without another Hall/PLL tick");
                     for (unsigned phase = 0; phase < 3; ++phase) {
                         const uint32_t value = 4000 + phase * 60 + tick;
-                        wrapped_adc.currents[phase] = split_adc.currents[phase] = value;
+                        wrapped_adc.currents[phase] = split_adc.currents[phase] = owned_adc.currents[phase] = value;
                     }
-                    wrapped_adc.bus = split_adc.bus = 4800 + 2 * tick;
+                    wrapped_adc.bus = split_adc.bus = owned_adc.bus = 4800 + 2 * tick;
                     // Late target updates belong to the next preparation. The
                     // wrapper provides the same old targets with newly ready ADC data.
                     wrapped.pwmInterruptHandler();
+                    owned.completeOwnedCarrier(owned_adc, owned_pwm);
                     split.setDutyCycle(.75f);
                     split.setCurrent(3.0f);
                     split.setTargetSpeed(2.0f);
@@ -530,6 +694,18 @@ static void testSplitCurrentLoop() {
                           "complete reads one newly ready coherent frame without a second Hall/PLL tick");
                     const auto& expected = wrapped.getNativeStatus();
                     const auto& actual = split.getNativeStatus();
+                    const auto& direct = owned.getNativeStatus();
+                    check(direct.measured_current == expected.measured_current &&
+                          direct.measured_current_filtered == expected.measured_current_filtered &&
+                          direct.current_pi_saturation == expected.current_pi_saturation &&
+                          direct.duty_cycle == expected.duty_cycle && direct.duty_u == expected.duty_u &&
+                          direct.duty_v == expected.duty_v && direct.duty_w == expected.duty_w &&
+                          direct.i_d == expected.i_d && direct.i_q == expected.i_q &&
+                          direct.v_d == expected.v_d && direct.v_q == expected.v_q &&
+                          direct.angle_e_rad == expected.angle_e_rad && direct.pll_angle == expected.pll_angle &&
+                          direct.target_position == expected.target_position && direct.bus_voltage == expected.bus_voltage &&
+                          owned_pwm.native_writes == wrapped_pwm.native_writes && owned_adc.frame_reads == tick + 1,
+                          "direct IRQ publication agrees with portable frame across motor/electrical modes");
                     check(actual.measured_current == expected.measured_current && actual.i_d == expected.i_d &&
                           actual.i_q == expected.i_q && actual.v_d == expected.v_d && actual.v_q == expected.v_q &&
                           actual.duty_u == expected.duty_u && actual.duty_v == expected.duty_v &&
@@ -1256,7 +1432,9 @@ static void testRejectedModeTuning() {
 int main() {
     testReusableCurrentFrame();
     testSpeedClock();
+    testLiveSpeedPiGains();
     testSlewClock();
+    testTractionAcceleration();
     for (auto mode : {ElectricMode::CURRENT_MODE, ElectricMode::VOLTAGE_MODE})
         for (bool filtered : {false, true}) testVelocityStandstillRelease(mode, filtered);
     for (int direction : {1, -1}) testVelocityBrakingRelease(direction);

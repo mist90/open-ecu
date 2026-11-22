@@ -36,6 +36,7 @@ public:
     using Core = MotorPLLCore<ActiveNumericProfile, ActiveTiming::CURRENT_HZ>;
     using PreparedGains = Core::PreparedGains;
     Core::Angle getNativeAngle() const noexcept { return core_.getAngle(); }
+    uint8_t getNextHall(DriveMode mode, Core::Angle sampled) const noexcept { return core_.getNextHall(mode, sampled); }
     Core::Speed getNativeSpeedStepsSec() const noexcept { return core_.getSpeedStepsSec(); }
     uint8_t getHallStateRaw() const noexcept { return core_.getInfo().hall_state_raw; }
     static constexpr float LIMIT_ANGLE_ERROR = 0.5f;
@@ -154,6 +155,8 @@ public:
      * @note Caller must hold a CriticalSection if reading from a different interrupt priority
      */
     PllInfo getInfo() const noexcept;
+    Core::Info nativeInfo() const noexcept { return core_.getInfo(); }
+    static PllInfo describe(const Core::Info& state) noexcept;
 
     /**
      * @brief Set continuous PI gains and cache Ki/sample_frequency

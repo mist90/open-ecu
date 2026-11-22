@@ -113,10 +113,15 @@ public:
      */
     virtual void apply() {}
 
-    /**
-     * @brief Set all phases to neutral (50% duty cycle)
-     * Used for motor startup and balanced operation
-     */
+    /** Current-rate owner only. A port can commit preloads without masking its own IRQ.
+     *  A higher-priority hardware break may turn outputs off at any instruction.
+     *  None of these operations may enable the bridge. */
+    virtual void writeCarrierDuty(NativeDuty u, NativeDuty v, NativeDuty w) { updateNativeDutyCycle(u, v, w); }
+    virtual void applyCarrierStates() { apply(); }
+    /** Gate off and park while the caller owns the driver (IRQ or foreground transaction). */
+    virtual void parkExclusive() { setNeutral(); enable(false); }
+
+    /** @brief Set all three channels OFF and clear their requested duty. */
     void setNeutral() noexcept {
         setChannelState(PwmChannel::PHASE_U, PwmState::OFF);
         setChannelState(PwmChannel::PHASE_V, PwmState::OFF);

@@ -171,6 +171,7 @@ public:
         calibration_.offset_voltage_u = numberCast<float>(core_.zeroVoltage(0));
         calibration_.offset_voltage_v = numberCast<float>(core_.zeroVoltage(1));
         calibration_.offset_voltage_w = numberCast<float>(core_.zeroVoltage(2));
+        calibrationChanged();
         return true;
     }
 
@@ -178,6 +179,7 @@ public:
     const TemperatureSensorParameters& getTemperatureParams() const noexcept { return temp_params_; }
 
 protected:
+    const Core& conversionCore() const noexcept { return core_; }
     /** @brief Invalidate port-owned converted snapshots after a successful reconfiguration. */
     virtual void calibrationChanged() noexcept {}
 

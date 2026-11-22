@@ -5,6 +5,7 @@
 
 #include "../include/six_step_algorithm.hpp"
 #include "../include/foc_math.hpp"
+#include "../include/bldc_controller.hpp"
 
 #include <algorithm>
 
@@ -85,9 +86,15 @@ SixStepAlgorithm::Output SixStepAlgorithm::updateNative(const Input& in) noexcep
 
 LIBECU_HOT_LOOP void SixStepAlgorithm::updateNative(Frame& frame) noexcept
 {
-    const auto& in = frame.input;
-    auto& out = frame.output;
+    updateInto<false>(frame.input, frame.input, frame.output);
+}
 
+[[gnu::noinline]] void SixStepAlgorithm::updateOwnedCarrier(const Input& in, MotorStatusT<Profile>& status) noexcept {
+    updateInto<true>(in, status, status);
+}
+
+template<bool Owned, class Commands, class Result>
+LIBECU_HOT_LOOP void SixStepAlgorithm::updateInto(const Input& in, const Commands& commands, Result& out) noexcept {
     // Read the shunt *before* this cycle's commutation: the sample belongs to
     // the period that just ended, under the switching states still cached.
     const Current measured_current = currentFromActivePhase(in);
@@ -97,7 +104,7 @@ LIBECU_HOT_LOOP void SixStepAlgorithm::updateNative(Frame& frame) noexcept
     Duty duty;
     int8_t saturation;
 
-    if (in.electric_mode == ElectricMode::VOLTAGE_MODE) {
+    if (commands.electric_mode == ElectricMode::VOLTAGE_MODE) {
         duty = numericClamp(in.duty_command, Duty{}, max_duty_);
         saturation = 0;
     } else {
@@ -114,7 +121,7 @@ LIBECU_HOT_LOOP void SixStepAlgorithm::updateNative(Frame& frame) noexcept
             // rather than by hand-tuning.
             using PiCurrent = ActivePiProfile::CurrentPiTypes::Input;
             const Duty duty_raw = numberCast<Duty>(current_pi_.updateNative(
-                numberCast<PiCurrent>(in.target_current), numberCast<PiCurrent>(measured_current)));
+                numberCast<PiCurrent>(commands.target_current), numberCast<PiCurrent>(measured_current)));
             duty = numericClamp(duty_raw, Duty{}, max_duty_);
 
             // Saturation is reported from the *clamped* duty, not from the
@@ -136,12 +143,12 @@ LIBECU_HOT_LOOP void SixStepAlgorithm::updateNative(Frame& frame) noexcept
     if (commutating) {
         current_step_ = in.step;
         cycles_since_commutation_ = 0;
-        applyCommutationStep(COMMUTATION_TABLE[in.step], duty);
+        applyCommutationStep<Owned>(COMMUTATION_TABLE[in.step], duty);
     } else {
         // Modulation depth only. All three phases carry the same duty; the
         // switching state set at the last commutation decides which of them
         // actually modulates it.
-        pwm_interface_.updateNativeDutyCycle(duty);
+        writeDuty<Owned>(duty);
     }
 
     last_duty_ = duty;
@@ -150,7 +157,7 @@ LIBECU_HOT_LOOP void SixStepAlgorithm::updateNative(Frame& frame) noexcept
     out.duty_u = duty;
     out.duty_v = duty;
     out.duty_w = duty;
-    out.duty = duty;
+    out.setScalarDuty(duty);
     out.measured_current = measured_current;
     out.i_d = Current{};
     out.i_q = Current{};
@@ -158,9 +165,16 @@ LIBECU_HOT_LOOP void SixStepAlgorithm::updateNative(Frame& frame) noexcept
     out.v_q = multiplyTo<Profile::Voltage>(duty, in.bus_voltage);
     out.angle_e_rad = multiplyTo<Profile::Angle>(in.angle_steps,
         number_v<Profile::Angle, 10471975511966LL, 10000000000000LL>);
-    out.saturation = saturation;
+    out.setSaturation(saturation);
 }
 
+template<bool Owned>
+void SixStepAlgorithm::writeDuty(Duty duty) noexcept {
+    if constexpr (Owned) pwm_interface_.writeCarrierDuty(duty, duty, duty);
+    else pwm_interface_.updateNativeDutyCycle(duty);
+}
+
+template<bool Owned>
 void SixStepAlgorithm::applyCommutationStep(const CommutationStep& step, Duty duty_cycle) noexcept
 {
     cached_phase_u_state_ = step.phase_u;
@@ -176,10 +190,11 @@ void SixStepAlgorithm::applyCommutationStep(const CommutationStep& step, Duty du
     // while the switching states above are preloaded against the COM event
     // below. Both are atomic within themselves, and neither has to wait for the
     // other, because no phase state is encoded in a compare register.
-    pwm_interface_.updateNativeDutyCycle(duty_cycle);
+    writeDuty<Owned>(duty_cycle);
 
     // Apply all three channel states atomically (TIM_EGR_COMG on STM32)
-    pwm_interface_.apply();
+    if constexpr (Owned) pwm_interface_.applyCarrierStates();
+    else pwm_interface_.apply();
 }
 
 SixStepAlgorithm::Current SixStepAlgorithm::currentFromActivePhase(const Input& in) const noexcept

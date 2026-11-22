@@ -391,7 +391,11 @@ Set or read the motor rotation direction.
 
 ### Speed PI Parameters (AT+SPID)
 
-Set or read the speed (outer-loop) PI controller gains. Changes take effect immediately and reset the integrator.
+Set or read the speed (outer-loop) PI gains for the current electrical mode.
+Repeating a setting or changing only `ki` retains the integral and the previous
+error. With velocity control active, a `kp` change compensates the integral to
+preserve the last command at the same error. Normal integration and response to
+new speed errors continue on the next speed tick.
 
 | | |
 |---|---|
@@ -401,7 +405,10 @@ Set or read the speed (outer-loop) PI controller gains. Changes take effect imme
 | **Query response** | `+SPID:0.010,0.100\r\nOK\r\n` |
 
 Exactly two finite coefficients are required. A third coefficient, including zero,
-returns `ERROR`. Output limits are preserved. The sampling frequency is configured
+returns `ERROR`. A changed setting also returns `ERROR` without applying it if
+the active loop is saturated, the compensation would exceed an integral limit
+(including T60's speed-dependent ceiling), or the operating point changes during
+preparation. The caller can retry later. Output limits are preserved. The sampling frequency is configured
 at compile time in the board's `ecu_config.hpp` (100 Hz on STM32G431).
 
 **Examples:**

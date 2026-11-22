@@ -39,6 +39,17 @@ template<typename SA, typename SB>
     return int64_t(a) * b;
 }
 
+// For a dot product whose caller has bounded the *sum*. GCC cannot fuse a
+// second opaque SMULL with the 64-bit addition into the M3's native SMLAL.
+[[gnu::always_inline]] inline int64_t accumulateProduct(int64_t sum, int32_t a, int32_t b) noexcept {
+#if defined(__arm__) && defined(__ARM_ARCH) && __ARM_ARCH >= 7 && defined(__GNUC__) && !defined(__clang__)
+    __asm__("smlal %Q0, %R0, %1, %2" : "+r"(sum) : "r"(a), "r"(b));
+    return sum;
+#else
+    return sum + int64_t(a) * b;
+#endif
+}
+
 constexpr uint64_t magnitude(int64_t value) noexcept {
     return value < 0 ? uint64_t(-(value + 1)) + 1u : uint64_t(value);
 }
@@ -67,6 +78,61 @@ template<unsigned Shift, typename Storage>
         const Remainder increment = (remainder + half - negative) >> Shift;
         return Signed(value >> Shift) + Signed(increment);
     }
+}
+
+// Low word of round-to-nearest, ties away from zero. No saturation. Narrowing
+// callers prove the *rounded result* fits their signed word. The unsigned
+// primitive itself is defined on the entire int64 range, including both ends.
+template<unsigned Shift>
+[[gnu::always_inline]] inline uint32_t roundedLowWord(int64_t value) noexcept {
+    static_assert(Shift > 0 && Shift < 32);
+#if defined(__thumb2__) && defined(__GNUC__) && !defined(__clang__)
+#if defined(LIBECU_PWM_DEADLINE_ONLY) && LIBECU_PWM_DEADLINE_ONLY
+    // For negative values subtract one before inspecting the half bit: this
+    // changes negative ties from round-up to round-down. Borrow across lo=0.
+    // Unsigned wrap at INT64_MIN doesn't affect the low word after Shift<32.
+    uint32_t lo = uint32_t(value), hi = uint32_t(uint64_t(value) >> 32);
+    __asm__("subs %[lo], %[lo], %[hi], lsr #31\n"
+            "sbc %[hi], %[hi], #0\n"
+            "lsrs %[lo], %[lo], %[shift]\n"
+            "adc %[lo], %[lo], %[hi], lsl %[upper]"
+            : [lo] "+&r"(lo), [hi] "+r"(hi)
+            : [shift] "I"(Shift), [upper] "I"(32 - Shift) : "cc");
+    return lo;
+#else
+    const uint32_t lo = uint32_t(value), hi = uint32_t(uint64_t(value) >> 32);
+    uint32_t quotient, remainder;
+    // LSR puts the half bit in C. ADC joins the shifted words and adds that
+    // carry. Undo it only for negative exact ties. All operations are words.
+    __asm__("lsrs %[q], %[lo], %[shift]\n"
+            "adc %[q], %[q], %[hi], lsl %[upper]\n"
+            "add %[rem], %[lo], %[half]\n"
+            "lsls %[rem], %[rem], %[upper]\n"
+            "it eq\n"
+            "addeq %[q], %[q], %[hi], asr #31"
+            : [q] "=&r"(quotient), [rem] "=&r"(remainder)
+            : [lo] "r"(lo), [hi] "r"(hi), [shift] "I"(Shift),
+              [upper] "I"(32 - Shift), [half] "I"(1u << (Shift - 1))
+            : "cc");
+    return quotient;
+#endif
+#else
+    // roundedShift rounds the remainder, not value + half (which could overflow).
+    return uint32_t(roundedShift<Shift>(value));
+#endif
+}
+
+template<unsigned Shift>
+[[gnu::always_inline]] inline int32_t boundedRoundedProduct(int32_t a, int32_t b) noexcept {
+    return int32_t(roundedLowWord<Shift>(wideProduct(a, b)));
+}
+
+// PLL/FOC supply a word-format limit widened into the accumulator; its
+// negative is representable. When -top <= hi < top no low word can clip.
+[[gnu::always_inline]] inline int64_t clampWideState(int64_t value, int64_t bound) noexcept {
+    const uint32_t hi = uint32_t(uint64_t(value) >> 32), top = uint32_t(uint64_t(bound) >> 32);
+    if (hi + top < 2u * top && int32_t(top) > 0) return value;
+    return value < -bound ? -bound : value > bound ? bound : value;
 }
 
 template<unsigned Shift, typename SA, typename SB>

@@ -123,6 +123,11 @@ LIBECU_SLOW_PATH BldcController::BldcController(
         foc_.setCurrentPiGains(params_.foc_current_regulator.kp, params_.foc_current_regulator.ki);
     acceleration_step_ = divideByInteger<Accumulator>(acceleration, ActiveTiming::SPEED_HZ);
     acceleration_enabled_ = acceleration > Speed{};
+#if LIBECU_TRACTION_ACCEL_RPS2
+    Speed traction_rate{};
+    parameters_valid_ &= tryNumber(params_.traction_acceleration_rps2, traction_rate) && traction_rate >= Speed{};
+    traction_acceleration_step_ = divideByInteger<Speed>(traction_rate, ActiveTiming::SPEED_HZ);
+#endif
     open_loop_.setSpeed(Speed{}, params_.num_poles);
 
     motor_pll_.setUsePLL(true);
@@ -145,7 +150,14 @@ const MotorAlgorithm& BldcController::algorithm() const noexcept
 LIBECU_SLOW_PATH bool BldcController::initialize() noexcept
 {
     cancelPwmInterruptHandler();
+#if defined(LIBECU_NATIVE_CARRIER_ONLY) && LIBECU_NATIVE_CARRIER_ONLY
+    {
+        CriticalSection lock; // Timer acquisition is already running during controller construction.
+        pwm_interface_.parkExclusive();
+    }
+#else
     pwm_interface_.setNeutral();
+#endif
     if (!parameters_valid_ || !pi_speed_controller_.isConfigured() || !six_step_.isCurrentPiConfigured())
         return false;
 
@@ -213,9 +225,7 @@ LIBECU_SLOW_PATH void BldcController::update() noexcept
             status_.temperature_c = temperature_c;
         }
 
-        // NEUTRAL below, not inside the critical section above: setDriveMode()
-        // takes one of its own and CriticalSection does not nest - its
-        // destructor re-enables interrupts unconditionally.
+        // Only the shared temperature needs publication. Parking is a separate transaction.
         //
         // TEMPERATURE_INVALID_C fails this comparison, so an open sensor
         // coasts rather than trips. See MotorControlParams::max_temperature_c.
@@ -298,16 +308,29 @@ LIBECU_SLOW_PATH void BldcController::update() noexcept
                     numericAbs(speed_steps_s) <= stopped_steps_s &&
                     numericAbs(status.current_speed_rps) <= stopped_rps) {
                     pi_speed_controller_.reset();
+#if LIBECU_TRACTION_ACCEL_RPS2
+                    traction_acceleration_.reset();
+#endif
                     filtered_target_speed_ = Speed{};
                     limited_target_speed_ = Accumulator{};
                 } else {
                     const Speed limited_target = applyAccelerationLimit(status.target_speed_rps);
 #if defined(LIBECU_MOTOR1_T60_LOAD)
                     if (status.electric_mode == ElectricMode::CURRENT_MODE) {
+                        const auto integral_ceiling =
+                            motor1RollingIntegralCeiling<Profile, int(BLDC_MAX_CURRENT)>(status.current_speed_rps);
+#if LIBECU_TRACTION_ACCEL_RPS2
+                        const Current traction_ceiling = traction_acceleration_.ceiling(
+                            status.current_speed_rps, traction_acceleration_step_,
+                            pi_speed_controller_.native().getOutput(), limits_.max_current);
                         pi_output = pi_speed_controller_.updateNativeCapped(
                             numberCast<PiSpeed>(limited_target), numberCast<PiSpeed>(status.current_speed_rps),
-                            status.current_pi_saturation,
-                            motor1RollingIntegralCeiling<Profile, int(BLDC_MAX_CURRENT)>(status.current_speed_rps));
+                            status.current_pi_saturation, integral_ceiling, traction_ceiling);
+#else
+                        pi_output = pi_speed_controller_.updateNativeCapped(
+                            numberCast<PiSpeed>(limited_target), numberCast<PiSpeed>(status.current_speed_rps),
+                            status.current_pi_saturation, integral_ceiling);
+#endif
                     } else {
 #endif
                     pi_output = pi_speed_controller_.updateNative(
@@ -321,13 +344,23 @@ LIBECU_SLOW_PATH void BldcController::update() noexcept
                 }
 
                 // Electric mode determines how to use PI output
+                const auto can_publish = [&] {
+                    // Only foreground enables the drive. A carrier brake can
+                    // park it DURING the unmasked slow PI, before we commit.
+                    if (dmode_ != DriveMode::NEUTRAL) return true;
+                    holdVelocityLoop();
+#if LIBECU_TRACTION_ACCEL_RPS2
+                    traction_acceleration_.reset();
+#endif
+                    return false;
+                };
                 if (status.electric_mode == ElectricMode::VOLTAGE_MODE) {
                     // VOLTAGE_MODE: PI outputs the duty command directly
                     const Duty prepared_duty = numberCast<Duty>(pi_output);
                     __asm__ volatile("" : : "m"(prepared_duty) : "memory");
                     {
                         CriticalSection cs;
-                        duty_command_ = prepared_duty;
+                        if (can_publish()) duty_command_ = prepared_duty;
                     }
                 } else {
                     // CURRENT_MODE: PI outputs target current
@@ -336,7 +369,7 @@ LIBECU_SLOW_PATH void BldcController::update() noexcept
                     __asm__ volatile("" : : "m"(prepared_current) : "memory");
                     {
                         CriticalSection cs;
-                        status_.target_current = prepared_current;
+                        if (can_publish()) status_.target_current = prepared_current;
                     }
 
                     // duty_cycle is calculated by pwmInterruptHandler() (atomic read)
@@ -393,34 +426,39 @@ bool BldcController::commitNativeTargetSpeed(const PreparedTargetSpeed& prepared
 void BldcController::setDutyCycle(float duty_cycle) noexcept
 {
     Duty target{};
-    if (!tryNumber(duty_cycle, target)) return;
+    if (!tryNumber(duty_cycle, target) || duty_cycle < 0.0f) return;
+    const Duty duty = numericClamp(target, Duty{}, limits_.max_duty);
+    __asm__ volatile("" : : "m"(duty) : "memory");
     CriticalSection cs;
     if (dmode_ == DriveMode::NEUTRAL)
-        return;
-    if (duty_cycle < 0.0f)
         return;
     // duty_command_ is the request; status_.duty_cycle is what the algorithm
     // reports back. They are the same number in six-step voltage mode but not
     // in FOC, where the reported value is the modulation index of the applied
     // voltage vector - feeding that back as the command would make it decay.
-    duty_command_ = numericClamp(target, Duty{}, limits_.max_duty);
-    status_.duty_cycle = duty_command_;
+    duty_command_ = duty;
+    status_.duty_cycle = duty;
 }
 
 void BldcController::setCurrent(float current_a) noexcept
 {
     Current target{};
     if (!tryNumber(current_a, target)) return;
+    const Current current = numericClamp(target, limits_.min_current, limits_.max_current);
+    __asm__ volatile("" : : "m"(current) : "memory");
     CriticalSection cs;
     if (dmode_ == DriveMode::NEUTRAL)
         return;
-    status_.target_current = numericClamp(target, limits_.min_current, limits_.max_current);
+    status_.target_current = current;
 }
 
 void BldcController::setControlMode(ControlMode mode) noexcept
 {
     CriticalSection cs;
     if (status_.control_mode != mode) {
+#if LIBECU_TRACTION_ACCEL_RPS2
+        traction_acceleration_.reset();
+#endif
         cancelPwmInterruptHandler();
         const bool from_open_loop = status_.control_mode == ControlMode::OPEN_LOOP;
         status_.control_mode = mode;
@@ -442,13 +480,21 @@ void BldcController::setControlMode(ControlMode mode) noexcept
 
 bool BldcController::setElectricMode(ElectricMode mode) noexcept
 {
-    CriticalSection cs;
+    // Tuning setters share the foreground command owner. Neither control IRQ
+    // writes this configuration. A mode switch always starts with a reset PI.
     const PiParameters& tuning = mode == ElectricMode::VOLTAGE_MODE
                                ? params_.pi_voltage_mode : params_.pi_current_mode;
-    if (!pi_speed_controller_.setParameters(tuning)) return false;
+    decltype(pi_speed_controller_) next{};
+    if (!next.setParameters(tuning)) return false;
+    next.reset();
+    __asm__ volatile("" : : "m"(next) : "memory");
+    CriticalSection cs;
+    pi_speed_controller_ = next;
     cancelPwmInterruptHandler();
     status_.electric_mode = mode;
-    pi_speed_controller_.reset();
+#if LIBECU_TRACTION_ACCEL_RPS2
+    traction_acceleration_.reset();
+#endif
 
     // The inner loop changes shape underneath the outer one; a stale
     // integrator from the other mode is meaningless.
@@ -471,6 +517,9 @@ void BldcController::setAlgorithm(DriveAlgorithm new_algorithm) noexcept
     // phases in UP and raises its one and only COM event.
     algorithm().reset();
     algorithm_ = new_algorithm;
+#if LIBECU_TRACTION_ACCEL_RPS2
+    traction_acceleration_.reset();
+#endif
     status_.algorithm = algorithm_;
 #if !LIBECU_FOC_DUTY_TELEMETRY
     if (algorithm_ == DriveAlgorithm::FOC) status_.duty_cycle = Duty{};
@@ -490,8 +539,11 @@ DriveAlgorithm BldcController::getAlgorithm() const noexcept
 
 bool BldcController::setFocCurrentPi(float kp, float ki) noexcept
 {
+    FocAlgorithm::PreparedGains gains;
+    if (!FocAlgorithm::prepareCurrentPiGains(kp, ki, gains)) return false;
+    __asm__ volatile("" : : "m"(gains) : "memory");
     CriticalSection cs;
-    if (!foc_.setCurrentPiGains(kp, ki)) return false;
+    foc_.applyCurrentPiGains(gains);
     params_.foc_current_regulator.kp = kp;
     params_.foc_current_regulator.ki = ki;
     return true;
@@ -499,43 +551,68 @@ bool BldcController::setFocCurrentPi(float kp, float ki) noexcept
 
 void BldcController::getFocCurrentPi(float& kp, float& ki) const noexcept
 {
-    CriticalSection cs;
-    foc_.getCurrentPiGains(kp, ki);
+    FocAlgorithm::Core::Gain p{}, i{};
+    {
+        CriticalSection cs;
+        foc_.getNativeCurrentPiGains(p, i);
+    }
+    kp = numberCast<float>(p);
+    ki = numberCast<float>(i);
 }
 
 bool BldcController::setFocAngleOffsetDeg(float degrees_e) noexcept
 {
-    CriticalSection cs;
     const float rad = degrees_e * (FOC_PI / 180.0f);
-    if (!foc_.setAngleOffsetRad(rad)) return false;
+    FocAlgorithm::Core::Angle angle{};
+    if (!tryNumber(rad, angle)) return false;
+    __asm__ volatile("" : : "m"(angle), "m"(rad) : "memory");
+    CriticalSection cs;
+    foc_.applyAngleOffset(rad, angle);
     params_.foc.angle_offset_rad = rad;
     return true;
 }
 
 float BldcController::getFocAngleOffsetDeg() const noexcept
 {
-    CriticalSection cs;
-    return foc_.getAngleOffsetRad() * (180.0f / FOC_PI);
+    float rad;
+    {
+        CriticalSection cs;
+        rad = foc_.getAngleOffsetRad();
+    }
+    return rad * (180.0f / FOC_PI);
+}
+
+void BldcController::clearParkedCommands() noexcept {
+    status_.target_speed_rps = Speed{};
+    open_loop_.applyPreparedRate({}); // Zero DDS increment/rate, retaining the running phase.
+    status_.duty_cycle = Duty{};
+    duty_command_ = Duty{};
+    status_.target_current = Current{};
+    pi_speed_controller_.reset();
+    algorithm().reset();
+    filtered_measured_current_ = Current{};
+}
+
+[[gnu::cold, gnu::noinline]] void BldcController::parkFromCarrier() noexcept {
+#if LIBECU_TRACTION_ACCEL_RPS2
+    if (dmode_ != DriveMode::NEUTRAL) traction_acceleration_.reset();
+#endif
+    dmode_ = DriveMode::NEUTRAL;
+    pwm_interface_.parkExclusive(); // Gate off first; a preempting break can only reinforce the stop.
+    clearParkedCommands();
 }
 
 LIBECU_HOT_LOOP void BldcController::setDriveMode(DriveMode mode) noexcept
 {
     CriticalSection cs;
     const bool was_neutral = dmode_ == DriveMode::NEUTRAL;
+#if LIBECU_TRACTION_ACCEL_RPS2
+    if (dmode_ != mode) traction_acceleration_.reset();
+#endif
     dmode_ = mode;
     if (dmode_ == DriveMode::NEUTRAL) {
-        // High-Z the bridge *before* releasing the pins, so the switches are
-        // commanded off rather than merely abandoned.
-        pwm_interface_.setNeutral();
-        pwm_interface_.enable(false);
-        status_.target_speed_rps = Speed{};
-        open_loop_.setSpeed(Speed{}, params_.num_poles);
-        status_.duty_cycle = Duty{};
-        duty_command_ = Duty{};
-        status_.target_current = Current{};
-        pi_speed_controller_.reset();
-        algorithm().reset();
-        filtered_measured_current_ = Current{};
+        pwm_interface_.parkExclusive();
+        clearParkedCommands();
     } else {
         cancelPwmInterruptHandler();
         if (was_neutral) {
@@ -585,9 +662,11 @@ void BldcController::setAccelerationRate(float rate_rps2) noexcept
 {
     Speed rate{};
     if (!tryNumber(rate_rps2, rate) || rate < Speed{}) return;
+    const Accumulator step = divideByInteger<Accumulator>(rate, ActiveTiming::SPEED_HZ);
+    __asm__ volatile("" : : "m"(step) : "memory");
     CriticalSection cs;
     params_.acceleration_rate = rate_rps2;
-    acceleration_step_ = divideByInteger<Accumulator>(rate, ActiveTiming::SPEED_HZ);
+    acceleration_step_ = step;
     acceleration_enabled_ = rate > Speed{};
     // limited_target_speed_ is deliberately left alone: it is where the ramp
     // has got to so far, and resetting it to the raw target would turn a change
@@ -600,33 +679,101 @@ float BldcController::getAccelerationRate() const noexcept
     return params_.acceleration_rate;
 }
 
-bool BldcController::setSpeedPi(float kp, float ki) noexcept
+LIBECU_SLOW_PATH bool BldcController::setSpeedPi(float kp, float ki) noexcept
 {
-    CriticalSection cs;
-    PiParameters p = pi_speed_controller_.getParameters();
-    p.kp = kp;
-    p.ki = ki;
-    if (!pi_speed_controller_.setParameters(p)) return false;
-    pi_speed_controller_.reset();
-    if (status_.electric_mode == ElectricMode::VOLTAGE_MODE) params_.pi_voltage_mode = p;
-    else params_.pi_current_mode = p;
+    using Pi = decltype(pi_speed_controller_);
+    using Kernel = Pi::Kernel;
+    Pi::Gains gains;
+    if (!Pi::prepareGains(kp, ki, gains)) return false;
+    __asm__ volatile("" : : "m"(gains) : "memory");
+
+    const auto& pi = pi_speed_controller_.native();
+    const auto active = [&] {
+        return dmode_ != DriveMode::NEUTRAL && status_.is_running &&
+               status_.control_mode == ControlMode::CLOSED_LOOP_VELOCITY;
+    };
+    const auto publish = [&](const Kernel::Accumulator* integral) {
+        pi_speed_controller_.applyGains(kp, ki, gains, integral);
+        auto& tuning = status_.electric_mode == ElectricMode::VOLTAGE_MODE
+                     ? params_.pi_voltage_mode : params_.pi_current_mode;
+        tuning.kp = kp;
+        tuning.ki = ki;
+    };
+
+    Kernel::OperatingPoint point;
+    Pi::Output floor, ceiling;
+    ElectricMode mode;
+    DriveMode direction;
+#if defined(LIBECU_MOTOR1_T60_LOAD)
+    Speed rolling_speed;
+#endif
+    {
+        CriticalSection lock;
+        if (!pi_speed_controller_.isConfigured()) return false;
+        const auto& old = pi.getParameters();
+        const bool same = gains.kp == old.kp && gains.ki == old.ki;
+        if (!same && active() && (pi.isSaturated() || status_.current_pi_saturation)) return false;
+        if (gains.kp == old.kp || !active()) {
+            publish(nullptr); // In particular, a no-op or Ki-only change keeps every fractional bit of I.
+            return true;
+        }
+        direction = dmode_;
+        mode = status_.electric_mode;
+        point = pi.operatingPoint();
+        floor = old.integral_min;
+        ceiling = old.integral_max;
+#if defined(LIBECU_MOTOR1_T60_LOAD)
+        rolling_speed = status_.current_speed_rps;
+#endif
+    }
+#if defined(LIBECU_MOTOR1_T60_LOAD)
+    if (mode == ElectricMode::CURRENT_MODE)
+        ceiling = std::clamp(motor1RollingIntegralCeiling<Profile, int(BLDC_MAX_CURRENT)>(rolling_speed),
+                             floor, ceiling);
+#endif
+    Kernel::Accumulator integral;
+    if (!Kernel::rebaseIntegral(point, gains.kp, floor, ceiling, integral)) return false;
+    __asm__ volatile("" : : "m"(integral) : "memory");
+    // update() runs on the slow IRQ. Only commit against a still-valid operating
+    // point: a tick or a higher-priority park can occur during preparation.
+    CriticalSection lock;
+    const auto now = pi.operatingPoint();
+    if (!active() || dmode_ != direction || status_.electric_mode != mode ||
+        pi.isSaturated() || status_.current_pi_saturation ||
+        now.error != point.error || now.output != point.output) return false;
+#if defined(LIBECU_MOTOR1_T60_LOAD)
+    if (mode == ElectricMode::CURRENT_MODE && status_.current_speed_rps != rolling_speed) return false;
+#endif
+    publish(&integral);
     return true;
 }
 
 bool BldcController::setCurrentPi(float kp, float ki) noexcept
 {
-    CriticalSection cs;
     PiParameters p = params_.pi_current_regulator;
     p.kp = kp;
     p.ki = ki;
-    if (!six_step_.setCurrentPi(p)) return false;
-    params_.pi_current_regulator = p;
+    SixStepAlgorithm::CurrentPi next{};
+    if (!next.setParameters(p)) return false;
+    next.reset();
+    __asm__ volatile("" : : "m"(next) : "memory");
+    CriticalSection cs;
+    six_step_.installCurrentPi(next);
+    params_.pi_current_regulator.kp = kp;
+    params_.pi_current_regulator.ki = ki;
     return true;
 }
 
 HallMonitor::Info BldcController::getHallInfo() const noexcept {
-    CriticalSection cs;
-    return hall_monitor_.getInfo();
+    HallMonitor::Core::Snapshot snapshot;
+    {
+        CriticalSection cs;
+        snapshot = hall_monitor_.snapshot();
+    }
+    // An interrupt-mask barrier alone does not order pure soft-float/divide
+    // helpers. Consume the raw snapshot strictly after PRIMASK restoration.
+    __asm__ volatile("" : "+m"(snapshot) : : "memory");
+    return HallMonitor::describe(snapshot);
 }
 
 HallFault BldcController::getHallFault() const noexcept {
@@ -652,8 +799,13 @@ bool BldcController::setHallMonitorParams(const HallMonitorParams& params) noexc
 }
 
 MotorPLL::PllInfo BldcController::getPllInfo() const noexcept {
-    CriticalSection cs;
-    return motor_pll_.getInfo();
+    MotorPLL::Core::Info state;
+    {
+        CriticalSection cs;
+        state = motor_pll_.nativeInfo();
+    }
+    __asm__ volatile("" : "+m"(state) : : "memory");
+    return MotorPLL::describe(state);
 }
 
 bool BldcController::setPllGains(float kp, float ki) noexcept {
@@ -680,8 +832,15 @@ void BldcController::getCurrentPiGains(float& kp, float& ki) const noexcept {
 }
 
 void BldcController::getPllBaseGains(float& kp, float& ki) const noexcept {
-    CriticalSection cs;
-    motor_pll_.getBaseGains(kp, ki);
+    MotorPLL::Core::Gain p, i;
+    {
+        CriticalSection cs;
+        const auto state = motor_pll_.nativeInfo();
+        p = state.kp;
+        i = state.ki;
+    }
+    kp = numberCast<float>(p);
+    ki = numberCast<float>(i);
 }
 
 void BldcController::start() noexcept
@@ -715,6 +874,9 @@ void BldcController::start() noexcept
     }
 
     // Reset target speed filters
+#if LIBECU_TRACTION_ACCEL_RPS2
+    traction_acceleration_.reset();
+#endif
     filtered_target_speed_ = Speed{};
     filtered_measured_speed_ = Speed{};
     limited_target_speed_ = Accumulator{};
@@ -809,7 +971,18 @@ LIBECU_HOT_LOOP void BldcController::hallSensorInterruptHandler() noexcept
     hall_update_pending_ = true;
 }
 
-LIBECU_HOT_LOOP void BldcController::observeHall(bool guard_active) noexcept {
+namespace {
+struct CarrierOwnsState {};
+template<bool Owned>
+using RotorAccess = std::conditional_t<Owned, CarrierOwnsState, CriticalSection>;
+}
+template<bool Owned>
+#if defined(LIBECU_PWM_DEADLINE_ONLY) && LIBECU_PWM_DEADLINE_ONLY
+[[gnu::always_inline]] inline
+#else
+LIBECU_HOT_LOOP
+#endif
+void BldcController::observeHall(bool guard_active, uint8_t position) noexcept {
     // The health time base must keep running even without Hall edges, including
     // when the board has replaced the current loop with observation-only ticks.
     hall_monitor_.tick(guard_active);
@@ -817,10 +990,11 @@ LIBECU_HOT_LOOP void BldcController::observeHall(bool guard_active) noexcept {
         hall_update_pending_ = false;
         // Share one decoded sample between the health monitor and the PLL.
         // This alone does not qualify a raw GPIO transition as stable.
-        const uint8_t hall_state = hall_interface_.getPosition();
+        const uint8_t hall_state = Owned && position != HALL_NOT_SAMPLED
+            ? position : hall_interface_.getPosition();
         hall_monitor_.onPosition(hall_state, guard_active);
         if (hall_state <= 5) {
-            CriticalSection cs;
+            [[maybe_unused]] RotorAccess<Owned> access;
             status_.measured_position = hall_state;
             motor_pll_.updateHall(hall_state);
         } else {
@@ -834,7 +1008,7 @@ LIBECU_HOT_LOOP void BldcController::observeHall(bool guard_active) noexcept {
 
 LIBECU_HOT_LOOP void BldcController::rotorObservationInterruptHandler() noexcept {
     if (dmode_ != DriveMode::NEUTRAL) return;
-    observeHall(false);
+    observeHall<false>(false);
     CriticalSection cs;
     motor_pll_.updateTick();
     status_.pll_angle = motor_pll_.getNativeAngle();
@@ -845,21 +1019,35 @@ LIBECU_HOT_LOOP void BldcController::pwmInterruptHandler() noexcept {
     completePwmInterruptHandler();
 }
 
-LIBECU_HOT_LOOP void BldcController::preparePwmInterruptHandler() noexcept {
+void BldcController::preparePwmInterruptHandler() noexcept { preparePwmFrame<false>(); }
+LIBECU_DEADLINE_CODE("prepare_drive") LIBECU_HOT_LOOP
+void BldcController::prepareOwnedCarrier(uint8_t position) noexcept { preparePwmFrame<true>(position); }
+
+template<bool Owned>
+#if defined(LIBECU_PWM_DEADLINE_ONLY) && LIBECU_PWM_DEADLINE_ONLY
+[[gnu::always_inline]] inline
+#else
+LIBECU_HOT_LOOP
+#endif
+void BldcController::preparePwmFrame(uint8_t position) noexcept {
     if (!adc_interface_ || pwm_prepared_) return;
 
     prepared_hall_controls_drive_ = status_.control_mode != ControlMode::OPEN_LOOP;
     const bool hall_guard_active = prepared_hall_controls_drive_ &&
                                    dmode_ != DriveMode::NEUTRAL && status_.is_running;
-    observeHall(hall_guard_active);
+    observeHall<Owned>(hall_guard_active, position);
 
     recordLoopStage(LoopStage::Hall);
-    // Read shared data atomically (avoid torn reads from SysTick interrupt)
+    // Keep the command snapshot coherent with this tick's PLL and angle.
     auto& in = prepared_pwm_frame_.input;
     {
-        CriticalSection cs;
-        in.electric_mode = status_.electric_mode;
-        in.target_current = status_.target_current;
+        [[maybe_unused]] RotorAccess<Owned> access;
+        if constexpr (!Owned) {
+            // Portable split callers can change a command between callbacks.
+            // The serialized owner instead reads the original status fields in FOC.
+            in.electric_mode = status_.electric_mode;
+            in.target_current = status_.target_current;
+        }
         in.duty_command = duty_command_;
         in.drive_mode = dmode_;
         motor_pll_.updateTick();
@@ -870,7 +1058,7 @@ LIBECU_HOT_LOOP void BldcController::preparePwmInterruptHandler() noexcept {
             in.angle_steps = open_loop_.angle();
             in.speed_steps_s = status_.is_running ? open_loop_.speed(in.drive_mode) : Profile::PllSpeed{};
         } else {
-            in.step = motor_pll_.getNextHall(in.drive_mode);
+            in.step = motor_pll_.getNextHall(in.drive_mode, prepared_pwm_measured_angle_);
             in.angle_steps = prepared_pwm_measured_angle_;
             in.speed_steps_s = motor_pll_.getNativeSpeedStepsSec();
         }
@@ -881,69 +1069,39 @@ LIBECU_HOT_LOOP void BldcController::preparePwmInterruptHandler() noexcept {
 
 LIBECU_HOT_LOOP void BldcController::completePwmInterruptHandler() noexcept {
     if (!pwm_prepared_) return;
-    pwm_prepared_ = false;
-
-    // The board has now published one coherent current frame and a complete,
-    // source-dated auxiliary measurement. Fill the reusable input in place:
-    // no copy/clearing of the prepared command and rotor fields in this stage.
-    auto& frame = prepared_pwm_frame_;
-    auto& in = frame.input;
-    adc_interface_->readNativeCurrents(in.i_u, in.i_v, in.i_w);
-    in.bus_voltage = adc_interface_->readNativeBusVoltage();
-    recordLoopStage(LoopStage::Currents);
-
-    // Hall health. The monitor latches, so unlike the old PLL rule this does
-    // not re-assert every cycle; it has to be cleared explicitly once the
-    // wiring is dealt with.
-    if (prepared_hall_controls_drive_ && hall_monitor_.isFaulted() && dmode_ != DriveMode::NEUTRAL) {
-        setDriveMode(DriveMode::NEUTRAL);
-    }
-
-    if (in.bus_voltage > limits_.max_voltage)
-        setDriveMode(DriveMode::NEUTRAL);
-
-    // ---- Algorithm selection ----------------------------------------------
-    // A plain switch rather than a virtual call through MotorAlgorithm: the
-    // target of each branch is known at compile time, so the compiler can
-    // inline it, and at 20 kHz in a `-O0` build every avoided indirection is
-    // worth having. The base class still exists for the non-ISR paths
-    // (reset/onEnter), where clarity is worth more than cycles.
-    recordLoopStage(LoopStage::Dispatch);
-    if (dmode_ == DriveMode::NEUTRAL || in.drive_mode == DriveMode::NEUTRAL) {
-        // Do not run the current regulators against an inactive bridge.
-        frame.output = {};
-        frame.output.angle_e_rad = multiplyTo<Profile::Angle>(in.angle_steps, FocAlgorithm::Core::RAD_PER_STEP);
-    } else {
-        // Acquisition, the selected algorithm and PWM use this same frame.
-        // Results never return through a temporary aggregate on the ISR stack.
-        switch (algorithm_) {
-            case DriveAlgorithm::FOC:
-                foc_.updateNative(frame);
-                break;
-
-            case DriveAlgorithm::SIX_STEP:
-            default:
-                six_step_.updateNative(frame);
-                break;
-        }
-    }
-    const auto& out = frame.output;
-    recordLoopStage(LoopStage::Algorithm);
-
+    completePwmFrom(*adc_interface_, pwm_interface_);
+}
+inline void BldcController::filterPublishedCurrent() noexcept {
+#if defined(LIBECU_RAW_CURRENT_TELEMETRY) && LIBECU_RAW_CURRENT_TELEMETRY
+    // Preserve the legacy status/wire field; publish this frame's current.
+    // The FOC d/q feedback filters are independent and remain in the control core.
+    status_.measured_current_filtered = status_.measured_current;
+#else
+    const Fraction alpha = limits_.current_alpha;
+    const Current measured = status_.measured_current;
+    filtered_measured_current_ = alpha > Fraction{} && alpha < number_v<Fraction, 1>
+        ? CurrentFeedbackFilter<Profile>::advance(filtered_measured_current_, measured, alpha) : measured;
+    status_.measured_current_filtered = filtered_measured_current_;
+#endif
+}
+LIBECU_HOT_LOOP void BldcController::finishOwnedStatus() noexcept {
+    const auto& in = prepared_pwm_frame_.input;
+    status_.bus_voltage = in.bus_voltage;
+    status_.pll_angle = prepared_pwm_measured_angle_;
+    status_.target_position = in.step;
+    filterPublishedCurrent();
+    recordLoopStage(LoopStage::Status);
+}
+LIBECU_HOT_LOOP void BldcController::publishPwmStatus() noexcept {
+    const auto& in = prepared_pwm_frame_.input;
+    const auto& out = prepared_pwm_frame_.output;
     {
         CriticalSection cs;
         // Report a filtered current: the raw value is one current-frame value per
         // PWM cycle, and sampling that at 100 Hz aliases the chopping ripple
         // into the telemetry. Control and +OSC keep the raw value.
-        const Fraction i_alpha = limits_.current_alpha;
-        if (i_alpha > Fraction{} && i_alpha < number_v<Fraction, 1>) {
-            filtered_measured_current_ = CurrentFeedbackFilter<Profile>::advance(
-                filtered_measured_current_, out.measured_current, i_alpha);
-        } else {
-            filtered_measured_current_ = out.measured_current;
-        }
         status_.measured_current = out.measured_current;
-        status_.measured_current_filtered = filtered_measured_current_;
+        filterPublishedCurrent();
         if (algorithm_ != DriveAlgorithm::FOC) status_.duty_cycle = out.duty;
 #if !LIBECU_FOC_DUTY_TELEMETRY
         else status_.duty_cycle = Duty{};

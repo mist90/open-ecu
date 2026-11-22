@@ -72,8 +72,8 @@ public:
         const Current difference = input - value;
         if constexpr (std::is_same<Profile, FixedProfile>::value) {
             if (uint32_t(alpha.raw()) <= uint32_t(Coefficient::SCALE)) {
-                const int32_t increment = static_cast<int32_t>(
-                    fixed_detail::roundedProduct<Coefficient::FRACTION_BITS>(alpha.raw(), difference.raw()));
+                const int32_t increment =
+                    fixed_detail::boundedRoundedProduct<Coefficient::FRACTION_BITS>(alpha.raw(), difference.raw());
                 return Current::fromRaw(value.raw() + increment);
             }
         }

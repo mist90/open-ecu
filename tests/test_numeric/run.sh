@@ -6,7 +6,7 @@ g++ -std=c++17 -O2 -Wall -Wextra -Werror -fsanitize=undefined \
 ./test
 
 if command -v arm-none-eabi-g++ >/dev/null; then
-    tmp=$(mktemp -d "${TMPDIR:-/tmp/opencode}/ecu-numeric.XXXXXX")
+    tmp=$(mktemp -d "${TMPDIR:-/tmp}/ecu-numeric.XXXXXX")
     trap 'rm -rf "$tmp"' EXIT
     arm-none-eabi-g++ -std=c++17 -Os -mcpu=cortex-m0 -mthumb -mfloat-abi=soft \
         -fno-exceptions -fno-rtti -Wall -Wextra -Werror -c arm_pi.cpp -o "$tmp/pi.o"

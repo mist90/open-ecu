@@ -39,7 +39,11 @@ public:
     using Accumulator = typename Types::Accumulator;
     using StepGain = typename Types::StepGain;
     using WideOutput = typename Types::WideOutput;
+    using Gain = typename Types::Gain;
     using Parameters = PiParametersT<Types>;
+
+    struct Gains { Gain kp{}, ki{}; StepGain ki_step{}; };
+    struct OperatingPoint { Input error{}; Output output{}; };
 
     PiController() noexcept = default;
     explicit PiController(const Parameters& params) noexcept { setParameters(params); }
@@ -98,12 +102,52 @@ public:
         return applied;
     }
 
+    /** @brief As updateCapped, with anti-windup against a positive traction ceiling as well.
+     * Preserve the configured braking bound and allow the integral to unwind on negative error.
+     */
+    Output updateCapped(Input setpoint, Input feedback, int external_saturation,
+                        Output integral_ceiling, Output output_ceiling) noexcept {
+        const Output configured = params_.max_output;
+        params_.max_output = std::clamp(output_ceiling, params_.min_output, configured);
+        // Normally the existing back-calculation tracks the actually applied current.
+        // Also blocking positive integration on those samples biases the mean speed down
+        // in the presence of Hall ripple. Use conditional integration only without Kb.
+        if (kb_step_ <= StepGain{} && setpoint > feedback && params_.max_output < configured &&
+            (saturation_ > 0 || output_ >= params_.max_output))
+            external_saturation = 1;
+        const Output applied = updateCapped(setpoint, feedback, external_saturation, integral_ceiling);
+        params_.max_output = configured;
+        return applied;
+    }
+
     /** @brief Update continuous gains and cache their per-sample equivalents. */
     void setParameters(const Parameters& params) noexcept {
         params_ = params;
         ki_step_ = divideByInteger<StepGain>(params.ki, 2u * SampleRateHz);
         kb_step_ = divideByInteger<StepGain>(params.kb, SampleRateHz);
         integral_ = clampIntegral(integral_);
+    }
+    /** @brief Last completed sample; the error includes the actual setpoint ramp and feedback filter. */
+    OperatingPoint operatingPoint() const noexcept { return {previous_error_, output_}; }
+
+    /** @brief Rebase I in output units to hold the last command at the same error.
+     * Refuse an infeasible transfer instead of clipping I and introducing a step. */
+    static bool rebaseIntegral(OperatingPoint point, Gain kp, Output low, Output high,
+                               Accumulator& result) noexcept {
+        const auto proportional = multiplyTo<Accumulator>(kp, point.error);
+        const auto integral = Accumulator(point.output) - proportional;
+        if (!(integral >= Accumulator(low) && integral <= Accumulator(high)) ||
+            Output(proportional + integral) != point.output) return false;
+        result = integral;
+        return true;
+    }
+
+    /** @brief Commit prepared gains between two samples. Preserve error history, output and anti-windup. */
+    void applyGains(const Gains& gains, const Accumulator* rebased) noexcept {
+        params_.kp = gains.kp;
+        params_.ki = gains.ki;
+        ki_step_ = gains.ki_step;
+        if (rebased) integral_ = *rebased;
     }
     /** @return Current continuous-time tuning. */
     const Parameters& getParameters() const noexcept { return params_; }

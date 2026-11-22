@@ -81,7 +81,12 @@ public:
         if constexpr (std::is_same<Voltage, float>::value) {
             offsets_[phase] = voltage * injected_max_ / calibration_.reference;
         } else {
-            offsets_[phase] = Count::fromRatio(int64_t(voltage.raw()) * injected_max_, calibration_.reference.raw());
+            // configure() bounds the full-scale code in Count format to INT32_MAX.
+            // The product with a signed voltage word therefore fits in 63 bits;
+            // no general bit-at-a-time rational conversion is needed at boot.
+            const auto full_scale = number<Count>(injected_max_).raw();
+            offsets_[phase] = Count::fromWideRaw(fixed_detail::roundedDivide(
+                int64_t(voltage.raw()) * full_scale, calibration_.reference.raw()));
         }
     }
     Voltage zeroVoltage(unsigned phase) const noexcept {
@@ -91,6 +96,10 @@ public:
         if (phase >= 3) return Current{};
         return multiplyTo<Current>(number<Count>(raw) - offsets_[phase], current_scale_);
     }
+    /** @brief Calibrated code-space coefficients for exact board-specific conversions. */
+    Count zeroCount(unsigned phase) const noexcept { return offsets_[phase]; }
+    Scale currentScale() const noexcept { return current_scale_; }
+    Scale voltageScale() const noexcept { return voltage_scale_; }
     Voltage busVoltage(uint32_t raw) const noexcept {
         return multiplyTo<Voltage>(number<Count>(raw), voltage_scale_);
     }

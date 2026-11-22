@@ -47,6 +47,7 @@ public:
     using Input = typename Kernel::Input;
     using Output = typename Kernel::Output;
     using StepGain = typename Kernel::StepGain;
+    using Gains = typename Kernel::Gains;
 
     /** @brief Configure atomically with respect to update(); reject unrepresentable tuning. */
     LIBECU_SLOW_PATH bool setParameters(const PiParameters& params) noexcept {
@@ -94,6 +95,12 @@ public:
         return kernel_.updateCapped(setpoint, feedback, external_saturation, ceiling);
     }
 
+    /** @brief Independently bound the accumulated load current and the applied traction current. */
+    Output updateNativeCapped(Input setpoint, Input feedback, int external_saturation,
+                              Output ceiling, Output output_ceiling) noexcept {
+        return kernel_.updateCapped(setpoint, feedback, external_saturation, ceiling, output_ceiling);
+    }
+
     /** @brief Clear accumulated state. */
     void reset() noexcept { kernel_.reset(); }
     /** @return Last successfully accepted physical tuning. */
@@ -108,6 +115,24 @@ public:
     int saturationSign() const noexcept { return kernel_.saturationSign(); }
     /** @return Whether the last output saturated. */
     bool isSaturated() const noexcept { return kernel_.isSaturated(); }
+
+    /** @brief Check continuous and per-sample gain ranges outside the sampling interrupt mask. */
+    static bool prepareGains(float kp, float ki, Gains& gains) noexcept {
+        using pi_interface_detail::convert;
+        if (!convert(kp, gains.kp) || !convert(ki, gains.ki)) return false;
+        StepGain checked{};
+        if (!convert(pi_interface_detail::toFloat(gains.ki) / (2u * SampleRateHz), checked)) return false;
+        gains.ki_step = divideByInteger<StepGain>(gains.ki, 2u * SampleRateHz);
+        return true;
+    }
+    /** @brief Native read-only state for a coherent retuning snapshot. */
+    const Kernel& native() const noexcept { return kernel_; }
+    /** @brief Publish a validated gain pair and optional compensated integral under the caller's mask. */
+    void applyGains(float kp, float ki, const Gains& gains, const typename Kernel::Accumulator* integral) noexcept {
+        kernel_.applyGains(gains, integral);
+        params_.kp = kp;
+        params_.ki = ki;
+    }
 
 private:
     Kernel kernel_{};

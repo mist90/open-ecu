@@ -11,6 +11,7 @@
 #include "current_feedback_filter.hpp"
 #include "hybrid_iq_control.hpp"
 #include "loop_profile.hpp"
+#include <atomic>
 #if defined(LIBECU_MOTOR1_T60_LOAD)
 #include "motor1_t60_load.hpp"
 #endif
@@ -74,6 +75,19 @@ public:
         next_reconstructed_phase_ = 3;
     }
     const Params& getParams() const noexcept { return params_; }
+#if defined(LIBECU_PWM_BUS_LOOKAHEAD) && LIBECU_PWM_BUS_LOOKAHEAD
+    /** @brief Lower-priority, single-writer lookahead. The PWM reader may preempt any instruction.
+     * Only an exact (calibrated bus, modulation) match can ever be used by the current frame. */
+    void prepareBus(Voltage voltage) noexcept {
+        const unsigned at = published_;
+        const Duty modulation = modulation_;
+        if (prepared_bus_[at].voltage == voltage && prepared_bus_[at].modulation == modulation) return;
+        prepared_bus_[1 - at] = {voltage, modulation,
+            multiplyTo<Voltage>(modulation, Transforms::voltageLimit(voltage)), Transforms::modulationBus(voltage)};
+        std::atomic_signal_fence(std::memory_order_release);
+        published_ = 1 - at;
+    }
+#endif
 #if defined(LIBECU_MOTOR1_SMOOTH_BENCH) && LIBECU_MOTOR1_SMOOTH_BENCH
     /** @brief Publish a precomputed point. Caller serializes this copy with the current ISR. */
 #if defined(LIBECU_MOTOR1_SPAN_BENCH) && LIBECU_MOTOR1_SPAN_BENCH
@@ -94,9 +108,14 @@ public:
         return zero_current_idle_ ? DqVectorT<Current>{} : DqVectorT<Current>{filter_d_.value(), filter_q_.value()};
     }
     void setCurrentPiGains(Gain kp, Gain ki) noexcept {
+        setCurrentPiGains(kp, ki, divideByInteger<StepGain>(ki, FrequencyHz));
+    }
+    void setCurrentPiGains(Gain kp, Gain ki, StepGain step) noexcept {
         kp_ = kp;
+        if constexpr (std::is_same<Profile, FixedProfile>::value)
+            narrow_gain_ = uint32_t(kp.raw()) + (1u << 23) < (1u << 24);
         ki_ = ki;
-        ki_step_ = divideByInteger<StepGain>(ki, FrequencyHz);
+        ki_step_ = step;
         integral_d_ = integral_q_ = Integral{};
         hybrid_iq_.reset();
     }
@@ -145,7 +164,19 @@ public:
 
     /** @brief Run one sample in place. Voltages and currents are physical SI values. */
     LIBECU_HOT_LOOP void update(Frame& frame) noexcept {
-        const auto& in = frame.input;
+        update(frame.input, frame.input, frame.output);
+        frame.output.duty = Duty{};
+    }
+
+    /** Write electrical results directly to the owner's storage. Command fields
+     * may reside in the same status object; they are distinct from every output. */
+    template<class Commands, class Result>
+#if defined(LIBECU_PWM_DEADLINE_ONLY) && LIBECU_PWM_DEADLINE_ONLY
+    [[gnu::always_inline]] inline
+#else
+    [[gnu::noinline]] LIBECU_HOT_LOOP
+#endif
+    void update(const Input& in, const Commands& commands, Result& out) noexcept {
         Angle park_steps = in.angle_steps;
 #if defined(LIBECU_MOTOR1_SMOOTH_BENCH) && LIBECU_MOTOR1_SMOOTH_BENCH
         if constexpr (std::is_same<Profile, FixedProfile>::value) {
@@ -153,16 +184,15 @@ public:
         }
 #endif
         const Angle angle = multiplyTo<Angle>(park_steps, RAD_PER_STEP) + params_.angle_offset_rad;
+        out.angle_e_rad = angle;
         const auto rotation = Transforms::rotation(angle);
         recordLoopStage(LoopStage::FocTrig);
 
         const unsigned reconstructed = reconstructedPhase();
         next_reconstructed_phase_ = 3;
-        Current u = -in.i_u, v = -in.i_v, w = -in.i_w;
-        if (reconstructed == 0) u = -(v + w);
-        else if (reconstructed == 1) v = -(u + w);
-        else w = -(u + v);
-        const auto dq = Transforms::park(Transforms::clarkeZeroSum(u, v, w), rotation);
+        const auto dq = Transforms::parkPhaseCurrents(in.i_u, in.i_v, in.i_w, reconstructed, rotation);
+        out.i_d = dq.d;
+        out.i_q = dq.q;
         recordLoopStage(LoopStage::FocPark);
         const Current filtered_d = filter_d_.update(dq.d, params_.current_filter);
         // Hybrid filters the error itself. Do not also pay for an unused q PI
@@ -171,23 +201,33 @@ public:
             (!BENCH_PI_ONLY && params_.hybrid_iq.enabled) && params_.current_noise_floor == Current{}
                 ? CurrentFilterCoefficients<Profile>{} : params_.current_filter);
         const bool reverse = in.drive_mode == DriveMode::REVERSE;
-        const Current measured_current = reverse ? -dq.q : dq.q;
+        out.measured_current = reverse ? -dq.q : dq.q;
         // Auxiliary ADC samples commonly span several current-loop ticks. Keep
         // their derived values exact, and recompute before using ANY changed
         // bus sample (including a collapse) or changed modulation parameters.
         if (!bus_valid_ || in.bus_voltage != cached_bus_) {
             cached_bus_ = in.bus_voltage;
-            voltage_limiter_.prepare(multiplyTo<Voltage>(modulation_, Transforms::voltageLimit(cached_bus_)));
-            modulation_bus_ = Transforms::modulationBus(cached_bus_);
+#if defined(LIBECU_PWM_BUS_LOOKAHEAD) && LIBECU_PWM_BUS_LOOKAHEAD
+            const auto& entry = prepared_bus_[published_];
+            std::atomic_signal_fence(std::memory_order_acquire);
+            if (entry.voltage == cached_bus_ && entry.modulation == modulation_) {
+                modulation_bus_ = entry.bus;
+                voltage_limiter_.prepare(entry.limit);
+            } else
+#endif
+            {
+                voltage_limiter_.prepare(modulatedLimit(Transforms::voltageLimit(cached_bus_)));
+                modulation_bus_ = Transforms::modulationBus(cached_bus_);
+            }
             bus_valid_ = true;
         }
         const Voltage limit = voltage_limiter_.inradius();
-        const bool current_mode = in.electric_mode == ElectricMode::CURRENT_MODE;
+        const bool current_mode = commands.electric_mode == ElectricMode::CURRENT_MODE;
         // Only the zero-demand standstill state suppresses feedback. At speed,
         // even Iq*=0 needs voltage to reject back-EMF; small nonzero demands must
         // also retain a real feedback path instead of winding up into a dead band.
         const bool idle_candidate = current_mode && params_.current_noise_floor > Current{} &&
-            in.target_current == Current{} && params_.id_target == Current{} &&
+            commands.target_current == Current{} && params_.id_target == Current{} &&
             numericAbs(in.speed_steps_s) <= number_v<typename Profile::PllSpeed, 1, 10>;
         if (idle_candidate) {
             const Current threshold = zero_current_idle_
@@ -207,14 +247,14 @@ public:
         Current error_d{}, error_q{};
         Request requested_d{}, requested_q{};
         if (current_mode) {
-            const Current target_q = reverse ? -in.target_current : in.target_current;
+            const Current target_q = reverse ? -commands.target_current : commands.target_current;
             error_d = params_.id_target - feedback_d;
 #if defined(LIBECU_MOTOR1_SMOOTH_BENCH) && LIBECU_MOTOR1_SMOOTH_BENCH
             error_d = Motor1BenchPoint::weight(error_d, bench_.d);
 #elif defined(LIBECU_MOTOR1_T60_LOAD)
             error_d = motor1T60Error<false>(error_d, in.speed_steps_s);
 #endif
-            requested_d = multiplyTo<Request>(kp_, error_d) + numberCast<Request>(integral_d_);
+            requested_d = piRequest(error_d, integral_d_);
             if (!BENCH_PI_ONLY && params_.hybrid_iq.enabled) {
                 requested_q = hybrid_iq_.request(target_q, zero_current_idle_ ? Current{} : dq.q, params_.hybrid_iq);
                 if (!zero_current_idle_) requested_q += multiplyTo<Request>(in.speed_steps_s, bemf_per_step_);
@@ -234,7 +274,7 @@ public:
 #elif defined(LIBECU_MOTOR1_T60_LOAD)
                 error_q = motor1T60Error<true>(error_q, in.speed_steps_s);
 #endif
-                requested_q = multiplyTo<Request>(kp_, error_q) + numberCast<Request>(integral_q_);
+                requested_q = piRequest(error_q, integral_q_);
 #if defined(LIBECU_MOTOR1_SPAN_BENCH) && LIBECU_MOTOR1_SPAN_BENCH
                 if (allow_trim) requested_q += held_.voltage;
 #endif
@@ -261,52 +301,42 @@ public:
         const auto applied = voltage_limiter_.apply(requested_d, requested_q);
         const bool limited = applied.limited;
         const Voltage v_d = applied.d, v_q = applied.q;
+        out.v_d = v_d;
+        out.v_q = v_q;
+        out.setSaturation(limited ? ((reverse ? -requested_q : requested_q) > Request{} ? 1 : -1) : 0);
         recordLoopStage(LoopStage::FocLimit);
         if (current_mode) {
-            addIntegral(integral_d_, multiplyTo<Integral>(ki_step_, error_d));
+            const Integral bound = numberCast<Integral>(limit);
+            // An unclipped axis is exactly the original Request promoted to Voltage;
+            // its back-calculation error is zero even if the other axis clipped.
+            const auto integrate = [&](Integral state, Current error, Voltage voltage, Request requested,
+                                       bool clipped) __attribute__((always_inline)) {
+                addIntegral(state, multiplyTo<Integral>(ki_step_, error));
+                if (clipped && params_.anti_windup_kb > Unit{})
+                    addIntegral(state, backCalculation(voltage, requested));
+                if constexpr (std::is_same<Profile, FixedProfile>::value) {
+                    return Integral::fromRaw(fixed_detail::clampWideState(state.raw(), bound.raw()));
+                } else {
+                    return numericClamp(state, -bound, bound);
+                }
+            };
+            integral_d_ = integrate(integral_d_, error_d, v_d, requested_d, applied.d_limited);
             if (!BENCH_PI_ONLY && params_.hybrid_iq.enabled) {
                 hybrid_iq_.integrate(requested_q, v_q, params_.hybrid_iq);
             } else {
-                addIntegral(integral_q_, multiplyTo<Integral>(ki_step_, error_q));
+                integral_q_ = integrate(integral_q_, error_q, v_q, requested_q, applied.q_limited);
             }
-            if (limited && params_.anti_windup_kb > Unit{}) {
-                addIntegral(integral_d_, multiplyTo<Integral>(params_.anti_windup_kb,
-                                                            numberCast<Request>(v_d) - requested_d));
-                if (BENCH_PI_ONLY || !params_.hybrid_iq.enabled) {
-                    addIntegral(integral_q_, multiplyTo<Integral>(params_.anti_windup_kb,
-                                                                numberCast<Request>(v_q) - requested_q));
-                }
-            }
-            const Integral bound = numberCast<Integral>(limit);
-            integral_d_ = numericClamp(integral_d_, -bound, bound);
-            if (BENCH_PI_ONLY || !params_.hybrid_iq.enabled) integral_q_ = numericClamp(integral_q_, -bound, bound);
         }
 
         recordLoopStage(LoopStage::FocIntegral);
-        const auto voltage = Transforms::invPark(DqVectorT<Voltage>{v_d, v_q}, rotation);
-        recordLoopStage(LoopStage::FocInvPark);
-        auto duty = Transforms::svpwm(voltage.alpha, voltage.beta, modulation_bus_,
-                                     params_.low_side_clamped_pwm);
+        const auto duty = Transforms::limitedDuties({v_d, v_q}, rotation, limit, modulation_bus_,
+                                                   params_.low_side_clamped_pwm, params_.max_duty_cycle);
         recordLoopStage(LoopStage::FocSvpwm);
-        const Duty low = params_.low_side_clamped_pwm ? Duty{} : number_v<Duty, 1> - params_.max_duty_cycle;
-        duty.u = numericClamp(duty.u, low, params_.max_duty_cycle);
-        duty.v = numericClamp(duty.v, low, params_.max_duty_cycle);
-        duty.w = numericClamp(duty.w, low, params_.max_duty_cycle);
         previous_ = duty;
-        const int8_t saturation = limited ? ((reverse ? -requested_q : requested_q) > Request{} ? 1 : -1) : 0;
         recordLoopStage(LoopStage::FocOutput);
-        auto& out = frame.output;
         out.duty_u = duty.u;
         out.duty_v = duty.v;
         out.duty_w = duty.w;
-        out.duty = Duty{};
-        out.measured_current = measured_current;
-        out.i_d = dq.d;
-        out.i_q = dq.q;
-        out.v_d = v_d;
-        out.v_q = v_q;
-        out.angle_e_rad = angle;
-        out.saturation = saturation;
     }
 
     /** @brief Scalar modulation depth for a slow telemetry snapshot. */
@@ -314,9 +344,49 @@ public:
         const Voltage limit = Transforms::voltageLimit(bus);
         return limit > Voltage{} ? divideTo<Duty>(Math::voltageMagnitude(d, q), limit) : Duty{};
     }
-
 private:
-#if defined(LIBECU_MOTOR1_SPAN_BENCH) && LIBECU_MOTOR1_SPAN_BENCH
+    Voltage modulatedLimit(Voltage base) const noexcept {
+        if constexpr (std::is_same<Profile, FixedProfile>::value) {
+            // Modulation in [0,1] cannot widen the base. Keep the saturating
+            // calculation for configurations passed directly to the public core.
+            if (uint32_t(modulation_.raw()) <= Unit::SCALE)
+                return Voltage::fromRaw(fixed_detail::boundedRoundedProduct<Unit::FRACTION_BITS>(
+                    modulation_.raw(), base.raw()));
+        }
+        return multiplyTo<Voltage>(modulation_, base);
+    }
+
+    Request piRequest(Current error, Integral integral) const noexcept {
+        const Request state = integralRequest(integral);
+        if constexpr (std::is_same<Profile, FixedProfile>::value) {
+            // A full-scale Current and |kp.raw|<=2^23 give |P.raw|<=2^30;
+            // the previous voltage-clamped integral contributes at most 2^25.
+            constexpr unsigned shift = Gain::FRACTION_BITS + Current::FRACTION_BITS - Request::FRACTION_BITS;
+            static_assert(shift == 24 && Voltage::FRACTION_BITS - Request::FRACTION_BITS == 6);
+            if (narrow_gain_) return Request::fromRaw(state.raw() +
+                fixed_detail::boundedRoundedProduct<shift>(kp_.raw(), error.raw()));
+        }
+        return multiplyTo<Request>(kp_, error) + state;
+    }
+    Integral backCalculation(Voltage applied, Request requested) const noexcept {
+        const auto error = numberCast<Request>(applied) - requested;
+        if (params_.anti_windup_kb == number_v<Unit, 1>) return numberCast<Integral>(error);
+        return multiplyTo<Integral>(params_.anti_windup_kb, error);
+    }
+    static Request integralRequest(Integral value) noexcept {
+        if constexpr (std::is_same<Profile, FixedProfile>::value) {
+            // Both states start at zero and end each sample clamped to a
+            // representable Voltage. Narrowing to the wider-range Request
+            // cannot saturate, or overflow the 64-bit rounding addition.
+            constexpr unsigned shift = Integral::FRACTION_BITS - Request::FRACTION_BITS;
+            static_assert(shift > 0 && Voltage::FRACTION_BITS > Request::FRACTION_BITS &&
+                          Integral::FRACTION_BITS - Voltage::FRACTION_BITS < 31);
+            return Request::fromRaw(int32_t(fixed_detail::roundedLowWord<shift>(value.raw())));
+        } else {
+            return numberCast<Request>(value);
+        }
+    }
+#if (defined(LIBECU_MOTOR1_SPAN_BENCH) && LIBECU_MOTOR1_SPAN_BENCH) || defined(LIBECU_MOTOR1_T60_LOAD)
     static constexpr bool BENCH_PI_ONLY = true;
 #else
     static constexpr bool BENCH_PI_ONLY = false;
@@ -356,8 +426,14 @@ private:
     Voltage cached_bus_{};
     VoltageLimiter voltage_limiter_{};
     typename Transforms::ModulationBus modulation_bus_{};
+#if defined(LIBECU_PWM_BUS_LOOKAHEAD) && LIBECU_PWM_BUS_LOOKAHEAD
+    struct BusEntry { Voltage voltage{}; Duty modulation{}; Voltage limit{}; typename Transforms::ModulationBus bus{}; };
+    BusEntry prepared_bus_[2]{};
+    volatile uint8_t published_ = 0;
+#endif
     bool bus_valid_ = false;
     bool zero_current_idle_ = false;
+    bool narrow_gain_ = false;
     uint8_t next_reconstructed_phase_ = 3; // 3 selects the automatic duty-history rule.
     PhaseDutiesT<Duty> previous_{number<Duty>(1, 2), number<Duty>(1, 2), number<Duty>(1, 2)};
 };

@@ -69,4 +69,14 @@ for a, b in cases:
         actual = run("integer_root", value & 0xFFFFFFFF, value >> 32) & 0xFFFFFFFF
         assert actual == math.isqrt(value), ("integer_root", value, actual, math.isqrt(value))
         checks += 1
+# Half and both neighbours, including ties above and below a 32-bit carry.
+step = 1 << 30
+extrema = (-(1 << 63), (1 << 63) - 1)
+ties = {q * step + step // 2 + delta
+        for q in (-(1 << 33), -(1 << 32) - 1, -2, -1, 0, 1, (1 << 32) - 1, (1 << 33) - 1)
+        for delta in (-1, 0, 1)}
+for value in sorted(ties | set(extrema)):
+    actual = run("round_q30", value, value >> 32) & 0xFFFFFFFF
+    assert actual == (rounded(value, step) & 0xFFFFFFFF), ("round_q30", value, actual)
+    checks += 1
 print(f"Thumb-2 machine code: {checks} full-range arbitrary-precision oracle cases passed")

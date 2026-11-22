@@ -262,6 +262,8 @@ public:
     };
 
     Info getInfo() const noexcept;
+    Core::Snapshot snapshot() const noexcept { return core_.snapshot(); }
+    static Info describe(const Core::Snapshot& state) noexcept;
 
 private:
     Core core_;

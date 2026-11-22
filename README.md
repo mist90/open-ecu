@@ -71,6 +71,11 @@ The ECU application itself is platform-independent and lives in
 `libecu::Board` (`libecu/include/board.hpp`), so a new target is a new board
 port rather than a new main.
 
+`CommandProcessor` handles console I/O and control-loop notifications. Both
+STM32 ports use `AtCommandProcessor`. A port can supply another protocol
+without carrying the AT parser or its oscilloscope buffer; see the
+[command processor and transport contract](docs/PORTING_GUIDE.md#command-protocol-and-transport).
+
 **STM32G431** (`STM32G431/Core/Src/board.cpp`):
 - Implements `libecu::Board` for this hardware
 - Initializes STM32 HAL and peripherals, and creates the PWM/Hall/ADC drivers
@@ -143,7 +148,7 @@ sudo apt install gcc-arm-none-eabi cmake stlink-tools openocd
 # NUCLEO-F410RB + X-NUCLEO-IHM08M1, AT console over USB at 2000000 baud
 ./build.sh --platform STM32F410
 
-# Debug build (-O0); see the ISR budget note in docs/FOC_HANDOFF.md
+# STM32G431 Debug build (-O0); use Release to measure current-loop timing
 ./build.sh --debug
 
 # Clean build
@@ -186,7 +191,14 @@ Build outputs:
 
 # Flash with verification
 ./flash.sh --verify
+
+# Show the Nucleo flash options using the equivalent short entry point
+./flash -p STM32F410 --help
 ```
+
+`flash` and `flash.sh` use the same dispatcher. Both the build and flash
+wrappers locate the selected platform relative to the script, so you can
+invoke them by path from another directory.
 
 **Platform-specific flash:**
 ```bash
@@ -225,12 +237,15 @@ Additional host regressions:
 - `tests/test_hybrid_iq/run.sh` — float/fixed hybrid current control, delayed motor model, noise and recovery
 - `tests/test_current_filter/run.sh` — dq filters, delayed-loop stability and zero-current noise suppression
 - `tests/test_control/run.sh float|numeric-fixed` — commands, native I/O, reusable current frames, protection, ramp and OSC
+- `tests/test_control/run.sh t60-fixed|t60-feedback` — T60 speed PI, live retuning and optional acceleration feedback
+- `tests/test_mtte/run.sh` — rolling-wheel torque observer and traction model, using synthetic data
 
 Host tests live under `tests/`; each directory has a standalone `run.sh`.
 
 Manual hardware testing required:
 - Test on b-g431b-esc1 board with BLDC motor
-- Monitor via UART (2,000,000 baud on the current bench firmware) on PA2 (TX), PA3 (RX)
+- Monitor via USART2 at 2,000,000 baud on PB3 (TX) and PB4 (RX); see the
+  [AT command reference](docs/AT_COMMANDS.md#connecting).
 - `make test-compile` in `libecu/` validates library builds only (not actual tests)
 
 ## Project Structure
@@ -255,7 +270,7 @@ open-ecu/
 ├── STM32G431/                 # STM32G431 platform-specific files
 │   ├── Core/                  # Application code
 │   │   ├── Inc/               # Headers, including compile-time ecu_config.hpp
-│   │   ├── Src/               # main.cpp and initialization
+│   │   ├── Src/               # board.cpp and peripheral initialization
 │   │   └── Startup/           # Startup assembly
 │   ├── Drivers/               # STM32 HAL and CMSIS
 │   ├── CMakeLists.txt         # Platform build configuration
@@ -268,6 +283,7 @@ open-ecu/
 │   └── stm32g4-config.cmake
 │
 ├── build.sh                   # Multi-platform build wrapper
+├── flash                      # Short entry point for flash.sh
 └── flash.sh                   # Multi-platform flash wrapper
 ```
 

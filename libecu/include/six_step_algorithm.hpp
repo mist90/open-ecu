@@ -23,6 +23,7 @@
 #include "motor_samples.hpp"
 
 namespace libecu {
+template<class P> struct MotorStatusT;
 
 /**
  * @brief One row of the six-step commutation table
@@ -74,6 +75,8 @@ public:
     Output updateNative(const Input& input) noexcept;
     /** @brief PWM path: overwrite and apply one caller-owned current frame. */
     void updateNative(Frame& frame) noexcept;
+    /** Serialized carrier path: read commands and publish results in the motor status. */
+    void updateOwnedCarrier(const Input& in, MotorStatusT<Profile>& status) noexcept;
     /**
      * @brief Constructor
      * @param pwm_interface PWM interface this algorithm drives
@@ -86,6 +89,9 @@ public:
     /// @brief Set the inner current-loop PI parameters (output is duty, 0 to 1)
     /// @return false on unrepresentable tuning, retaining the previous configuration
     bool setCurrentPi(const PiParameters& params) noexcept;
+    using CurrentPi = PiFloatInterface<ActivePiProfile::CurrentPiTypes, ActiveTiming::CURRENT_HZ>;
+    /** @brief Install a validated, reset regulator under the caller's publication mask. */
+    void installCurrentPi(const CurrentPi& next) noexcept { current_pi_ = next; }
 
     /// @brief Get the inner current-loop PI parameters
     const PiParameters& getCurrentPi() const noexcept;
@@ -95,7 +101,7 @@ public:
 
     void reset() noexcept override;
     void onEnter() noexcept override;
-    MotorAlgorithmOutput update(const MotorAlgorithmInput& in) noexcept override;
+    MotorAlgorithmOutput update(const MotorAlgorithmInput& in) noexcept;
 
     /**
      * @brief Switching state currently applied to a phase
@@ -115,7 +121,10 @@ private:
      * See the preload note in Stm32Pwm::initialize(); getting this wrong cost
      * two measured regressions.
      */
-    void applyCommutationStep(const CommutationStep& step, Duty duty_cycle) noexcept;
+    template<bool Owned> void applyCommutationStep(const CommutationStep& step, Duty duty_cycle) noexcept;
+    template<bool Owned> void writeDuty(Duty duty) noexcept;
+    template<bool Owned, class Commands, class Result>
+    void updateInto(const Input& in, const Commands& commands, Result& out) noexcept;
 
     /**
      * @brief Phase current from the shunt that is actually carrying it
@@ -134,7 +143,7 @@ private:
     static const CommutationStep COMMUTATION_TABLE[6];
 
     PwmInterface& pwm_interface_;
-    PiFloatInterface<ActivePiProfile::CurrentPiTypes, ActiveTiming::CURRENT_HZ> current_pi_;
+    CurrentPi current_pi_;
     SixStepParams params_;
     Duty max_duty_ = number_v<Duty, 95, 100>;
 

@@ -17,6 +17,7 @@ endif()
 option(ENABLE_DEBUG_PWM_ISR "Enable PWM ISR debug data capture (uses ~8KB RAM)" OFF)
 option(ENABLE_THROTTLE_BRAKE_CONTROL "Use the physical throttle and brake as control inputs" OFF)
 option(ENABLE_BENCH_PROFILING "Capture PWM callback cycle counts through SWD" OFF)
+option(ENABLE_LIBECU_PWM_RAM "Copy shared PWM hot functions and the fixed-point sine LUT to SRAM at startup" OFF)
 set(PI_NUMERIC_PROFILE "float" CACHE STRING "Legacy PI-only override when NUMERIC_PROFILE=float")
 set_property(CACHE PI_NUMERIC_PROFILE PROPERTY STRINGS float fixed)
 set(NUMERIC_PROFILE "float" CACHE STRING "Control numerical profile: float or fixed")
@@ -194,6 +195,7 @@ add_executable(${PROJECT_NAME}.elf
 )
 
 # Create hex and bin files
+target_compile_definitions(${PROJECT_NAME}.elf PRIVATE $<$<BOOL:${ENABLE_LIBECU_PWM_RAM}>:LIBECU_PWM_RAM=1>)
 add_custom_command(TARGET ${PROJECT_NAME}.elf POST_BUILD
     COMMAND arm-none-eabi-objcopy -O ihex $<TARGET_FILE:${PROJECT_NAME}.elf> ${PROJECT_NAME}.hex
     COMMAND arm-none-eabi-objcopy -O binary $<TARGET_FILE:${PROJECT_NAME}.elf> ${PROJECT_NAME}.bin

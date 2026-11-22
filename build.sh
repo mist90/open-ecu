@@ -3,6 +3,7 @@
 # Supports multiple target platforms
 
 set -e  # Exit on any error
+ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 
 # Colors for output
 RED='\033[0;31m'
@@ -12,18 +13,21 @@ NC='\033[0m' # No Color
 
 # Default platform
 PLATFORM="STM32G431"
+PLATFORM_SELECTED=false
 
 # Parse platform selection
 while [[ $# -gt 0 ]]; do
     case $1 in
         -p|--platform)
-            PLATFORM="$2"
+            PLATFORM="${2:?Specify a platform}"
+            PLATFORM_SELECTED=true
             shift 2
             ;;
         -h|--help)
+            if "$PLATFORM_SELECTED"; then break; fi
             echo "Usage: $0 [options]"
             echo "Options:"
-            echo "  -p, --platform   Target platform (default: STM32G431)"
+            echo "  -p, --platform   STM32G431 (default), STM32F410"
             echo ""
             echo "Builds Release by default; pass -d/--debug for a Debug build (build/)."
             echo ""
@@ -38,13 +42,13 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Validate platform directory exists
-PLATFORM_DIR="$PLATFORM"
+PLATFORM_DIR="$ROOT/$PLATFORM"
 if [[ ! -d "$PLATFORM_DIR" ]]; then
     echo -e "${RED}Error: Platform directory '$PLATFORM_DIR' not found!${NC}"
     echo "Available platforms:"
-    for dir in */; do
+    for dir in "$ROOT"/*/; do
         if [[ -f "$dir/build.sh" ]]; then
-            echo "  - ${dir%/}"
+            echo "  - $(basename "$dir")"
         fi
     done
     exit 1

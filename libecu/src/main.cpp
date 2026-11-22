@@ -49,6 +49,9 @@ libecu::MotorControlParams makeMotorParams(const libecu::BoardInfo& board_info) 
     motor_params.max_temperature_c = BLDC_MAX_TEMPERATURE;
     motor_params.max_speed_rps = BLDC_MAX_SPEED;
     motor_params.acceleration_rate = BLDC_MAX_ACCELERATION;  // RPS/s
+#if LIBECU_TRACTION_ACCEL_RPS2
+    motor_params.traction_acceleration_rps2 = LIBECU_TRACTION_ACCEL_RPS2;
+#endif
     motor_params.target_speed_lpf_alpha = 0.0f;  // LPF smoothing for noisy potentiometer input
     motor_params.measured_speed_lpf_alpha = 0.5f; // LPF smoothing for noisy velocity measurement
     motor_params.measured_current_lpf_alpha = 0.005f; // 10 ms at 20 kHz; telemetry only

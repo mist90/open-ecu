@@ -2,10 +2,10 @@
 set -e
 cd "$(dirname "$0")"
 g++ -std=c++17 -O2 -Wall -Wextra -Werror -fsanitize=undefined -fno-sanitize-recover=all \
-    -I../../libecu/include -o test main.cpp
+    -DLIBECU_TRACTION_RECIPROCAL=1 -DLIBECU_PWM_BUS_LOOKAHEAD=1 -I../../libecu/include -o test main.cpp
 ./test
 if command -v arm-none-eabi-g++ >/dev/null; then
-    tmp=$(mktemp -d "${TMPDIR:-/tmp/opencode}/ecu-cores.XXXXXX")
+    tmp=$(mktemp -d "${TMPDIR:-/tmp}/ecu-cores.XXXXXX")
     trap 'rm -rf "$tmp"' EXIT
     arm-none-eabi-g++ -std=c++17 -Os -mcpu=cortex-m0 -mthumb -mfloat-abi=soft \
         -fno-exceptions -fno-rtti -Wall -Wextra -Werror -Wno-psabi -I../../libecu/include \

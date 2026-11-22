@@ -26,6 +26,12 @@ inline FixedProfile::Current motor1T60Error(FixedProfile::Current error, FixedPr
     using Unit = FixedProfile::Fraction;
     const uint32_t raw = velocity.raw();
     const uint32_t speed = velocity.raw() < 0 ? 0u - raw : raw;
+#if defined(LIBECU_PWM_DEADLINE_ONLY) && LIBECU_PWM_DEADLINE_ONLY
+    // Both flat tails are exactly 1/16; keep the same nearest/ties-away
+    // rounding without synthesizing a Q30 weight and multiplying each axis.
+    if (speed <= 60u * Speed::SCALE || (QAxis && speed >= 480u * Speed::SCALE))
+        return FixedProfile::Current::fromRaw(fixed_detail::roundedShift<4>(error.raw()));
+#endif
     constexpr unsigned shift = Unit::FRACTION_BITS - Speed::FRACTION_BITS;
     static_assert(shift >= 7);
     int32_t weight;
@@ -38,8 +44,9 @@ inline FixedProfile::Current motor1T60Error(FixedProfile::Current error, FixedPr
     } else {
         return error;
     }
-    return FixedProfile::Current::fromRaw(int32_t(fixed_detail::roundedProduct<Unit::FRACTION_BITS>(
-        weight, error.raw())));
+    // Both speed envelopes leave weight in [0,1]; the rounded error still fits Current.
+    return FixedProfile::Current::fromRaw(fixed_detail::boundedRoundedProduct<Unit::FRACTION_BITS>(
+        weight, error.raw()));
 }
 } // namespace libecu
 #endif

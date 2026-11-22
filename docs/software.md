@@ -88,6 +88,15 @@ into that limit, integration is held. The PI also back-calculates its own
 output clipping using `Kb*Ts*(applied-requested)` and clamps the integral.
 The standstill-release logic clears residual current demand after stopping.
 
+`BldcController::setSpeedPi(kp, ki)` retunes the active electrical mode
+without resetting its speed PI. A live Kp change adjusts the integral to
+preserve the last output at the last sampled error; a Ki-only edit keeps
+the integral and error history. Integration continues on the next tick.
+The setter rejects unrepresentable gains. While velocity control is active,
+it also rejects a changed tuning if either loop is saturated, the new
+integral would exceed its limits, or the operating point changed during
+the rebase. On failure it returns `false` and keeps the previous gains.
+
 ### MOTOR_1 defaults
 
 | Setting | Value |
@@ -100,9 +109,22 @@ The standstill-release logic clears residual current demand after stopping.
 | Measured-speed LPF alpha | 0.5 per speed tick |
 | Target-speed LPF | Disabled; acceleration limiting is separate |
 
-These are shared MOTOR_1 settings: `SPID=3,20` in velocity/current mode on
-every port built with that motor selected. A board or command protocol can
-apply runtime overrides, including a more conservative acceleration ramp.
+These are the generic MOTOR_1 defaults (`SPID=3,20` in velocity/current
+mode). A board or command protocol can apply runtime overrides, including
+a more conservative acceleration ramp.
+
+The [T60 motor profile](../tests/test_motor1_profiles/README.md)
+(`LIBECU_MOTOR1_T60_LOAD=1`) normally uses Kp = 3, Ki = 24; its Kp is
+configurable with `LIBECU_T60_SPEED_KP`. Within that profile,
+`LIBECU_T60_UNLOADED_PI=1` selects **outer speed-loop Kp = 1.25, Ki = 5**.
+These gains were tested only on a free wheel. Loaded operation needs
+different gains, tuned and verified under representative load. Neither
+T60 setting changes the generic 3/20 defaults.
+
+The T60 profile also supports `LIBECU_TRACTION_ACCEL_RPS2` (off by
+default). This limits **positive PI output** using the change in measured
+speed per tick, independently of the ramp on requested speed. It retains
+the configured braking-current limit.
 
 Load inertia explains the tuning trade-off. An ideal continuous model for a
 surface-magnet motor, before current/estimator/filter/sampling delays, gives:
@@ -220,9 +242,10 @@ angle = wrap6(angle + Ts*phase_velocity)
 The shortest difference is formed over a six-step electrical revolution;
 the subsequent clamp limits detector error to half a step. The proportional
 term corrects phase promptly, while the integral estimates sustained speed.
-MOTOR_1 uses `Kp = 100`, `Ki = 5000`. Their ideal linear natural frequency is
-about 11.25 Hz; Hall quantization, detector clipping and reseeding modify the
-actual response.
+The generic MOTOR_1 PLL uses `Kp = 100`, `Ki = 5000`. Their ideal linear
+natural frequency is about 11.25 Hz; Hall quantization, detector clipping
+and reseeding modify the actual response. The T60 profile uses 50/1250 for
+the Hall PLL regardless of its outer speed-PI tuning.
 
 **Reported speed is the integral term.** Angle advancement uses the full
 `Kp*error + integral` result. The speed controller and hybrid back-EMF model
@@ -434,6 +457,8 @@ A smoother filtered trace therefore does not establish lower total raw ripple.
 
 Raw dq values remain available in scope data. The separate reported-current
 LPF (`alpha = 0.005` per fast tick) is for slow telemetry, not current feedback.
+`LIBECU_RAW_CURRENT_TELEMETRY=1` publishes the current frame's value in that
+telemetry field without changing the dq feedback filters.
 Raw-current protection and board acquisition checks precede these filters.
 
 The optional zero-current noise-floor feature is disabled by default. When
@@ -519,9 +544,10 @@ correction_next = clamp(correction + delta, -correction_limit, +correction_limit
 | MOTOR_1 R estimate | 0.658 ohm |
 | MOTOR_1 flux estimate | 0.012336 V*s/electrical radian |
 
-At 20 kHz, the error-filter coefficient is `1/401`. Correction changes by at
-most 0.5 mV per tick. For a sustained averaged 1-A error, its unconstrained
-rate is 2 V/s.
+At 20 kHz, the error-filter coefficient is `1/401` and correction changes
+by at most 0.5 mV per tick. At 16 kHz the corresponding values are `1/321`
+and 0.625 mV. For a sustained averaged 1-A error, the unconstrained rate
+is 2 V/s at either frequency.
 
 Filtering the **error** is equivalent to filtering reference and measurement
 with the same pole. Filtering only measured Iq would make a correctly followed
@@ -605,6 +631,10 @@ polygon corner extension; the final duty clamp handles rounding.
 
 Bus-derived limits and modulation normalization are cached, but refreshed
 before any changed bus sample is used, including a voltage collapse.
+With `LIBECU_PWM_BUS_LOOKAHEAD=1`, a single lower-priority writer can call
+`prepareFocBus(voltage)` on the controller when a calibrated auxiliary
+sample arrives. The current loop can use that result only on an exact match
+of bus voltage and modulation; otherwise it computes the values itself.
 
 ### Arithmetic and anti-windup
 
@@ -642,9 +672,15 @@ operations; sine/cosine use a table with interpolation.
    and bus samples, runs the algorithm in place and publishes its output.
 
 Cancellation discards pending work without advancing the PLL again. Both
-algorithms overwrite every output field; parking clears the result without
-running a current regulator. Public status publication is atomic, so a PWM
-callback observes the complete previous status rather than a partial update.
+algorithms overwrite the frame output; parking clears electrical output
+without running a current regulator. On this path, electrical results are
+published after the PWM write, so a PWM callback still sees the previous
+frame's results. The STM32 ports use the single-call `pwmInterruptHandler()`.
+
+The optional `prepareOwnedCarrier()` / `completeOwnedCarrier(adc, pwm)` pair
+writes results directly into status. Both calls must run in the same
+single-writer IRQ, and readers must take synchronized snapshots. See the
+[interrupt ownership contract](CURRENT_FRAME.md#direct-status-writes-in-a-single-pwm-interrupt).
 
 The optional interrupt-token interface lets each `CriticalSection` restore
 its entry mask. Nested token guards and legacy C pairs require reverse-order
@@ -668,6 +704,8 @@ bash tests/test_hall_monitor/run.sh
 bash tests/test_motor_pll/run.sh
 bash tests/test_control/run.sh float
 bash tests/test_control/run.sh numeric-fixed
+bash tests/test_control/run.sh t60-fixed
+bash tests/test_control/run.sh t60-feedback
 bash tests/test_foc/run.sh float
 bash tests/test_foc/run.sh fixed
 bash tests/test_current_filter/run.sh
@@ -675,6 +713,7 @@ bash tests/test_hybrid_iq/run.sh
 bash tests/test_voltage_limit/run.sh
 bash tests/test_profile_math/run.sh
 bash tests/test_command_processor/run.sh
+bash tests/test_mtte/run.sh
 ```
 
 The suites cover Hall/PLL behavior, algorithm/frame transitions, delayed motor
@@ -688,6 +727,11 @@ The hybrid runner builds float and fixed profiles sequentially; `BUILD_DIR`
 selects its output directory. Its motor model uses reconstructed PWM voltages,
 one-frame actuation delay and rotor motion at 8/16/20 kHz. Shared-main tests
 verify board opt-in and motor-resistance wiring in both numeric profiles.
+
+The [rolling-wheel torque observer](../libecu/include/mtte_observer.hpp)
+uses synchronized Hall speed and measured q-axis current to bound positive
+PI output. `test_mtte` checks its signs, timing and behavior under simulated
+traction changes. The observer is not enabled by either STM32 port.
 
 The [speed-loop characterization](../tests/test_speed_loop/README.md) has its
 own retained comparison budgets: the current 3/20 tuning exits nonzero in

@@ -26,6 +26,8 @@ struct MotorAlgorithmOutputT {
     typename P::Voltage v_d{}, v_q{};
     typename P::Angle angle_e_rad{};
     int8_t saturation = 0;
+    void setScalarDuty(typename P::Duty value) noexcept { duty = value; }
+    void setSaturation(int8_t value) noexcept { saturation = value; }
 };
 
 /** @brief Caller-owned storage shared by acquisition, control and PWM application.

@@ -7,6 +7,8 @@
 #include "numeric_profiles.hpp"
 #include "numeric_ops.hpp"
 #include "foc_math.hpp"
+#include "control_optimization.hpp"
+#include "loop_profile.hpp"
 #include <array>
 
 namespace libecu {
@@ -21,9 +23,25 @@ public:
     inline static constexpr Angle TWO_PI = number<Angle>(628318530718LL, 100000000000LL);
     static_assert(Angle::FRACTION_BITS <= 28, "A signed 32-bit angle must hold a full radian revolution");
 
+#if defined(LIBECU_PWM_RAM) && LIBECU_PWM_RAM
+    static void sinCos(Angle angle, Fraction& sine, Fraction& cosine) noexcept;
+#else
     static void sinCos(Angle angle, Fraction& sine, Fraction& cosine) noexcept {
-        int32_t wrapped = angle.raw() % TWO_PI.raw();
-        if (wrapped < 0) wrapped += TWO_PI.raw();
+        sinCosKernel(angle, sine, cosine);
+    }
+#endif
+private:
+    [[gnu::always_inline]] static void sinCosKernel(Angle angle, Fraction& sine, Fraction& cosine) noexcept {
+        const uint32_t period = uint32_t(TWO_PI.raw());
+        uint32_t wrapped = uint32_t(angle.raw());
+        if (wrapped >= period) {
+            // Offset-adjusted PLL phase normally lies between -one and +one turn.
+            wrapped += period;
+            if (wrapped >= period) {
+                int32_t full = angle.raw() % TWO_PI.raw();
+                wrapped = uint32_t(full < 0 ? full + TWO_PI.raw() : full);
+            }
+        }
         // Reciprocal rounded down: error < 7 phase counts (one count is 2^-32 turn).
         constexpr uint32_t phase_scale = (uint64_t(1) << (Angle::FRACTION_BITS + 32)) / uint32_t(TWO_PI.raw());
         const uint32_t phase = static_cast<uint32_t>((uint64_t(wrapped) * phase_scale) >> Angle::FRACTION_BITS);
@@ -33,6 +51,7 @@ public:
         cosine = Fraction(FixedPointType<30>::fromRaw(interpolate(index + 64u, fraction)));
     }
 
+public:
     static Voltage voltageMagnitude(Voltage d, Voltage q) noexcept {
         return Voltage::fromWideRaw(integerSqrt(squared(d.raw(), q.raw())));
     }
@@ -41,6 +60,32 @@ public:
     static Fraction inverseBusVoltage(Voltage bus) noexcept {
         static_assert(Voltage::FRACTION_BITS == 18 && Fraction::FRACTION_BITS == 30,
                       "Reciprocal normalization requires Q18 voltage and Q30 fractions");
+#if defined(LIBECU_TRACTION_RECIPROCAL) && LIBECU_TRACTION_RECIPROCAL
+        constexpr unsigned knot_shift = 15; // 1/8 volt per interval in Q18.
+        const uint32_t d = uint32_t(bus.raw());
+        const uint32_t offset = d - (34u << 18);
+        if (offset < (10u << 18)) {
+            const auto* bounds = &RECIPROCAL_CHORD[offset >> knot_shift];
+            const uint32_t a = bounds[0], gap = a - bounds[1];
+            using Wide = uint64_t;
+            const uint32_t above = a - ((Wide(gap) * (offset & 32767u)) >> knot_shift);
+            // A chord of the convex N/d is above it, and both knots and
+            // interpolation round up. The relative chord error times d is
+            // N*(d-lo)*(hi-d)/(lo*hi) <= N*step²/(4*min_d²).
+            // Rounding adds <2*d. Thus above*d - 2^48 and its half-divisor
+            // bias fit a word; their low product is the entire residual.
+            static_assert((uint64_t(1) << 46) / (272u * 272u) + 3u * (44u << 18) < UINT32_MAX);
+            const uint32_t excess = above * d;
+            return Fraction::fromRaw(int32_t(above - (excess + (d - 1) / 2) / d));
+        }
+#endif
+        return generalInverse(bus);
+    }
+private:
+#if defined(LIBECU_TRACTION_RECIPROCAL) && LIBECU_TRACTION_RECIPROCAL
+    [[gnu::noinline]] LIBECU_SLOW_PATH
+#endif
+    static Fraction generalInverse(Voltage bus) noexcept {
         if (bus < number_v<Voltage, 1>) return divideTo<Fraction>(number_v<Voltage, 1>, bus);
         const uint32_t divisor = static_cast<uint32_t>(bus.raw());
         unsigned shift = 0;
@@ -76,6 +121,7 @@ public:
         return Fraction::fromRaw(static_cast<int32_t>(quotient));
     }
 
+public:
 #if defined(LIBECU_MOTOR1_SPAN_BENCH) && LIBECU_MOTOR1_SPAN_BENCH
     // Warmed from the actual calibrated input codes. Only an exact
     // voltage match is a hit. No division approximation or bus-value rounding.
@@ -113,6 +159,16 @@ public:
     }
 
 private:
+#if defined(LIBECU_TRACTION_RECIPROCAL) && LIBECU_TRACTION_RECIPROCAL
+    inline static constexpr auto RECIPROCAL_CHORD = [] {
+        std::array<uint32_t, 81> knots{};
+        for (unsigned i = 0; i < knots.size(); ++i) {
+            const uint32_t d = (272u + i) << 15;
+            knots[i] = uint32_t(((uint64_t(1) << 48) + d - 1) / d);
+        }
+        return knots;
+    }();
+#endif
 #if defined(LIBECU_MOTOR1_SPAN_BENCH) && LIBECU_MOTOR1_SPAN_BENCH
     struct BusEntry { int32_t voltage,inverse; };
     inline static BusEntry bus_table_[512]{};
@@ -120,17 +176,21 @@ private:
     static uint64_t squared(int32_t a, int32_t b) noexcept {
         return uint64_t(int64_t(a) * a) + uint64_t(int64_t(b) * b);
     }
-    static int32_t sample(unsigned index) noexcept {
-        return SIN_TABLE[index & 255u];
-    }
     [[gnu::always_inline]] static int32_t interpolate(unsigned index, uint32_t fraction) noexcept {
-        const int32_t first = sample(index);
-        const int32_t delta = sample(index + 1u) - first;
+#if defined(LIBECU_PWM_RAM) && LIBECU_PWM_RAM
+        const auto* pair = &RAM_SINE[index & 127u];
+#else
+        const auto* pair = &SIN_TABLE[index & 127u];
+#endif
+        const int32_t first = pair[0];
+        const int32_t delta = pair[1] - first;
         // fraction is a 24-bit interpolation position; both signed operands
         // fit a word. Use the same rounded signed product as the transforms,
         // avoiding mixed signed/unsigned long multiplication on Cortex-M3.
-        return first + static_cast<int32_t>(
+        const int32_t positive_half = first + static_cast<int32_t>(
             fixed_detail::roundedProduct<24>(delta, static_cast<int32_t>(fraction)));
+        // Round-to-nearest, ties away, is odd. Reflect *after* interpolation.
+        return (index & 128u) ? -positive_half : positive_half;
     }
     // round(sin(pi*i/128) * 2^30), i=0..64. Quadrant symmetry gives 256 samples.
     inline static constexpr int32_t SIN_QUARTER[65] = {
@@ -144,17 +204,19 @@ private:
         1053110176, 1057933813, 1062120190, 1065666786, 1068571464, 1070832474, 1072448455, 1073418433,
         1073741824,
     };
-    // Expand symmetry at compile time: four branch-free loads per sin/cos pair.
+    // The positive half-wave plus its zero endpoint. Sin/cos segment starts
+    // differ by 64 modulo 128: exactly four distinct words even at the wrap.
     inline static constexpr auto SIN_TABLE = [] {
-        std::array<int32_t, 256> table{};
+        std::array<int32_t, 129> table{};
         for (unsigned i = 0; i < 64; ++i) {
             table[i] = SIN_QUARTER[i];
             table[64 + i] = SIN_QUARTER[64 - i];
-            table[128 + i] = -SIN_QUARTER[i];
-            table[192 + i] = -SIN_QUARTER[64 - i];
         }
         return table;
     }();
+#if defined(LIBECU_PWM_RAM) && LIBECU_PWM_RAM
+    static const std::array<int32_t, 129> RAM_SINE;
+#endif
 };
 
 template<class Scalar> struct AlphaBetaT { Scalar alpha{}; Scalar beta{}; };
@@ -218,6 +280,49 @@ struct FocTransforms {
     static AlphaBetaT<Scalar> clarkeZeroSum(Scalar u, Scalar v, Scalar w) noexcept {
         return {u, multiplyTo<Scalar>(v - w, INV_SQRT3)};
     }
+    /** @brief Fuse sign, missing-phase reconstruction, Clarke and Park without narrowing a wide dot early. */
+    template<class Scalar>
+    static DqVectorT<Scalar> parkPhaseCurrents(Scalar iu, Scalar iv, Scalar iw,
+                                               unsigned missing, Rotation r) noexcept {
+        if constexpr (std::is_same<Profile, FixedProfile>::value) {
+            constexpr uint32_t bound = 1u << 28;
+            const uint32_t magnitudes = (uint32_t(iu.raw()) + bound) |
+                                        (uint32_t(iv.raw()) + bound) | (uint32_t(iw.raw()) + bound);
+            if (magnitudes < 2u * bound) {
+                // |phase| <= B, reconstructed <= 2B, |v-w| <= 3B.
+                // Therefore each rounded rotation result is <= 5B+1 < INT32_MAX.
+                int32_t u, v_minus_w;
+                if (!missing) {
+                    u = iv.raw() + iw.raw();
+                    v_minus_w = iw.raw() - iv.raw();
+                } else if (missing == 1) {
+                    u = -iu.raw();
+                    v_minus_w = iu.raw() + 2 * iw.raw();
+                } else {
+                    u = -iu.raw();
+                    v_minus_w = -iu.raw() - 2 * iv.raw();
+                }
+                const int32_t beta =
+                    fixed_detail::boundedRoundedProduct<Unit::FRACTION_BITS>(v_minus_w, INV_SQRT3.raw());
+                return {Scalar::fromRaw(boundedRotation(u, r.cosine_.raw(), beta, r.sine_.raw())),
+                        Scalar::fromRaw(boundedRotation(u, -r.sine_.raw(), beta, r.cosine_.raw()))};
+            }
+        }
+        return generalCurrentPark(iu, iv, iw, missing, r);
+    }
+private:
+    template<class Scalar>
+#if defined(LIBECU_PWM_RAM) && LIBECU_PWM_RAM
+    [[gnu::noinline]] LIBECU_SLOW_PATH
+#endif
+    static DqVectorT<Scalar> generalCurrentPark(Scalar iu, Scalar iv, Scalar iw, unsigned missing, Rotation r) noexcept {
+        Scalar u = -iu, v = -iv, w = -iw;
+        if (!missing) u = -(v + w);
+        else if (missing == 1) v = -(u + w);
+        else w = -(u + v);
+        return park(clarkeZeroSum(u, v, w), r);
+    }
+public:
     template<class Scalar>
     static DqVectorT<Scalar> park(AlphaBetaT<Scalar> ab, Unit sine, Unit cosine) noexcept {
         return {multiplyTo<Scalar>(ab.alpha, cosine) + multiplyTo<Scalar>(ab.beta, sine),
@@ -251,14 +356,22 @@ struct FocTransforms {
             return invPark(dq, rotation.sine_, rotation.cosine_);
         }
     }
-    static Voltage voltageLimit(Voltage bus) noexcept { return multiplyTo<Voltage>(bus, INV_SQRT3); }
+    static Voltage voltageLimit(Voltage bus) noexcept {
+        if constexpr (std::is_same<Profile, FixedProfile>::value) {
+            // 1/sqrt(3) is strictly below one, even after Q30 quantization.
+            return Voltage::fromRaw(fixed_detail::boundedRoundedProduct<Unit::FRACTION_BITS>(
+                bus.raw(), INV_SQRT3.raw()));
+        } else {
+            return multiplyTo<Voltage>(bus, INV_SQRT3);
+        }
+    }
     static PhaseDutiesT<Duty> svpwm(Voltage alpha, Voltage beta, Voltage bus,
                                   bool low_side_clamped = false) noexcept {
         return svpwm(alpha, beta, modulationBus(bus), low_side_clamped);
     }
     /** @brief SVPWM using exactly the same precomputed reciprocal as the direct bus overload. */
     static PhaseDutiesT<Duty> svpwm(Voltage alpha, Voltage beta, ModulationBus bus,
-                                  bool low_side_clamped = false) noexcept {
+                                   bool low_side_clamped = false) noexcept {
         const Voltage a = alpha;
         const Voltage half_alpha = divideByConstant<Voltage, 2>(alpha);
         const Voltage beta_component = multiplyTo<Voltage>(beta, SQRT3_OVER2);
@@ -276,6 +389,48 @@ struct FocTransforms {
                 zero + multiplyTo<Duty>(c - common, bus.inverse_)};
     }
 
+    /** @brief Inverse Park, common-mode subtraction and clamp of an already limited dq vector. */
+    static PhaseDutiesT<Duty> limitedDuties(DqVectorT<Voltage> dq, Rotation r, Voltage limit,
+                                            ModulationBus bus, bool low_side, Duty high) noexcept {
+        if constexpr (std::is_same<Profile, FixedProfile>::value) {
+            // The limiter bounds BOTH axes by this nonnegative inradius. At
+            // <=512 V, each dot is <=2^28 raw and all phase differences fit
+            // int32. The only remaining possible saturation is the duty rail.
+            if (low_side && uint32_t(limit.raw()) <= (1u << 27) && high.raw() >= 0) {
+                const int32_t a = boundedRotation(dq.d.raw(), r.cosine_.raw(), dq.q.raw(), -r.sine_.raw());
+                const int32_t beta = boundedRotation(dq.d.raw(), r.sine_.raw(), dq.q.raw(), r.cosine_.raw());
+                recordLoopStage(LoopStage::FocInvPark);
+                if (!bus.active_) return {};
+                const int32_t half = (a + (a > 0)) >> 1;
+                const int32_t component =
+                    fixed_detail::boundedRoundedProduct<Unit::FRACTION_BITS>(beta, SQRT3_OVER2.raw());
+                const int32_t b = component - half, c = -component - half;
+                const auto scale = [&](uint32_t span) __attribute__((always_inline)) {
+                    constexpr unsigned shift = Voltage::FRACTION_BITS + Unit::FRACTION_BITS - Duty::FRACTION_BITS;
+                    const uint64_t product = uint64_t(span) * uint32_t(bus.inverse_.raw());
+                    const uint64_t raw = (product + (1u << (shift - 1))) >> shift;
+                    return raw >= uint32_t(high.raw()) ? high : Duty::fromRaw(int32_t(raw));
+                };
+                if (a <= b && a <= c) return {Duty{}, scale(b - a), scale(c - a)};
+                if (b <= c) return {scale(a - b), Duty{}, scale(c - b)};
+                return {scale(a - c), scale(b - c), Duty{}};
+            }
+        }
+        return generalDuties(dq, r, bus, low_side, high);
+    }
+private:
+#if defined(LIBECU_PWM_RAM) && LIBECU_PWM_RAM
+    [[gnu::noinline]] LIBECU_SLOW_PATH
+#endif
+    static PhaseDutiesT<Duty> generalDuties(DqVectorT<Voltage> dq, Rotation r, ModulationBus bus,
+                                             bool low_side, Duty high) noexcept {
+        const auto ab = invPark(dq, r);
+        recordLoopStage(LoopStage::FocInvPark);
+        const auto duty = svpwm(ab.alpha, ab.beta, bus, low_side);
+        const Duty low = low_side ? Duty{} : number_v<Duty, 1> - high;
+        return {numericClamp(duty.u, low, high), numericClamp(duty.v, low, high), numericClamp(duty.w, low, high)};
+    }
+
 private:
     template<class Scalar>
     static Scalar rotationDot(Scalar a, Unit c, Scalar b, Unit s) noexcept {
@@ -287,12 +442,19 @@ private:
         // sum plus rounding bias fits int64_t for the FULL public scalar range.
         // Keep that wide sum until the final rounding/saturation, using two
         // native signed products without intermediate narrowings.
+        return Scalar::fromWideRaw(rotationSum(a.raw(), c.raw(), b.raw(), s.raw()));
+    }
+    [[gnu::always_inline]] static int32_t boundedRotation(int32_t a, int32_t c, int32_t b, int32_t s) noexcept {
+        const int64_t sum = fixed_detail::accumulateProduct(fixed_detail::wideProduct(a, c), b, s);
+        return int32_t(fixed_detail::roundedLowWord<Unit::FRACTION_BITS>(sum));
+    }
+    [[gnu::always_inline]] static int64_t rotationSum(int32_t a, int32_t c, int32_t b, int32_t s) noexcept {
         constexpr unsigned shift = Unit::FRACTION_BITS;
-        const int64_t sum = fixed_detail::wideProduct(a.raw(), c.raw()) +
-                            fixed_detail::wideProduct(b.raw(), s.raw());
+        const int64_t sum = fixed_detail::accumulateProduct(
+            fixed_detail::wideProduct(a, c), b, s);
         const uint32_t negative = uint64_t(sum) >> 63;
         const uint32_t bias = (uint32_t(1) << (shift - 1u)) - negative;
-        return Scalar::fromWideRaw((sum + bias) >> shift);
+        return (sum + bias) >> shift;
     }
 };
 

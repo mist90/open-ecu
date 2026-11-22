@@ -25,6 +25,12 @@
 #include "open_loop_phase.hpp"
 #include "current_loop_tuning.hpp"
 #include "hall_monitor.hpp"
+#ifndef LIBECU_TRACTION_ACCEL_RPS2
+#define LIBECU_TRACTION_ACCEL_RPS2 0
+#endif
+#if LIBECU_TRACTION_ACCEL_RPS2
+#include "traction_acceleration.hpp"
+#endif
 
 namespace libecu {
 class CriticalSection;
@@ -135,6 +141,9 @@ struct MotorControlParams {
      * series, this one outputs volts and sees one. Use tuneFocCurrentPi().
      */
     PiParameters foc_current_regulator;
+#if LIBECU_TRACTION_ACCEL_RPS2
+    float traction_acceleration_rps2 = 0.0f; ///< Mechanical feedback ceiling; 0 leaves speed PI unchanged.
+#endif
 };
 
 /**
@@ -168,6 +177,8 @@ struct MotorStatusT {
     typename P::Temperature temperature_c;
     typename P::Angle pll_angle;          ///< Rotor angle from PLL (steps, 0-6)
     int8_t current_pi_saturation; ///< +1/-1 if duty is clamped high/low, else 0 (for speed PI anti-windup)
+    void setScalarDuty(typename P::Duty value) noexcept { duty_cycle = value; }
+    void setSaturation(int8_t value) noexcept { current_pi_saturation = value; }
     uint8_t target_position;   ///< Driven motor position
     uint8_t measured_position;   ///< Measured motor position
     bool is_running;          ///< Motor running status
@@ -422,8 +433,12 @@ public:
      * @param kp Proportional gain
      * @param ki Integral gain
      *
-     * Preserves existing output limits.
-     * @return false if the selected numerical profile cannot represent the tuning
+     * Foreground setter for the active electrical mode. Preserves the last
+     * command at the last sampled error, error history, and output/integral
+     * limits. Normal integration continues on the next speed tick.
+     * @return false without changing the tuning if it is unrepresentable or a
+     * live bumpless transfer is unavailable (saturation, integral limit or
+     * changed operating point); the caller may retry on a later tick.
      */
     bool setSpeedPi(float kp, float ki) noexcept;
 
@@ -530,6 +545,19 @@ public:
      * Currents and the separately cached bus voltage must be ready to read.
      */
     void pwmInterruptHandler() noexcept;
+#if defined(LIBECU_PWM_BUS_LOOKAHEAD) && LIBECU_PWM_BUS_LOOKAHEAD
+    /** @brief Prepare exact normalization for an available auxiliary DMA result outside the PWM IRQ. */
+    void prepareFocBus(typename Profile::Voltage voltage) noexcept { foc_.prepareBus(voltage); }
+#endif
+    /** @brief Synchronous tick with the same concrete ADC/PWM bound by the owning board.
+     * Static binding avoids virtual calls for current feedback and the FOC compare commit.
+     * The split/erased API uses exactly the same completion below.
+     */
+    template<class Adc, class Pwm>
+    void pwmInterruptHandler(Adc& adc, Pwm& pwm) noexcept {
+        preparePwmInterruptHandler();
+        completePwmFrom(adc, pwm);
+    }
 
     /**
      * @brief Advance Hall/PLL once and snapshot commands/rotor state while ADC acquisition runs.
@@ -539,6 +567,15 @@ public:
      * @note Prepare/complete/cancel share the board's serialized current-ISR ownership.
      */
     void preparePwmInterruptHandler() noexcept;
+    /** Prepare and finish in the same single-writer IRQ. Lower-priority readers
+     *  own their snapshot locks. The only preemptor may latch a hardware stop;
+     *  it must not read/write motor status, rotor/command state or enable gates. */
+    // A board that already sampled the pins supplies the decoded sector (0xff
+    // is an illegal Hall code). Other callers retain the HallInterface read.
+    static constexpr uint8_t HALL_NOT_SAMPLED = 0xfe;
+    void prepareOwnedCarrier(uint8_t position = HALL_NOT_SAMPLED) noexcept;
+    template<class Adc, class Pwm> void completeOwnedCarrier(Adc& adc, Pwm& pwm) noexcept;
+    void parkFromCarrier() noexcept;
 
     /**
      * @brief Consume the prepared frame once, reading ready currents/Vbus and running current control.
@@ -548,6 +585,9 @@ public:
      * before complete. This stage never advances Hall/PLL again.
      */
     void completePwmInterruptHandler() noexcept;
+    /** @brief Consume an earlier preparation with the board's concrete current/PWM drivers. */
+    template<class Adc, class Pwm>
+    void completePwmInterruptHandler(Adc& adc, Pwm& pwm) noexcept { completePwmFrom(adc, pwm); }
 
     /**
      * @brief Discard pending work without ADC/PWM access or another Hall/PLL tick.
@@ -628,7 +668,7 @@ private:
     MotorAlgorithmFrameT<Profile> prepared_pwm_frame_{};
     Profile::Angle prepared_pwm_measured_angle_{};
     bool prepared_hall_controls_drive_ = false;
-    bool pwm_prepared_ = false;
+    volatile bool pwm_prepared_ = false; // A higher-priority break can cancel it.
 
     // Deferred Hall update (re-read by the active current-rate handler)
     volatile bool hall_update_pending_;      ///< Set by Hall ISR, consumed by current/observation ISR
@@ -649,8 +689,10 @@ private:
     Current filtered_measured_current_;       ///< LPF-filtered current, telemetry only
     Accumulator limited_target_speed_;        ///< Retains sub-LSB ramp increments
     Accumulator acceleration_step_;           ///< Maximum target-speed change per control tick
-
-
+#if LIBECU_TRACTION_ACCEL_RPS2
+    TractionAcceleration<Profile> traction_acceleration_{};
+    Speed traction_acceleration_step_{};
+#endif
 
     /**
      * @brief Hold the velocity loop while the drive is parked in NEUTRAL
@@ -665,7 +707,13 @@ private:
     void synchronizeHallPosition(bool discard_tracking = false) noexcept;
 
     /// @brief Age Hall health and consume a deferred reading; caller owns the current-rate ISR.
-    void observeHall(bool guard_active) noexcept;
+    template<bool Owned> void observeHall(bool guard_active, uint8_t position = HALL_NOT_SAMPLED) noexcept;
+    template<bool Owned> void preparePwmFrame(uint8_t position = HALL_NOT_SAMPLED) noexcept;
+    void clearParkedCommands() noexcept;
+    void filterPublishedCurrent() noexcept;
+    void finishOwnedStatus() noexcept;
+    template<class Adc, class Pwm> void completePwmFrom(Adc& adc, Pwm& pwm) noexcept;
+    void publishPwmStatus() noexcept;
 
     /**
      * @brief Apply acceleration/deceleration limits to target speed
@@ -681,5 +729,7 @@ private:
 };
 
 } // namespace libecu
+
+#include "bldc_pwm_frame.hpp"
 
 #endif // LIBECU_BLDC_CONTROLLER_HPP
