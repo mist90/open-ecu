@@ -29,14 +29,35 @@ struct SampleClock {
     }
 };
 
-/** @brief Board-supplied sampling rates, independent of the number representation. */
-template<uint32_t CurrentHz, uint32_t SpeedHz>
+/** @brief Work due on one SysTick. Service includes the coincident speed PI step. */
+enum class ControlTick : uint8_t { None, SpeedPiOnly, Service };
+
+/** @brief Board-supplied current, slow service (SpeedHz), and speed PI clocks. */
+template<uint32_t CurrentHz, uint32_t SpeedHz, uint32_t SpeedPiHz = SpeedHz, uint32_t SysTickHz = 1000>
 struct ControlTiming {
     using CurrentClock = SampleClock<CurrentHz>;
     using SpeedClock = SampleClock<SpeedHz>;
-    static_assert(CurrentHz > 0 && SpeedHz > 0, "Control frequencies must be positive");
+    using SpeedPiClock = SampleClock<SpeedPiHz>;
+    static_assert(CurrentHz > 0 && SpeedHz > 0 && SpeedPiHz > 0, "Control frequencies must be positive");
+    static_assert(SpeedHz && SpeedPiHz % SpeedHz == 0, "Every service tick must be a speed PI tick");
     static constexpr uint32_t CURRENT_HZ = CurrentHz;
     static constexpr uint32_t SPEED_HZ = SpeedHz;
+    static constexpr uint32_t SPEED_PI_HZ = SpeedPiHz;
+    static constexpr uint32_t SYSTICK_HZ = SysTickHz;
+
+    /** @brief Advance a zero-initialized SysTick counter; wrap on each slow service tick. */
+    static constexpr ControlTick nextSysTick(uint32_t& phase) noexcept {
+        static_assert(SysTickHz && SpeedPiHz && SysTickHz % SpeedPiHz == 0,
+                      "Speed PI frequency must divide the board's SysTick frequency");
+        if (++phase >= SysTickHz / SpeedHz) {
+            phase = 0;
+            return ControlTick::Service;
+        }
+        if constexpr (SpeedPiHz != SpeedHz) {
+            if (phase % (SysTickHz / SpeedPiHz) == 0) return ControlTick::SpeedPiOnly;
+        }
+        return ControlTick::None;
+    }
 };
 
 } // namespace libecu

@@ -220,6 +220,8 @@ public:
         if constexpr (std::is_same<Profile, FixedProfile>::value) return reported_speed_;
         else return numberCast<Speed>(integral_);
     }
+    uint8_t hallState() const noexcept { return hall_; }
+    void getGains(Gain& kp, Gain& ki) const noexcept { kp = kp_; ki = ki_; }
     Info getInfo() const noexcept {
         return {use_pll_, hall_, getAngle(), speed_, getSpeedStepsSec(), kp_, ki_, synchronized_};
     }

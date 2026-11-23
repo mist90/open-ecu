@@ -31,6 +31,11 @@ Repeated preparation preserves the pending snapshot; completion without a
 pending preparation does nothing. A live park or fault still prevents drive
 output even when commands were captured earlier.
 
+Hall edges only mark a pending reading. Neither those IRQs nor SysTick advance
+the PLL if the carrier stops. When the carrier keeps running in `NEUTRAL`, it
+continues to track the physical wheel. Tracking runs with interrupts enabled:
+a higher-priority hardware break can cancel a frame without changing PLL state.
+
 Each algorithm overwrites the frame's output. Six-step clears unused dq
 fields, and parking clears electrical output without applying PWM. During
 the PWM write, current, dq and duty fields still describe the previous frame.

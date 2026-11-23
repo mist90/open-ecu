@@ -3,8 +3,8 @@
  * @brief Float/fixed differential control traces and boundary validation
  */
 #include "pi_float_interface.hpp"
+#include "control_calibration.hpp"
 #include "motor_config.hpp"
-#include "motor1_t60_load.hpp"
 #include <cmath>
 #include <cstdio>
 #include <limits>
@@ -85,50 +85,135 @@ static void validation() {
     check(!current.setParameters(params), "non-finite tuning rejected");
     check(current.update(std::numeric_limits<float>::quiet_NaN(), 0.0f) == 0.0f &&
           current.getIntegral() == 0.0f, "invalid input clears the regulator output and state");
-    // MOTOR_1's actual speed-loop tuning must fit the more precise speed gain format.
-    PiFloatInterface<FixedProfile::SpeedPiTypes, 100> scooter;
-    check(scooter.setParameters(PiParameters{BLDC_SPEED_CURRENT_KP, BLDC_SPEED_CURRENT_KI,
-                                           BLDC_MAX_CURRENT, BLDC_MIN_CURRENT, 12.0f, -4.0f, 2.0f}),
-          "scooter speed tuning fits the fixed profile");
+    PiFloatInterface<FixedProfile::SpeedPiTypes, 100> motor;
+    check(motor.setParameters({BLDC_SPEED_CURRENT_KP, BLDC_SPEED_CURRENT_KI,
+                               BLDC_MAX_CURRENT, BLDC_MIN_CURRENT, BLDC_MAX_CURRENT, -4.0f, 2.0f}),
+          "selected motor's speed tuning fits the fixed profile");
 }
 
-static void rollingLoadTrace() {
+template<class P>
+static void rollingCurve() {
+    // Signed mechanical speed in rev/s, independent of the electrical Hall-step schedule.
+    for (float cap : {6.f, 12.f, 17.375f, 20.f, 45.f}) {
+        for (float speed : {-4.f, 0.f, 0.0625f, 0.125f, 0.25f, 0.625f, 1.5f, 2.1875f, 8.f}) {
+            const auto actual = rollingIntegralCeiling<P, motor_config::rolling_integral>(
+                numberCast<typename P::Speed>(speed), numberCast<typename P::Current>(cap));
+#ifdef MOTOR_1
+            const float expected = std::min(cap, 12.f + 16.f * std::max(0.f, speed - 0.125f));
+#else
+            const float expected = cap;
+#endif
+            check(numberCast<float>(actual) == expected, "measured rolling authority respects the caller's rail");
+        }
+    }
+}
+
+#ifdef MOTOR_1
+static void rollingLoadTrace(float max_iq) {
     using P = FixedProfile;
     PiFloatInterface<P::SpeedPiTypes, 100> pi;
-    constexpr int max_iq = int(BLDC_MAX_CURRENT);
-    check(pi.setParameters({6.f, 24.f, BLDC_MAX_CURRENT, BLDC_MIN_CURRENT, BLDC_MAX_CURRENT, -4.f, 2.f}),
-          "loaded speed PI representable");
+    check(pi.setParameters({BLDC_SPEED_CURRENT_KP, BLDC_SPEED_CURRENT_KI, max_iq, BLDC_MIN_CURRENT,
+                            max_iq, -4.f, 2.f}), "scooter speed PI representable");
+    const auto ceiling = [max_iq](P::Speed speed) {
+        return rollingIntegralCeiling<P, motor_config::rolling_integral>(speed, numberCast<P::Current>(max_iq));
+    };
     auto step = [&](int eighths, int sat) {
         const auto v = number<P::Speed>(eighths, 8);
-        return pi.updateNativeCapped(v + number_v<P::Speed, 1>, v, sat, motor1RollingIntegralCeiling<P, max_iq>(v));
+        return pi.updateNativeCapped(v + number_v<P::Speed, 1>, v, sat, ceiling(v));
     };
     for (int i = 0; i < 300; ++i) step(0, 0);
     check(pi.getIntegral() == 12.f, "a stationary speed error cannot earn rolling headroom");
     for (int i = 0; i < 200; ++i) step(2, 0);
     check(pi.getIntegral() == 14.f, "partial rolling authority");
-    const auto at_37rpm = motor1RollingIntegralCeiling<P, max_iq>(number_v<P::Speed, 5, 8>);
-    check(at_37rpm == number_v<P::Current, 20>, "20 A integral at 37.5 RPM in both profiles");
-    for (int i = 0; i < 300; ++i) step(40, 0);
-    check(pi.getIntegral() > max_iq - 6.f && pi.getOutput() == float(max_iq),
-          "sustained rolling demand reaches the profile's actual positive command limit");
+    for (int i = 0; i < 1000; ++i) step(40, 0);
+    check(pi.getIntegral() >= max_iq - BLDC_SPEED_CURRENT_KP && pi.getOutput() == max_iq,
+          "sustained rolling demand reaches the actual board/motor command limit");
     step(-1, 1);
-    check(pi.getIntegral() == 12.f && pi.getOutput() == 18.f, "loss of motion drops stored excess even under saturation");
+    check(pi.getIntegral() == 12.f && pi.getOutput() == 12.f + BLDC_SPEED_CURRENT_KP,
+          "loss of motion drops stored excess even under saturation");
     step(8, 1);
     check(pi.getIntegral() == 12.f, "no stale integral on recovery");
-    pi.updateNativeCapped(number_v<P::Speed, 0>, number_v<P::Speed, 10>, 0,
-                          motor1RollingIntegralCeiling<P, max_iq>(number_v<P::Speed, 10>));
+    for (int i = 0; i < 100; ++i)
+        pi.updateNativeCapped({}, number_v<P::Speed, 10>, 0, ceiling(number_v<P::Speed, 10>));
     check(pi.getOutput() == -6.f, "negative current limit remains -6 A");
-    for (int sign : {-1, 1}) {
-        const auto q = number<P::Current>(sign * 16);
-        for (int dir : {-1, 1}) {
-            check(motor1T60Error<false>(q, number<P::PllSpeed>(dir*60)) == number<P::Current>(sign) &&
-                  motor1T60Error<true>(q, number<P::PllSpeed>(dir*360)) == q &&
-                  motor1T60Error<true>(q, number<P::PllSpeed>(dir*420)) == number<P::Current>(sign*17,2) &&
-                  motor1T60Error<true>(q, number<P::PllSpeed>(dir*480)) == number<P::Current>(sign) &&
-                  motor1T60Error<false>(q, number<P::PllSpeed>(dir*480)) == q,
-                  "historical T60 current-error schedule on both axes and directions");
+}
+#endif
+
+// Oracle: a separately configured regulator receives the effective rails before its ordinary
+// update. Retuning its rails preserves the trapezoid history. Compare every applied output,
+// integral and saturation sign (no float tolerance when the two paths use the same profile).
+template<class Types, unsigned Hz>
+static void dynamicRailTrace() {
+    using K = PiController<Types, Hz>;
+    using G = typename K::Gain;
+    using I = typename K::Input;
+    using O = typename K::Output;
+    typename K::Parameters base{number<G>(3, 4), number<G>(10), number<O>(7, 8), number<O>(-5, 8),
+                                number<O>(5, 8), number<O>(-3, 8), number<G>(2)};
+    K actual(base), reference(base);
+    bool same = true, saw_high = false, saw_low = false, saw_free = false;
+    for (int k = 0; k < 2000; ++k) {
+        const int mode = (k / 7) % 3; // capped -> ordinary and immediate cap removal
+        const auto icap = number<O>((k / 11) % 19 - 8, 8); // spans above AND below the configured rails
+        const auto ocap = number<O>((k / 13) % 17 - 8, 8);
+        const auto target = number<I>((k / 17) % 17 - 8, 4);
+        const auto fb = number<I>((k % 19) - 9, 16);
+        const int ext = (k / 9) % 3 - 1;
+        auto p = base;
+        if (mode) p.integral_max = std::clamp(icap, p.integral_min, p.integral_max);
+        if (mode == 2) p.max_output = std::clamp(ocap, p.min_output, p.max_output);
+        reference.setParameters(p);
+        const auto expected = reference.update(target, fb, ext);
+        const auto got = !mode ? actual.update(target, fb, ext) :
+                         mode == 1 ? actual.updateCapped(target, fb, ext, icap) :
+                                     actual.updateCapped(target, fb, ext, icap, ocap);
+        const auto config = actual.getParameters();
+        same &= expected == got && reference.getIntegral() == actual.getIntegral() &&
+                reference.saturationSign() == actual.saturationSign() && config.max_output == base.max_output &&
+                config.min_output == base.min_output && config.integral_max == base.integral_max &&
+                config.integral_min == base.integral_min;
+        saw_high |= actual.saturationSign() > 0;
+        saw_low |= actual.saturationSign() < 0;
+        saw_free |= actual.saturationSign() == 0;
+    }
+    check(same && saw_high && saw_low && saw_free,
+          "changing both ceilings matches configured-limit oracle: saturated, free and externally held ticks");
+}
+
+template<class Types>
+static void exactRailReadback() {
+    using K = PiController<Types, 500>;
+    using O = typename K::Output;
+    typename K::Parameters p{};
+    p.max_output = O::fromRaw(INT32_MAX - 1);
+    p.min_output = O::fromRaw(INT32_MIN + 1);
+    p.integral_max = O::fromRaw(1);
+    p.integral_min = O::fromRaw(-1);
+    K k(p);
+    k.updateCapped({}, {}, 0, O::fromRaw(INT32_MAX), O::fromRaw(INT32_MIN));
+    const auto saved = k.getParameters();
+    check(saved.min_output == p.min_output && saved.max_output == p.max_output &&
+          saved.integral_min == p.integral_min && saved.integral_max == p.integral_max,
+          "negative and positive single-LSB rails round-trip without touching float");
+
+    // Reinstall a native readback, then test round-to-nearest/ties-away around both signs,
+    // including just inside/outside the configured raw output rails and wide-word boundaries.
+    p.integral_min = O::fromRaw(INT32_MIN);
+    p.integral_max = O::fromRaw(INT32_MAX);
+    k.setParameters(p);
+    k.setParameters(k.getParameters());
+    using A = typename K::Accumulator;
+    constexpr int64_t scale = int64_t(A::SCALE / O::SCALE);
+    bool rounded = true;
+    for (int32_t base : {INT32_MIN, INT32_MIN + 1, -105, -1, 0, 1, 105, INT32_MAX - 1}) {
+        for (int delta : {-1, 0, 1}) {
+            const A integral = A::fromRaw(int64_t(base) * scale + scale / 2 + delta);
+            k.applyGains({}, &integral);
+            const auto expected = std::clamp(integral, A(p.min_output), A(p.max_output));
+            rounded &= k.update({}, {}) == O(expected);
         }
     }
+    check(rounded, "bounded output conversion preserves half ties, their neighbours and both near-extreme rails");
 }
 
 int main() {
@@ -136,7 +221,18 @@ int main() {
     speedTrace(false);
     speedTrace(true);
     validation();
-    rollingLoadTrace();
+    rollingCurve<FloatProfile>();
+    rollingCurve<FixedProfile>();
+#ifdef MOTOR_1
+    rollingLoadTrace(20.f);
+    rollingLoadTrace(45.f);
+#endif
+    dynamicRailTrace<FloatProfile::PiTypes, 500>();
+    dynamicRailTrace<FixedProfile::SpeedPiTypes, 100>();
+    dynamicRailTrace<FixedProfile::SpeedPiTypes, 500>();
+    dynamicRailTrace<FixedProfile::CurrentPiTypes, 16000>();
+    exactRailReadback<FixedProfile::SpeedPiTypes>();
+    exactRailReadback<FixedProfile::CurrentPiTypes>();
     std::printf("PI interface: %d checks, %d failures\n", checks, failures);
     return failures != 0;
 }

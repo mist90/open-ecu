@@ -58,9 +58,11 @@ public:
         HallFault fault;
     };
 
-    HallMonitorCore() noexcept {
+    explicit HallMonitorCore(Fraction erratic_fraction = number<Fraction>(35, 100)) noexcept {
         static_assert(defaultWindowFits(), "Widen the Hall count format for this sampling rate");
-        setParameters(Params{});
+        Params defaults{};
+        defaults.erratic_fraction = erratic_fraction;
+        setParameters(defaults);
     }
 
     /** @brief Validate and calculate coefficients without accessing live monitor state.
@@ -104,10 +106,10 @@ public:
 
     void tick(bool active) noexcept {
         if constexpr (std::is_same<Profile, FixedProfile>::value) {
-            // Only edge density changes on a healthy, unidirectional run.
-            // Zero invalid/reversal scores cannot cross either threshold;
-            // an existing latched fault is never cleared here.
-            if (!last_invalid_ && invalid_score_ == State{} && reversals_accum_ == State{}) {
+            // Below half a public Count LSB both nonnegative histories round
+            // to zero: their leak is zero and neither detector can trip.
+            // Leave the fractional tails intact for the next event.
+            if (!last_invalid_ && noLeak(invalid_score_) && noLeak(reversals_accum_)) {
                 decay(edges_accum_);
                 return;
             }
@@ -183,12 +185,15 @@ public:
                 invalid_events_, invalid_ticks_, edges_, invalid_run_, last_position_, fault_};
     }
     Info getInfo() const noexcept { return describe(snapshot()); }
-    static Info describe(const Snapshot& s) noexcept {
+    template<class Report = Info>
+    static Report describe(const Snapshot& s) noexcept {
         const Count edges = toCount(s.edges_accum);
         const Count reversals = toCount(s.reversals);
         const Fraction erratic = edges > Count{} && edges >= s.min_edges
                                ? divideTo<Fraction>(reversals, edges) : Fraction{};
-        return {toCount(s.invalid), erratic, edges, reversals, s.invalid_events, s.invalid_run,
+        using Score = decltype(Report::invalid_score);
+        return {numberCast<Score>(toCount(s.invalid)), numberCast<decltype(Report::erratic_score)>(erratic),
+                numberCast<Score>(edges), numberCast<Score>(reversals), s.invalid_events, s.invalid_run,
                 Clock::ticksToUs(s.invalid_ticks), s.edges, s.last_position, s.fault};
     }
 
@@ -232,11 +237,23 @@ private:
             state = State::fromRaw(sum > Unsigned(maximum) ? maximum : Raw(sum));
         }
     }
+    static bool noLeak(State state) noexcept {
+        if constexpr (std::is_same_v<Profile, FixedProfile>) {
+            // For nonnegative Q32, all bits at or above half a Q16 LSB
+            // must be zero. Test both words without a 64-bit compare on ARM.
+            constexpr unsigned gap = State::FRACTION_BITS - Count::FRACTION_BITS;
+            static_assert(gap > 0 && gap <= 32);
+            const uint64_t raw = uint64_t(state.raw());
+            return (uint32_t(raw >> 32) | (uint32_t(raw) >> (gap - 1))) == 0;
+        } else {
+            return state == State{};
+        }
+    }
     void decay(State& state) noexcept {
         if constexpr (std::is_same<State, float>::value) {
             state *= keep_;
         } else {
-            if (state == State{}) return;
+            if (noLeak(state)) return;
             // Retain fractional leakage below the public count format's LSB.
             const State leak = multiplyTo<State>(alpha_, toCount(state));
             // Both operands are nonnegative, so their signed difference cannot

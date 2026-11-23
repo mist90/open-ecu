@@ -27,8 +27,8 @@ namespace libecu {
  * commutation steps with a 90-degree stator field offset for maximum torque.
  *
  * Usage:
- *  - Call updateHall() from Hall sensor EXTI interrupt
- *  - Call updateTick() from TIM1 Update interrupt (20 kHz on STM32G431)
+ *  - EXTI marks a pending reading; the current-rate owner calls updateHall()
+ *  - Call updateTick() from that same owner (20 kHz on STM32G431)
  *  - Call getNextHall() to get the next commutation step
  */
 class MotorPLL {
@@ -38,7 +38,8 @@ public:
     Core::Angle getNativeAngle() const noexcept { return core_.getAngle(); }
     uint8_t getNextHall(DriveMode mode, Core::Angle sampled) const noexcept { return core_.getNextHall(mode, sampled); }
     Core::Speed getNativeSpeedStepsSec() const noexcept { return core_.getSpeedStepsSec(); }
-    uint8_t getHallStateRaw() const noexcept { return core_.getInfo().hall_state_raw; }
+    uint8_t getHallStateRaw() const noexcept { return core_.hallState(); }
+    void getNativeBaseGains(Core::Gain& kp, Core::Gain& ki) const noexcept { core_.getGains(kp, ki); }
     static constexpr float LIMIT_ANGLE_ERROR = 0.5f;
     static constexpr float ANGLE_MAX = 6.0f;
     static constexpr float SYNC_SPEED = 5.0f;
@@ -74,10 +75,7 @@ public:
     explicit MotorPLL(float max_electrical_speed, bool is_inverse_commutation_table = false) noexcept;
 
     /**
-     * @brief Hall sensor interrupt handler (EXTI)
-     *
-     * Must be called from the real Hall sensor GPIO interrupt.
-     * Updates the PLL with the actual rotor position and timing information.
+     * @brief Install one decoded sector before the current-rate owner's next PLL tick.
      *
      * @param hall_state Current Hall step (0-5).
      */
@@ -86,8 +84,8 @@ public:
     /**
      * @brief Angle integrator
      *
-     * Must be called from TIM1 Update interrupt (every PWM tick)
-     * when PLL is enabled. Integrates the virtual rotor angle.
+     * Call once per prepared PWM frame, from its timer or PWM-synchronized ADC
+     * interrupt. Hall interrupts and slow-loop ticks never advance the angle.
      */
     void updateTick() noexcept;
 

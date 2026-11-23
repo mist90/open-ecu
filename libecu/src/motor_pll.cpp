@@ -44,9 +44,10 @@ bool MotorPLL::setGains(float kp, float ki) noexcept {
 }
 
 void MotorPLL::getBaseGains(float& kp, float& ki) const noexcept {
-    const auto state = core_.getInfo();
-    kp = numberCast<float>(state.kp);
-    ki = numberCast<float>(state.ki);
+    Core::Gain p, i;
+    getNativeBaseGains(p, i);
+    kp = numberCast<float>(p);
+    ki = numberCast<float>(i);
 }
 
 } // namespace libecu

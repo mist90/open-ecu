@@ -18,10 +18,12 @@ Keep the application in `libecu/src/main.cpp` and implement a board factory in
 - Implement the PWM, Hall and ADC interfaces under `libecu/hal/<platform>/`.
 
 `BoardInfo` contains hardware facts: PWM/control rates, nominal and maximum
-bus voltage, requested and actual dead time, duty/modulation limits, the
+bus voltage, requested and actual dead time, positive drive-current and duty/modulation limits, the
 low-side-clamped PWM choice and `current_feedback_filter_hz` for the current
 sensing front end. Motor poles, electrical model and PI tuning
-belong in `motor_config.hpp` / the control configuration.
+belong in `motor_config.hpp`, together with the current-error curves and rolling
+integral ceiling. The maximum positive current command is the lower of the motor
+limit and `BoardInfo::max_drive_current_a`; the port enforces its own raw current trip.
 
 See [board.hpp](../libecu/include/board.hpp) and the
 [F410 board port](../STM32F410/Core/Src/board.cpp).
@@ -34,6 +36,13 @@ The controller consumes a coherent calibrated frame, independently of injected
 registers, hardware oversampling or DMA. Raw getters retain one fixed configured
 scale: single-conversion counts on F410, sums of two on G431.
 Auxiliary readiness and source age remain the board's responsibility.
+
+Hall and PLL share one clock: prepare one control frame per PWM period.
+Run the carrier above SysTick and telemetry/configuration readers. The Hall IRQ
+only marks a pending sample; give it equal or lower preemption priority. A
+higher-priority break may stop the bridge and cancel the frame, but must not
+read or change rotor or PI state. The carrier tracks in place with interrupts
+enabled; lower-priority readers take coherent snapshots.
 
 Both STM32 ports call `pwmInterruptHandler()` once per PWM period. STM32F410
 uses one 12-bit injected U/V/W scan at 20 kHz; STM32G431 uses dual injected
@@ -106,7 +115,7 @@ that policy in its foreground tick using board callbacks.
 | ADC completion | Interrupt/DMA completion that identifies a complete frame. A timer event starting conversion does not mean that data are ready. |
 | DMA | Useful for background ADC and UART RX; prevents regular traffic from consuming the fast-loop interrupt budget. |
 | Hall inputs | Three digital inputs with appropriate voltage levels and noise filtering. A timer Hall/XOR interface is preferable to unfiltered GPIO interrupts on noisy motor wiring. |
-| Timebase | Monotonic timestamps independent of Hall edges; a periodic slow-control tick, currently 100 Hz. Preserve the HAL's timeout timebase separately. |
+| Timebase | Select SysTick and speed PI rates in `ActiveTiming`. Call `update()` once on a `Service` tick, or `updateSpeedPi()` on `SpeedPiOnly`. Feedback, ramp and foreground service stay at 100 Hz. Preserve the HAL's time units. |
 | Debug | A console and a way to measure real execution time: cycle counter, spare GPIO or a free-running timer. |
 | Clock | Accurate, known timer/ADC/UART clocks and enough processing margin for the actual worst-case path. |
 

@@ -78,6 +78,7 @@
 #include "motor_algorithm.hpp"
 #include "ecu_config.hpp"
 #include "foc_control_core.hpp"
+#include "motor_config.hpp"
 
 namespace libecu {
 template<class Profile> struct MotorStatusT;
@@ -171,14 +172,7 @@ struct FocParams {
  */
 class FocAlgorithm final : public MotorAlgorithm {
 public:
-    using Core = FocControlCore<ActiveNumericProfile, ActiveTiming::CURRENT_HZ>;
-#if defined(LIBECU_MOTOR1_SMOOTH_BENCH) && LIBECU_MOTOR1_SMOOTH_BENCH
-    /** @brief Publish 100-Hz bench settings under the caller's current-ISR mask. */
-#if defined(LIBECU_MOTOR1_SPAN_BENCH) && LIBECU_MOTOR1_SPAN_BENCH
-    void applyBenchTrims(Motor1BenchTrims trims) noexcept { core_.applyBenchTrims(trims); }
-#endif
-    void applyBenchPoint(const Motor1BenchPoint& point) noexcept { core_.applyBenchPoint(point); }
-#endif
+    using Core = FocControlCore<ActiveNumericProfile, ActiveTiming::CURRENT_HZ, motor_config::current_loop>;
     /** @brief Exact next FOC reconstruction identity, including resets of its private duty history. */
     unsigned reconstructedPhase() const noexcept { return core_.reconstructedPhase(); }
     /** @brief Select one frame's discarded phase; caller qualifies both retained phases and owns the ISR. */

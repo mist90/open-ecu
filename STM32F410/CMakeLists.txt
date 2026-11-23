@@ -3,6 +3,8 @@ set(CMAKE_TOOLCHAIN_FILE ${CMAKE_CURRENT_SOURCE_DIR}/../cmake/arm-none-eabi-gcc.
 project(open-ecu C CXX ASM)
 set(CMAKE_C_STANDARD 17)
 set(CMAKE_CXX_STANDARD 17)
+include(${CMAKE_CURRENT_SOURCE_DIR}/../cmake/speed-pi.cmake)
+configure_speed_pi(1000)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)

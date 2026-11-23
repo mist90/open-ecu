@@ -30,10 +30,13 @@ Hall sensors -> Hall monitor + PLL -> angle ----+
 PWM-synchronized ADC -> six-step or FOC -> PWM -> inverter -> motor
 ```
 
-The normal speed loop runs at **100 Hz**. The current loop and PLL run on the
-board's fast sampling clock: normally **20 kHz** on STM32 (`Ts = 50 us`).
-These rates are explicit board configuration, not universal properties of
-the algorithms.
+The current loop and PLL run at **20 kHz** on STM32 (`Ts = 50 us`). The
+outer speed PI runs at **1 kHz** by default. Speed measurement and its
+`alpha=0.5` filter, the setpoint ramp, traction ceiling and foreground
+telemetry stay at **100 Hz**. On a coincident tick the new limits and feedback
+precede a single PI step; between measurements the PI integrates the held
+error and observes the latest saturation. `-DSPEED_PI_HZ=100` selects the
+original cadence. See the [matched rate experiment](../tests/test_speed_pi_rate/README.md).
 
 Three independent selections must be distinguished:
 
@@ -87,6 +90,9 @@ If the inner loop reports saturation and the error would drive it further
 into that limit, integration is held. The PI also back-calculates its own
 output clipping using `Kb*Ts*(applied-requested)` and clamps the integral.
 The standstill-release logic clears residual current demand after stopping.
+Tuning prepares `Ki*Ts/2`, `Kb*Ts` and the configured bounds outside the
+update loop. The fixed kernel compares in Q32 accumulator units; rolling
+integral and traction limits are local to each PI step.
 
 `BldcController::setSpeedPi(kp, ki)` retunes the active electrical mode
 without resetting its speed PI. A live Kp change adjusts the integral to
@@ -101,30 +107,21 @@ the rebase. On failure it returns `false` and keeps the previous gains.
 
 | Setting | Value |
 |---|---:|
-| Current-output speed Kp | 3 A / mechanical RPS |
-| Current-output speed Ki | 20 A / (mechanical RPS * s) |
-| Current output limits | -6 to +20 A |
-| Speed-PI integral limits | -4 to +12 A |
+| Current-output speed Kp | 1.25 A / mechanical RPS |
+| Current-output speed Ki | 5 A / (mechanical RPS * s) |
+| Current output limits | -6 to +20 A on STM32F410 (motor ceiling +45 A, limited by the board) |
+| Speed-PI integral limits | -4 A to a rolling upper bound: 12 A through 0.125 RPS, then +16 A per RPS up to the current limit |
+| Measured acceleration limit | 1 RPS/s; correction gain 2 A/RPS |
 | Speed-PI back-calculation gain | 2 / s |
-| Measured-speed LPF alpha | 0.5 per speed tick |
+| Measured-speed LPF alpha | 0.5 per 10-ms measurement |
 | Target-speed LPF | Disabled; acceleration limiting is separate |
 
-These are the generic MOTOR_1 defaults (`SPID=3,20` in velocity/current
-mode). A board or command protocol can apply runtime overrides, including
-a more conservative acceleration ramp.
-
-The [T60 motor profile](../tests/test_motor1_profiles/README.md)
-(`LIBECU_MOTOR1_T60_LOAD=1`) normally uses Kp = 3, Ki = 24; its Kp is
-configurable with `LIBECU_T60_SPEED_KP`. Within that profile,
-`LIBECU_T60_UNLOADED_PI=1` selects **outer speed-loop Kp = 1.25, Ki = 5**.
-These gains were tested only on a free wheel. Loaded operation needs
-different gains, tuned and verified under representative load. Neither
-T60 setting changes the generic 3/20 defaults.
-
-The T60 profile also supports `LIBECU_TRACTION_ACCEL_RPS2` (off by
-default). This limits **positive PI output** using the change in measured
-speed per tick, independently of the ramp on requested speed. It retains
-the configured braking-current limit.
+The [motor configuration](../libecu/include/motor_config.hpp) defines both
+outer-loop gain pairs. `MOTOR_1_LOADED=0` (default) selects **1.25/5** for
+the free wheel; `1` selects **3/24** for operation under load. Only the two
+gains change. Validate the loaded pair with the intended load. The rolling
+ceiling limits the integral; the acceleration ceiling limits positive output.
+Neither changes the board's raw phase-current protection.
 
 Load inertia explains the tuning trade-off. An ideal continuous model for a
 surface-magnet motor, before current/estimator/filter/sampling delays, gives:
@@ -147,13 +144,13 @@ requirements.
 
 An earlier `Kp/Ki = 3/0.15` experiment improved modeled loaded damping but
 responded too slowly to real load changes; it was replaced by `3/2`.
-On 2026-11-17, the shared default became **3/20**, following the user's
+On 2026-11-17, the then-default became **3/20**, following the user's
 successful free-wheel test on STM32F410. This is a speed-PI change; the
 electrical current-loop gains and the hybrid Iq correction gain are separate.
 
 ### SPID 3/20 stability assessment
 
-The torque-driven mechanical model uses the production speed PI and Hall PLL,
+This historical 100-Hz characterization uses the shared speed PI and Hall PLL,
 float/full-fixed arithmetic, and 8/16/20-kHz current clocks. Each case runs
 two 120-s phases; settled metrics use the last 20 s of each phase.
 
@@ -174,7 +171,7 @@ events; their nonlinear result below is decisive for the sensitivity corner.
 The loaded mode rings with a period near 6.6 s and an amplitude decay time
 constant near 18.8 s. Faster load rejection therefore comes with weaker damping.
 
-| Model measurement | Previous 3/2 | Current 3/20 |
+| Model measurement | 3/2 | 3/20 |
 |---|---:|---:|
 | Nominal free-wheel startup overshoot, 0 to 6 RPS | 0.031-0.033 RPS | 0.296-0.301 RPS |
 | Nominal free-wheel undershoot, 6 to 3 RPS | 0.130-0.132 RPS | 0.306-0.308 RPS |
@@ -213,7 +210,7 @@ Sources: [PI implementation](../libecu/include/pi_controller.hpp),
 ### Hall acquisition
 
 Three Hall inputs identify one of six electrical sectors. The Hall interrupt
-sets a pending flag; the next current or observation tick reads one decoded
+sets a pending flag; the next PWM frame reads one decoded
 sector and shares it between the Hall monitor and PLL. Multiple interrupts
 can coalesce. This mechanism does not guarantee a settling-time debounce;
 electrical input qualification belongs to the board.
@@ -226,9 +223,10 @@ PLL synchronization and Hall-health fault status are separate signals.
 
 ### Continuous angle from discrete sectors
 
-The PLL is a sector-position observer. It compares its estimated angle with
-the latest Hall sector on every fast tick, rather than calculating speed only
-from the time between Hall edges.
+The PLL compares its estimated angle with the latest Hall sector exactly once
+per prepared PWM frame. In `NEUTRAL` it tracks a coasting wheel while PWM
+and acquisition run. Without PWM it holds its last estimate; pending Hall
+edges, SysTick and telemetry do not create a rotor tick.
 
 Ignoring finite-number rounding, the tracking update is:
 
@@ -242,10 +240,9 @@ angle = wrap6(angle + Ts*phase_velocity)
 The shortest difference is formed over a six-step electrical revolution;
 the subsequent clamp limits detector error to half a step. The proportional
 term corrects phase promptly, while the integral estimates sustained speed.
-The generic MOTOR_1 PLL uses `Kp = 100`, `Ki = 5000`. Their ideal linear
-natural frequency is about 11.25 Hz; Hall quantization, detector clipping
-and reseeding modify the actual response. The T60 profile uses 50/1250 for
-the Hall PLL regardless of its outer speed-PI tuning.
+MOTOR_1 uses `Kp = 50`, `Ki = 1250`, regardless of the outer speed PI.
+Its ideal linear natural frequency is about 5.63 Hz; Hall quantization,
+detector clipping and reseeding modify the actual response.
 
 **Reported speed is the integral term.** Angle advancement uses the full
 `Kp*error + integral` result. The speed controller and hybrid back-EMF model
@@ -381,7 +378,11 @@ not establish this motor-specific alignment.
 
 ### Ordinary d/q PI strategy
 
-Each axis forms `requested = Kp*(target-filtered_current) + integral`.
+Each axis forms `requested = Kp*error + integral`, where
+`error = (target-filtered_current) * weight(abs(speed_steps_s))`.
+For MOTOR_1 the weight rises from 1/16 to 1 between 60 and 75 electrical
+Hall steps/s on both axes. Only q fades back from 1 to 1/16 between 360 and
+480 steps/s. JK42BLS01 uses unit weights on both axes.
 After limiting, its integral receives `Ki*Ts*error`, followed, when enabled,
 by `Kb*(limited-requested)`. Here FOC `Kb` is a **dimensionless per-sample
 fraction**, normally 1; it differs from the time-scaled `Kb` of the generic
@@ -443,10 +444,10 @@ The cutoff belongs to the board's analog front end and is published through
 | STM32F410 / IHM08M1 | 2 kHz |
 | STM32G431 | Bypass |
 
-At 20 kHz sampling, the 2-kHz filter has `alpha ~= 0.455887`. MOTOR_1
-separately selects a 125-Hz FOC model-tuning input, giving
-`Kp ~= 0.549779 V/A`, `Ki ~= 516.792 V/(A*s)` from R=0.658 ohm and L=0.7 mH.
-The 125-Hz value is a tuning input, not a measured closed-loop bandwidth.
+At 20 kHz sampling, the 2-kHz filter has `alpha ~= 0.455887`. The MOTOR_1
+calibration stores `Kp = 0.549775 V/A`, `Ki = 516.792 V/(A*s)`. This pair
+corresponds to a 125-Hz model input with R=0.658 ohm and L=0.7 mH;
+125 Hz is not a measured closed-loop bandwidth.
 
 The F410 comparison selected the 2-kHz filter with these quarter-strength
 gains instead of the earlier unfiltered 2.199115/2067.168 pair. It reduced
@@ -479,8 +480,8 @@ current correction**. It targets noisy current feedback, where a fast
 proportional response can turn switching spikes into voltage disturbances.
 
 It remains current control: the outer speed PI supplies an ampere demand.
-The existing `CURRENT_MODE` is retained. `HybridIqParams::enabled` selects
-this strategy; the default is the ordinary q PI.
+`HybridIqParams::enabled` selects this strategy in a core that supports it;
+the scooter calibration uses the ordinary q PI.
 
 A board opts in through `BoardInfo::hybrid_iq_control`. Shared main supplies
 phase resistance from `BLDC_R_PHASE_OHM`, inductance from `BLDC_L_PHASE_H`
@@ -511,7 +512,7 @@ dynamics.
 The underlying q-axis model is
 `Uq = R*Iq + L*dIq/dt + omega_e*(L*Id + flux)`. With the usual zero Id target,
 the fast path supplies its steady resistive and back-EMF terms.
-There is no `L*dIq_target/dt` feed-forward: differentiating the 100-Hz outer
+There is no `L*dIq_target/dt` feed-forward: differentiating the outer
 loop's stepped request would create voltage kicks.
 
 Back-EMF feed-forward always operates in hybrid current mode, including when
@@ -704,8 +705,9 @@ bash tests/test_hall_monitor/run.sh
 bash tests/test_motor_pll/run.sh
 bash tests/test_control/run.sh float
 bash tests/test_control/run.sh numeric-fixed
-bash tests/test_control/run.sh t60-fixed
-bash tests/test_control/run.sh t60-feedback
+bash tests/test_control/run.sh scooter-fixed
+bash tests/test_motor_calibration/run.sh
+bash tests/test_speed_pi_rate/run.sh
 bash tests/test_foc/run.sh float
 bash tests/test_foc/run.sh fixed
 bash tests/test_current_filter/run.sh
@@ -734,7 +736,7 @@ PI output. `test_mtte` checks its signs, timing and behavior under simulated
 traction changes. The observer is not enabled by either STM32 port.
 
 The [speed-loop characterization](../tests/test_speed_loop/README.md) has its
-own retained comparison budgets: the current 3/20 tuning exits nonzero in
+own retained comparison budgets: the historical 3/20 tuning exceeded them in
 53/54 cases, including 11 settled-motion failures in the light/high-torque
 corner. See [the stability assessment](#spid-320-stability-assessment) for
 the distinction between transient-budget failures and sustained motion.

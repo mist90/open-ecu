@@ -11,15 +11,15 @@
 #ifndef LIBECU_MOTOR_CONFIG_HPP
 #define LIBECU_MOTOR_CONFIG_HPP
 
-// #define MOTOR_1  // Scooter motor; leave disabled for JK42BLS01.
+#include "control_calibration.hpp"
+#include "current_loop_tuning.hpp"
 
+namespace libecu::motor_config {
+
+// The target selects the machine. Each machine has one calibration.
 #ifdef MOTOR_1
 #define BLDC_NUM_POLES 40
-#if defined(LIBECU_MOTOR1_T60_45A) && defined(LIBECU_MOTOR1_T60_LOAD)
 #define BLDC_MAX_CURRENT 45.0f
-#else
-#define BLDC_MAX_CURRENT 20.0f
-#endif
 #define BLDC_MIN_CURRENT  -6.0f
 #define BLDC_MAX_SPEED 12.0f
 #define BLDC_MAX_ACCELERATION 6.0f
@@ -30,44 +30,41 @@
 #define BLDC_INVERTION false
 #define BLDC_SPEED_VOLTAGE_KP 0.1f
 #define BLDC_SPEED_VOLTAGE_KI 0.2f
-#if defined(LIBECU_MOTOR1_T60_LOAD)
-// T60 outer speed PI, A/(rev/s). Keep the Hall loop and the integral gain
-// independent; a configurable Kp allows matched, single-variable dyno tests.
-#ifndef LIBECU_T60_SPEED_KP
-#define LIBECU_T60_SPEED_KP 3.0f
+// Select the outer speed PI here. Both gain pairs use the same current/PLL calibration.
+#ifndef MOTOR_1_LOADED
+#define MOTOR_1_LOADED 0
 #endif
-#if defined(LIBECU_T60_UNLOADED_PI) && LIBECU_T60_UNLOADED_PI
+#if MOTOR_1_LOADED == 0
+// Measured on the unloaded wheel.
 #define BLDC_SPEED_CURRENT_KP 1.25f
 #define BLDC_SPEED_CURRENT_KI 5.0f
-#else
-#define BLDC_SPEED_CURRENT_KP LIBECU_T60_SPEED_KP
-#define BLDC_SPEED_CURRENT_KI 24.0f
-#endif
-#define BLDC_PLL_KP 50.0f
-#define BLDC_PLL_KI 1250.0f
-#elif defined(LIBECU_MOTOR1_SMOOTH_BENCH) && LIBECU_MOTOR1_SMOOTH_BENCH
-// Unloaded wheel with the cascaded dq current PI. Pair the softer speed loop
-// with the narrower Hall PLL rather than running the road PI against its delay.
-#define BLDC_SPEED_CURRENT_KP 1.25f
-#define BLDC_SPEED_CURRENT_KI 5.0f
-#define BLDC_PLL_KP 50.0f
-#define BLDC_PLL_KI 1250.0f
-#else
-// Mechanical-RPS -> current PI: 10-inch wheel, 80 kg effective road mass.
-// Kp is limited by the unloaded wheel/PLL delay; Ki trades damping for load-step response.
-// Default MOTOR_1 tuning rationale: docs/software.md#speed-loop-tuning.
+#elif MOTOR_1_LOADED == 1
+// Previous loaded-roller tuning; verify under the intended load.
 #define BLDC_SPEED_CURRENT_KP 3.0f
-#define BLDC_SPEED_CURRENT_KI 20.0f
-#define BLDC_PLL_KP 100.0f
-#define BLDC_PLL_KI 5000.0f
+#define BLDC_SPEED_CURRENT_KI 24.0f
+#else
+#error "MOTOR_1_LOADED must be 0 or 1"
 #endif
+#define BLDC_PLL_KP 50.0f
+#define BLDC_PLL_KI 1250.0f
+// Hall sectors/s (120 per mechanical revolution here). Both axes recover full
+// PI authority after the low-speed ramp; only Iq fades again at high speed.
+inline constexpr ErrorWeightRamp low_speed_weight{60, 75, 1.0f / 16};
+inline constexpr CurrentLoopCalibration current_loop{
+    {low_speed_weight, {}}, {low_speed_weight, {360, 480, 1.0f / 16}}, true
+};
+// The integral earns 16 A/(rev/s) above 7.5 RPM. The output ceiling from
+// measured acceleration and the port's hardware phase-current trip are separate.
+inline constexpr RollingIntegralLimit rolling_integral{12.0f, 0.125f, 16.0f};
+inline constexpr float speed_integral_max_a = BLDC_MAX_CURRENT;
+inline constexpr float traction_acceleration_rps2 = 1.0f, traction_gain_a_per_rps = 2.0f;
+inline constexpr float soft_start_rps2 = 2.0f; // Command ramp, independent of acceleration feedback.
 #define BLDC_SIX_STEP_USE_MOTOR_MODEL true
 #define BLDC_CURRENT_FALLBACK_KP 0.1f
 #define BLDC_CURRENT_FALLBACK_KI 50.0f
 #define BLDC_START_WITH_FOC true
 #define BLDC_FOC_ANGLE_OFFSET_DEG -60.0f
-// Electrical model of one phase, used to compute the current-loop PI gains
-// (see libecu/include/current_loop_tuning.hpp).
+// Electrical model of one phase, used for model-based six-step PI tuning.
 //
 // ke and R were identified from a captured no-load speed sweep over 14
 // operating points (0.30 V rms fit).
@@ -82,7 +79,7 @@
 #define BLDC_KE_V_S_PER_RAD_E   1.2336e-2f
 #define BLDC_R_PHASE_OHM        0.658f
 #define BLDC_L_PHASE_H          0.0007f
-// Current-loop bandwidth. Measured sweep against the old hand-tuned gains
+// Six-step current-loop bandwidth. Measured sweep against the old hand-tuned gains
 // (which are themselves ~356 Hz by the same formula):
 //   500 Hz: mean |Ierr| -15%/-9% at 5/8 RPS, worst case and commutation swing
 //           unchanged, duty activity 1.4x
@@ -91,10 +88,8 @@
 // 500 Hz ships because it never regresses; raise it if mean accuracy matters
 // more than worst-case excursion.
 #define BLDC_ILOOP_BW_HZ        500.0f
-// FOC uses lower gains with dq filtering: FPID ~= 0.549779 / 516.792.
-// This is the model's tuning input, not a measured closed-loop bandwidth.
-// F410 noise/transient comparison: docs/software.md#current-feedback-filtering.
-#define BLDC_FOC_ILOOP_BW_HZ    125.0f
+// Measured drive's d/q gains (125-Hz model tuning with filtered feedback).
+inline constexpr PiParameters foc_current_pi{0.549775f, 516.792f};
 #else
 // JK42BLS01, FOC qualified unloaded on STM32G431 at 20 V.
 #define BLDC_NUM_POLES 8
@@ -108,6 +103,11 @@
 #define BLDC_SPEED_VOLTAGE_KI 0.02f
 #define BLDC_SPEED_CURRENT_KP 0.025f
 #define BLDC_SPEED_CURRENT_KI 0.025f
+inline constexpr CurrentLoopCalibration current_loop{};
+inline constexpr RollingIntegralLimit rolling_integral{};
+inline constexpr float speed_integral_max_a = 12.0f;
+inline constexpr float traction_acceleration_rps2 = 0.0f, traction_gain_a_per_rps = 0.0f;
+inline constexpr float soft_start_rps2 = BLDC_MAX_ACCELERATION;
 // Six-step uses its independently tuned duty-output current PI.
 #define BLDC_SIX_STEP_USE_MOTOR_MODEL false
 #define BLDC_CURRENT_FALLBACK_KP 0.15f
@@ -127,7 +127,9 @@
 #define BLDC_R_PHASE_OHM        1.6f
 #define BLDC_L_PHASE_H          0.0017f
 #define BLDC_ILOOP_BW_HZ        500.0f
-#define BLDC_FOC_ILOOP_BW_HZ    500.0f
+inline constexpr PiParameters foc_current_pi =
+    tuneFocCurrentPi({BLDC_L_PHASE_H, BLDC_R_PHASE_OHM, 0, BLDC_ILOOP_BW_HZ});
 #endif
 
+} // namespace libecu::motor_config
 #endif // LIBECU_MOTOR_CONFIG_HPP

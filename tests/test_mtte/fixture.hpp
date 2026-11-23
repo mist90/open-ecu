@@ -4,13 +4,16 @@
 
 #include "motor_config.hpp"
 #include "mtte_observer.hpp"
+#include "pi_controller.hpp"
 
 namespace fixture {
 
 using libecu::DriveMode;
 using libecu::MtteObserver;
-static_assert(BLDC_NUM_POLES == 40 && BLDC_SPEED_CURRENT_KP == 6 && BLDC_SPEED_CURRENT_KI == 24,
-              "Run the T60 speed-loop profile");
+static_assert(BLDC_NUM_POLES == 40 && BLDC_MAX_CURRENT == 45 && BLDC_MIN_CURRENT == -6,
+              "The COMS3 comparison used the scooter motor and a 45 A drive");
+// Keep the historical pair identical in every arm; it is not the motor's boot tuning.
+constexpr libecu::PiParameters COMS3_PI{6, 24, BLDC_MAX_CURRENT, BLDC_MIN_CURRENT, BLDC_MAX_CURRENT, -4, 2};
 constexpr float J = 0.00625f; // Inertia borrowed from another MOTOR_1 model, not a measured fixture value.
 constexpr float KT = 1.5f * (BLDC_NUM_POLES / 2) * BLDC_KE_V_S_PER_RAD_E;
 constexpr float R = 0.760f / MtteObserver::TWO_PI; // Nominal wheel circumference in metres, converted to radius.

@@ -327,6 +327,27 @@ static void traces() {
     read(2, true);
     check(actual.faultCause() == HallFault::ERRATIC_SEQUENCE, "forward edge can cross the minimum-edge gate");
 
+    if constexpr (std::is_same_v<Profile, FixedProfile>) {
+        // An isolated reversal/illegal sample leaves a nonzero wide tail after
+        // the public count rounds to zero. Keep it across the fast quiet path.
+        reset();
+        params = typename Monitor::Params{};
+        params.invalid_threshold = Count::fromRaw(1);
+        configure(params);
+        constexpr int64_t half = State::SCALE / Count::SCALE / 2;
+        for (int offset : {-1, 0, 1}) {
+            reset();
+            expected.scores[0] = expected.scores[2] = half + offset;
+            expected.scores[1] = half + offset;
+            expected.seed(actual);
+            for (unsigned i = 0; i < 8; ++i) tick(true);
+            read(255, true);
+            read(1, true);
+            read(0, true);
+            read(1, true);
+        }
+    }
+
     uint64_t random = 0x843720bcda9e513fULL;
     constexpr uint64_t max_events = uint64_t(std::numeric_limits<typename Count::StorageType>::max())
                                   / Count::SCALE;

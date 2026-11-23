@@ -50,6 +50,7 @@ struct BoardInfo {
     bool     low_side_clamped_pwm = false; ///< FOC zero vector uses only the low-side switches
     float    current_feedback_filter_hz = 0.0f; ///< First-order Id/Iq cutoff for this analog front end; 0 = off
     bool     hybrid_iq_control = false; ///< Opt-in model-led Iq for a noisy current front end
+    float    max_drive_current_a = 20.0f; ///< Inverter's positive command limit, independent of its phase trip
 };
 
 /**

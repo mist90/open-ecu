@@ -6,6 +6,7 @@
 #include "bldc_controller.hpp"
 #include "command_processor.hpp"
 #include "motor_config.hpp"
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -53,7 +54,7 @@ void testDefaults(BldcController& controller) {
     check(controller.getDriveMode() == before, "default hooks preserve drive state");
 }
 
-void testMotorDefaults(BldcController& controller) {
+void testMotorDefaults(BldcController& controller, const BoardInfo& board) {
     // Exercise the real shared main's configuration assembly, before any
     // protocol can hide an incorrect boot default with runtime setters.
     const auto& params = controller.getParams();
@@ -64,16 +65,25 @@ void testMotorDefaults(BldcController& controller) {
     controller.getSpeedPiGains(speed_kp, speed_ki);
     controller.getCurrentPiGains(current_kp, current_ki);
     controller.getFocCurrentPi(foc_kp, foc_ki);
+    float pll_kp{}, pll_ki{};
+    controller.getPllBaseGains(pll_kp, pll_ki);
 #ifdef MOTOR_1
     check(params.num_poles == 40 && !params.useInverseCommTable, "scooter Hall configuration survives");
     check(std::fabs(controller.getFocAngleOffsetDeg() + 60.0f) < 0.001f,
           "scooter FOC alignment remains -60 degrees");
-    check(std::fabs(speed_kp - BLDC_SPEED_CURRENT_KP) < 0.00001f &&
-          std::fabs(speed_ki - BLDC_SPEED_CURRENT_KI) < 0.00001f,
-          "scooter loads the shared speed PI tuning");
-    check(params.max_current == 20.0f && params.min_current == -6.0f,
-          "scooter current limits are -6/+20 A");
-    check(std::fabs(foc_kp - 0.549779f) < 0.0001f && std::fabs(foc_ki - 516.792f) < 0.002f,
+#if MOTOR_1_LOADED
+    check(speed_kp == 3.f && speed_ki == 24.f, "loaded scooter boots with 3/24 speed PI");
+#else
+    check(speed_kp == 1.25f && speed_ki == 5.f, "scooter boots with 1.25/5 speed PI by default");
+#endif
+    check(pll_kp == 50.f && pll_ki == 1250.f, "scooter Hall PLL uses 50/1250");
+    check(params.traction_acceleration_rps2 == 1.f && motor_config::traction_gain_a_per_rps == 2.f,
+          "both scooter PI selections keep the same measured-acceleration calibration");
+    const float positive_limit = std::min(45.f, board.max_drive_current_a);
+    check(params.pi_current_mode.integral_max == positive_limit, "rolling I headroom cannot exceed the drive rail");
+    using FocGain = ActiveNumericProfile::Gain;
+    check(foc_kp == numberCast<float>(constant<FocGain>(0.549775f)) &&
+          foc_ki == numberCast<float>(constant<FocGain>(516.792f)),
           "scooter boots with FOC gains qualified with first-order dq filtering");
     check(std::fabs(current_kp - 0.183260f) < 0.0001f && std::fabs(current_ki - 172.264f) < 0.002f,
           "scooter six-step PI still follows the model and the test board's 24 V bus");
@@ -87,7 +97,13 @@ void testMotorDefaults(BldcController& controller) {
           "JK42 model produces the hardware-qualified FOC gains without AT commands");
     check(std::fabs(current_kp - 0.15f) < 0.0001f && std::fabs(current_ki - 200.0f) < 0.002f,
           "JK42 FOC model does not replace the independently tuned six-step PI");
+    check(pll_kp == 100.f && pll_ki == 5000.f, "JK42 keeps its own Hall PLL tuning");
+    check(params.traction_acceleration_rps2 == 0.f, "JK42 boots without measured acceleration feedback");
+    const float positive_limit = std::min(6.f, board.max_drive_current_a);
 #endif
+    check(params.max_current == positive_limit && params.pi_current_mode.max_output == positive_limit &&
+          params.min_current == -6.f && params.pi_current_mode.min_output == -6.f,
+          "positive PI rail respects both board and motor; the braking rail is independent");
 }
 
 char events[32]{};
@@ -126,6 +142,9 @@ class TestBoard final : public Board {
 public:
     bool initialize() noexcept override {
         record('I');
+        check(info_.max_drive_current_a == 20.f, "a board without an explicit drive rating defaults to 20 A");
+        if (const char* limit = std::getenv("TEST_BOARD_DRIVE_LIMIT_A"))
+            info_.max_drive_current_a = std::strtof(limit, nullptr);
         if (const char* cutoff = std::getenv("TEST_BOARD_CURRENT_FILTER_HZ"))
             info_.current_feedback_filter_hz = std::strtof(cutoff, nullptr);
         if (const char* hybrid = std::getenv("TEST_BOARD_HYBRID_IQ"))
@@ -138,8 +157,11 @@ public:
     AdcInterface* adc() noexcept override { return nullptr; }
     CommandProcessor& createConsole(BldcController& controller) noexcept override {
         record('C');
+#ifdef MOTOR_1
+        check(!info_.hybrid_iq_control, "a PI-only motor must reject a hybrid board before protocol startup");
+#endif
         testDefaults(controller);
-        testMotorDefaults(controller);
+        testMotorDefaults(controller, info_);
         const auto& foc = controller.getParams().foc;
         const auto expected_order = info_.current_feedback_filter_hz > 0.0f
             ? CurrentFilterOrder::FIRST_ORDER : CurrentFilterOrder::OFF;
@@ -153,7 +175,8 @@ public:
         static Protocol protocol(&controller);
         return protocol;
     }
-    bool startCurrentLoop(BldcController&, CommandProcessor& protocol) noexcept override {
+    bool startCurrentLoop(BldcController& controller, CommandProcessor& protocol) noexcept override {
+        controller_ = &controller;
         record('F');
         check(!protocol.wantsCurrentSample(), "board can omit snapshots for a non-capturing protocol");
         return true;
@@ -163,15 +186,31 @@ public:
         if (iterations_++ < 2) return true;
         check(std::strcmp(events, "ICFLSTPOTPO") == 0,
               "shared main initializes and dispatches every protocol lifecycle hook in order");
+        controller_->setControlMode(ControlMode::CLOSED_LOOP_TORQUE);
+        controller_->setDriveMode(DriveMode::FORWARD);
+        controller_->setCurrent(100.f);
+        check(controller_->getStatus().target_current == std::min(BLDC_MAX_CURRENT, info_.max_drive_current_a),
+              "a torque command cannot exceed the installed board/motor pair");
+        controller_->setCurrent(-100.f);
+        check(controller_->getStatus().target_current == -6.f, "board drive rating does not change the braking floor");
+        controller_->setDriveMode(DriveMode::NEUTRAL);
         std::printf("Command processor lifecycle: %u checks, %u failures\n", checks, failures);
         std::exit(failures == 0 ? 0 : 1);
     }
     [[noreturn]] void fail() noexcept override {
+#ifdef MOTOR_1
+        if (info_.hybrid_iq_control) {
+            check(std::strcmp(events, "I") == 0, "incompatible current control is rejected before arming loops");
+            std::printf("Hybrid board / PI-only motor: boot rejected, %u failures\n", failures);
+            std::exit(failures ? 1 : 0);
+        }
+#endif
         std::fprintf(stderr, "FAIL: shared main rejected the fake board\n");
         std::exit(1);
     }
 private:
     BoardInfo info_{ActiveTiming::CURRENT_HZ, ActiveTiming::SPEED_HZ, 24.0f, 350, 350};
+    BldcController* controller_ = nullptr;
     Pwm pwm_;
     Hall hall_;
     unsigned iterations_ = 0;

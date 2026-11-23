@@ -122,20 +122,6 @@ private:
     }
 
 public:
-#if defined(LIBECU_MOTOR1_SPAN_BENCH) && LIBECU_MOTOR1_SPAN_BENCH
-    // Warmed from the actual calibrated input codes. Only an exact
-    // voltage match is a hit. No division approximation or bus-value rounding.
-    static void warmBus(Voltage value) noexcept {
-        auto &e=bus_table_[(uint32_t(value.raw())>>12)&511u];
-        e.inverse=inverseBusVoltage(value).raw();
-        e.voltage=value.raw();
-    }
-    static Fraction preparedInverse(Voltage value) noexcept {
-        const auto &e=bus_table_[(uint32_t(value.raw())>>12)&511u];
-        return value.raw()>int32_t(Voltage::SCALE) && e.voltage==value.raw()
-               ? Fraction::fromRaw(e.inverse) : inverseBusVoltage(value);
-    }
-#endif
     /** @brief Natural logarithm of a positive bounded integer ratio (NTC divider). */
     static FixedProfile::Logarithm logRatio(uint64_t numerator, uint64_t denominator) noexcept {
         using Log = FixedProfile::Logarithm;
@@ -168,10 +154,6 @@ private:
         }
         return knots;
     }();
-#endif
-#if defined(LIBECU_MOTOR1_SPAN_BENCH) && LIBECU_MOTOR1_SPAN_BENCH
-    struct BusEntry { int32_t voltage,inverse; };
-    inline static BusEntry bus_table_[512]{};
 #endif
     static uint64_t squared(int32_t a, int32_t b) noexcept {
         return uint64_t(int64_t(a) * a) + uint64_t(int64_t(b) * b);
@@ -255,13 +237,7 @@ struct FocTransforms {
     };
     static ModulationBus modulationBus(Voltage bus) noexcept {
         if (bus <= number_v<Voltage, 1>) return {};
-#if defined(LIBECU_MOTOR1_SPAN_BENCH) && LIBECU_MOTOR1_SPAN_BENCH
-        if constexpr (std::is_same<Profile,FixedProfile>::value)
-            return ModulationBus(FixedMath::preparedInverse(bus),true);
-        else return ModulationBus(Profile::Math::inverseBusVoltage(bus),true);
-#else
         return ModulationBus(Profile::Math::inverseBusVoltage(bus), true);
-#endif
     }
     /** @brief Evaluate one angle, retaining the coefficient bounds for both transforms. */
     static Rotation rotation(Angle angle) noexcept {

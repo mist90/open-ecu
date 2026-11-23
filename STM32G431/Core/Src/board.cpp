@@ -132,8 +132,7 @@ int __io_putchar(int ch)
 int __io_getchar(void)
 {
     int ch = EOF;
-
-    disable_interrupts();
+    libecu::CriticalSection lock;
 
     /* Read DMA write position from CNDTR (bytes remaining) */
     uint16_t cndtr = hdma_usart2_rx.Instance->CNDTR;
@@ -148,8 +147,6 @@ int __io_getchar(void)
         dma_rx_index = (dma_rx_index + 1) % 256;
     }
 
-    enable_interrupts();
-
     return ch;
 }
 }
@@ -159,14 +156,26 @@ uint32_t time_us()
     return htim2.Instance->CNT;
 }
 
-// Use CMSIS intrinsics for interrupt control
-// These functions are used by libecu library for critical sections
-extern "C" void disable_interrupts() {
-    __asm volatile ("cpsid i" : : : "memory");
+// Each libecu reader restores the mask it entered with, including under a
+// board-owned outer lock. The normal path needs no shared nesting counter.
+extern "C" uint32_t save_interrupt_state() {
+    const uint32_t prior = __get_PRIMASK();
+    __disable_irq();
+    return prior;
+}
+extern "C" void restore_interrupt_state(uint32_t prior) {
+    __set_PRIMASK(prior);
 }
 
+// Paired legacy callers have no place to keep a token of their own.
+static unsigned interrupt_depth;
+static uint32_t outer_primask;
+extern "C" void disable_interrupts() {
+    const uint32_t prior = save_interrupt_state();
+    if (interrupt_depth++ == 0) outer_primask = prior;
+}
 extern "C" void enable_interrupts() {
-    __asm volatile ("cpsie i" : : : "memory");
+    if (interrupt_depth && --interrupt_depth == 0) restore_interrupt_state(outer_primask);
 }
 
 /**
@@ -222,13 +231,18 @@ extern "C" void motor_controller_pwm_interrupt_handler(void)
 }
 
 /**
- * @brief 1 kHz auxiliary DMA service, divided down for the speed/control loop
+ * @brief 1 kHz auxiliary DMA service and speed PI, with slow control on its divider
  */
 void HAL_SYSTICK_Callback(void) {
     static uint32_t divider = 0;
     if (adc_running && !adc_driver.serviceRegular(time_us())) pwm_driver.trip();
-    if (!control_enabled || ++divider < 1000 / PERIODIC_TIMER_FREQ) return;
-    divider = 0;
+    if (!control_enabled) return;
+    const auto tick = libecu::ActiveTiming::nextSysTick(divider);
+    if (tick != libecu::ControlTick::Service) {
+        if (tick == libecu::ControlTick::SpeedPiOnly && motor_controller && !pwm_driver.faulted())
+            motor_controller->updateSpeedPi();
+        return;
+    }
     control_tick = true;
     if (motor_controller) {
         if (pwm_driver.faulted() && motor_controller->getDriveMode() != libecu::DriveMode::NEUTRAL)
@@ -380,10 +394,7 @@ public:
 
     bool startControlLoop() noexcept override
     {
-        // HAL timeouts and auxiliary DMA keep their 1 ms timebase. Divide only
-        // the controller callback, rather than slowing HAL ticks to 100 Hz.
-        static_assert(PERIODIC_TIMER_FREQ <= 1000 && 1000 % PERIODIC_TIMER_FREQ == 0,
-                      "Control frequency must divide the 1 kHz SysTick");
+        // HAL timeouts and auxiliary DMA keep their 1 ms timebase.
         // SysTick priority must be lower than TIM1 (higher number = lower priority)
         HAL_NVIC_SetPriority(SysTick_IRQn, 2, 0);
         control_enabled = true;

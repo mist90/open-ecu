@@ -407,9 +407,11 @@ new speed errors continue on the next speed tick.
 Exactly two finite coefficients are required. A third coefficient, including zero,
 returns `ERROR`. A changed setting also returns `ERROR` without applying it if
 the active loop is saturated, the compensation would exceed an integral limit
-(including T60's speed-dependent ceiling), or the operating point changes during
-preparation. The caller can retry later. Output limits are preserved. The sampling frequency is configured
-at compile time in the board's `ecu_config.hpp` (100 Hz on STM32G431).
+(including the configured speed-dependent ceiling), or the operating point changes during
+preparation. The caller can retry later. Output limits are preserved. Gains are
+continuous-time values; the PI caches the discrete coefficients at configuration
+time for the board's `SPEED_PI_HZ` (1 kHz by default on STM32). Measured speed
+and the setpoint ramp are updated separately at 100 Hz.
 
 **Examples:**
 
@@ -524,7 +526,7 @@ Response fields in order (all printed with 2 decimals):
 
 ## Telemetry (AT+TM)
 
-Enable or disable continuous telemetry streaming. When enabled, the controller sends motor state data at 100Hz (every 10ms), synchronized with the speed control loop (SysTick). Both +TM and +PLL telemetry (see [AT+PLL](#pll-telemetry-at+pll)) are sent every tick (100Hz).
+Enable or disable continuous telemetry streaming. The foreground sends motor state data every 10 ms on the 100-Hz service flag. Both +TM and +PLL telemetry (see [AT+PLL](#pll-telemetry-at+pll)) use that same cadence.
 
 | | |
 |---|---|
@@ -568,7 +570,7 @@ reads the first nine still works. Prefer `len(fields) >= 9` over `== 9`.
 +TM:4;5;23.45;22.20;0.35;1.50;1.47;24.56;3.6;41.8
 ```
 
-The telemetry output is invoked from the 100Hz speed control loop (SysTick). Both +TM and +PLL are emitted every tick (100Hz). Each call to `sendTelemetry()` or `sendPllTelemetry()` produces one line.
+SysTick signals the 100-Hz service tick; the foreground emits +TM and +PLL. Each call to `sendTelemetry()` or `sendPllTelemetry()` produces one line.
 
 ## Oscilloscope (AT+OSC)
 

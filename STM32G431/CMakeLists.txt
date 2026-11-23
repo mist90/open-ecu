@@ -7,6 +7,8 @@ set(CMAKE_TOOLCHAIN_FILE ${CMAKE_CURRENT_SOURCE_DIR}/../cmake/arm-none-eabi-gcc.
 project(open-ecu C CXX ASM)
 set(CMAKE_C_STANDARD 17)
 set(CMAKE_CXX_STANDARD 17)
+include(${CMAKE_CURRENT_SOURCE_DIR}/../cmake/speed-pi.cmake)
+configure_speed_pi(1000)
 
 # Build configuration
 if(NOT CMAKE_BUILD_TYPE)
@@ -44,6 +46,7 @@ add_compile_definitions(
     STM32G4
     STM32G431xx
     USE_HAL_DRIVER
+    LIBECU_CRITICAL_SECTION_TOKENS=1
     $<$<CONFIG:Debug>:DEBUG>
 )
 

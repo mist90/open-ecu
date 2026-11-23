@@ -87,6 +87,8 @@ See [Software and control algorithms](docs/software.md) for the control pipeline
 FOC, six-step, PLL, filtering, hybrid Iq and voltage-limiter implementation.
 
 - **FOC** with Hall sensor position feedback
+- **Calibrated d/q current PIs** for the scooter motor: speed-dependent error
+  weights and a separate [speed-PI integral limit](docs/software.md#motor_1-defaults)
 - **Experimental hybrid Iq**: opt-in model-led voltage with slow averaged-current
   trim; [algorithm and tuning](docs/software.md#hybrid-iq-control-through-uq)
 - **Reusable current frames**: in-place acquisition, control and PWM application;
@@ -103,13 +105,11 @@ FOC, six-step, PLL, filtering, hybrid Iq and voltage-limiter implementation.
 
 ### Control Loop
 
-The firmware implements a dual-rate control architecture:
-
-**100-Hz speed control loop:**
-1. Reads the PLL's speed estimate and applies feedback filtering
-2. Limits the target acceleration
-3. Runs the speed PI (setpoint → current or duty request)
-4. Updates slow status and protection checks
+**Speed PI:** 1 kHz on both STM32 ports, driven by SysTick. Every 10 ms a
+service tick first filters the PLL speed, advances the setpoint ramp and
+traction ceiling, and runs slow supervision. Between service ticks the PI
+uses the held reference, feedback and limits. Foreground telemetry stays at
+100 Hz. `-DSPEED_PI_HZ=100` selects the comparison rate without changing SysTick.
 
 **Board-clocked current loop (normally 20 kHz on STM32):**
 1. Observes pending Hall changes and advances the PLL
@@ -218,11 +218,14 @@ host and Cortex-M0 builds use the portable implementation. Numeric formats and r
 are shared by both paths. The F410 bridge-disabled timing image also checks the native
 integer operations before starting its synthetic control loop.
 
-Motor parameters live in `libecu/include/motor_config.hpp`. An undefined
-`MOTOR_1` selects JK42BLS01; defining it selects the scooter motor.
-The STM32F410 target defines `MOTOR_1` in CMake.
+Motor parameters live in [`motor_config.hpp`](libecu/include/motor_config.hpp).
+STM32F410 selects the scooter (`MOTOR_1`); the default motor on STM32G431
+is JK42BLS01. `MOTOR_1_LOADED=0` selects the free-wheel speed PI (1.25/5);
+`1` selects the loaded pair (3/24). Only the two outer-loop gains change.
 
 Additional host regressions:
+- `tests/test_motor_calibration/run.sh` — current-error curves and FOC response for both motors
+- `tests/test_speed_pi_rate/run.sh` — matched 100/500-Hz speed PI with 100-Hz feedback
 - `tests/test_motor_alignment/run.sh` — both motors, both directions, PLL and discrete commutation
 - `tests/test_hall_handoff/run.sh` — physical Hall resynchronization after open-loop operation and parking
 - `tests/test_open_loop/run.sh float|fixed` — PWM-clocked field speed, direction and independent Hall feedback
@@ -236,8 +239,7 @@ Additional host regressions:
 - `tests/test_foc/run.sh float|fixed` — closed-loop motor model and anti-windup recovery
 - `tests/test_hybrid_iq/run.sh` — float/fixed hybrid current control, delayed motor model, noise and recovery
 - `tests/test_current_filter/run.sh` — dq filters, delayed-loop stability and zero-current noise suppression
-- `tests/test_control/run.sh float|numeric-fixed` — commands, native I/O, reusable current frames, protection, ramp and OSC
-- `tests/test_control/run.sh t60-fixed|t60-feedback` — T60 speed PI, live retuning and optional acceleration feedback
+- `tests/test_control/run.sh float|fixed|numeric-fixed|scooter-fixed` — commands, reusable frames, protection, speed PI and OSC
 - `tests/test_mtte/run.sh` — rolling-wheel torque observer and traction model, using synthetic data
 
 Host tests live under `tests/`; each directory has a standalone `run.sh`.

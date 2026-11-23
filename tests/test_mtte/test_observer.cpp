@@ -163,9 +163,8 @@ void antiwindup() {
     using Pi = PiFloatInterface<FixedProfile::SpeedPiTypes,100>;
     using I = FixedProfile::Current;
     using N = FixedProfile::Speed;
-    const PiParameters params{6,24,45,-6,45,-4,2};
     Pi capped, unaware;
-    check(capped.setParameters(params) && unaware.setParameters(params), "fixed T60 PI");
+    check(capped.setParameters(COMS3_PI) && unaware.setParameters(COMS3_PI), "fixed COMS3 PI");
     auto p=PARAMS;
     p.probe_a=0;
     MtteObserver obs;

@@ -10,6 +10,12 @@
 namespace libecu {
 
 namespace {
+template<auto Field>
+auto readStatusField(const BldcController& controller) noexcept {
+    CriticalSection lock;
+    return controller.getNativeStatus().*Field;
+}
+
 bool parsePiGains(const char* text, float& kp, float& ki) noexcept {
     if (!text) return false;
     char* end = nullptr;
@@ -305,8 +311,8 @@ void AtCommandProcessor::processCommand() noexcept {
     switch (id) {
     case CommandId::Spd: {
         if (query) {
-            MotorStatus status = controller_->getStatus();
-            sendFloatResponse("SPD", status.current_speed_rps);
+            const auto speed = readStatusField<&NativeMotorStatus::current_speed_rps>(*controller_);
+            sendFloatResponse("SPD", numberCast<float>(speed));
         } else {
             float val = parseFloatParam(valuePtr);
             if (val < 0.0f || val > 200.0f) {
@@ -321,8 +327,8 @@ void AtCommandProcessor::processCommand() noexcept {
 
     case CommandId::Cur: {
         if (query) {
-            MotorStatus status = controller_->getStatus();
-            sendFloatResponse("CUR", status.target_current);
+            const auto current = readStatusField<&NativeMotorStatus::target_current>(*controller_);
+            sendFloatResponse("CUR", numberCast<float>(current));
         } else {
             float val = parseFloatParam(valuePtr);
             if (val < -6.0f || val > 6.0f) {
@@ -337,8 +343,7 @@ void AtCommandProcessor::processCommand() noexcept {
 
     case CommandId::Dut: {
         if (query) {
-            MotorStatus status = controller_->getStatus();
-            sendFloatResponse("DUT", status.duty_cycle);
+            sendFloatResponse("DUT", numberCast<float>(readStatusField<&NativeMotorStatus::duty_cycle>(*controller_)));
         } else {
             float val = parseFloatParam(valuePtr);
             if (val < 0.0f || val > 1.0f) {
@@ -371,8 +376,7 @@ void AtCommandProcessor::processCommand() noexcept {
 
     case CommandId::Mode: {
         if (query) {
-            MotorStatus status = controller_->getStatus();
-            sendIntResponse("MODE", static_cast<int>(status.control_mode));
+            sendIntResponse("MODE", static_cast<int>(readStatusField<&NativeMotorStatus::control_mode>(*controller_)));
         } else {
             int val = parseIntParam(valuePtr);
             if (val < 0 || val > 2) {
@@ -387,8 +391,7 @@ void AtCommandProcessor::processCommand() noexcept {
 
     case CommandId::EMode: {
         if (query) {
-            MotorStatus status = controller_->getStatus();
-            sendIntResponse("EMODE", static_cast<int>(status.electric_mode));
+            sendIntResponse("EMODE", static_cast<int>(readStatusField<&NativeMotorStatus::electric_mode>(*controller_)));
         } else {
             int val = parseIntParam(valuePtr);
             if (val < 0 || val > 1) {

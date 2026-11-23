@@ -8,8 +8,11 @@
 #ifndef TEST_CURRENT_HZ
 #define TEST_CURRENT_HZ 20000
 #endif
+#ifndef LIBECU_SPEED_PI_HZ
+#define LIBECU_SPEED_PI_HZ 100
+#endif
 namespace libecu {
-using ActiveTiming = ControlTiming<TEST_CURRENT_HZ, 100>;
+using ActiveTiming = ControlTiming<TEST_CURRENT_HZ, 100, LIBECU_SPEED_PI_HZ>;
 #if defined(TEST_NARROW_PLL_STEP)
 struct NarrowStepProfile : FixedProfile { using PllStepGain = FixedPointType<30>; };
 using ActiveNumericProfile = NarrowStepProfile;

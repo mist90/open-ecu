@@ -1,6 +1,6 @@
 /**
  * @file main.cpp
- * @brief Torque-driven MOTOR_1 mechanical stability regression using the production PI and Hall PLL.
+ * @brief Historical MOTOR_1 single-variable gain study using the production PI and Hall PLL kernels.
  *
  * Only the plant is simulated: current follows a bounded first-order response,
  * J*d(2*pi*speed)/dt = Kt*Iq - bearing drag - rolling resistance. Its integrated
@@ -38,6 +38,11 @@ constexpr float DRAG_VISCOUS_A_PER_RPS = 0.0484f;
 constexpr float GRAVITY = 9.80665f;
 constexpr float INITIAL_TARGET = 6.0f;
 constexpr float LOWER_TARGET = 3.0f;
+// Hold the original plant experiment fixed. Only the outer speed PI pair varies.
+constexpr float REFERENCE_KP = 3.f, REFERENCE_KI = 0.15f;
+constexpr float PLL_KP = 100.f, PLL_KI = 5000.f;
+constexpr float MAX_CURRENT_A = 20.f, MIN_CURRENT_A = -6.f;
+constexpr float MAX_SPEED_RPS = 12.f, COMMAND_RAMP_RPS2 = 6.f;
 // 0.2 RPS is ~33 ms of travel at the 6 RPS/s ramp, comparable to PLL + LPF
 // lag. Near zero, a small percentage-of-step bound would mislabel a finite,
 // decaying excursion as instability. This is an explicit absolute budget.
@@ -102,7 +107,7 @@ public:
     }
 
     void tick(float request_a, bool second_phase) {
-        const float bounded = std::clamp(request_a, BLDC_MIN_CURRENT, BLDC_MAX_CURRENT);
+        const float bounded = std::clamp(request_a, MIN_CURRENT_A, MAX_CURRENT_A);
         // Exact first-order current endpoint and interval average (zero-order-held request).
         const float average_current = bounded + (current_a_ - bounded) * average_current_factor_;
         current_a_ += current_alpha_ * (bounded - current_a_);
@@ -192,9 +197,9 @@ Result simulate(const PlantCase& plant, float kp, float ki) {
     PiParameters params{};
     params.kp = kp;
     params.ki = ki;
-    params.min_output = BLDC_MIN_CURRENT;
-    params.max_output = BLDC_MAX_CURRENT;
-    // Shared main.cpp installs these limits and kb on all architectures.
+    params.min_output = MIN_CURRENT_A;
+    params.max_output = MAX_CURRENT_A;
+    // Static integral and back-calculation from the original comparison.
     params.integral_min = -4.0f;
     params.integral_max = 12.0f;
     params.kb = 2.0f;
@@ -203,22 +208,22 @@ Result simulate(const PlantCase& plant, float kp, float ki) {
         return result;
     }
 
-    Pll pll(constant<typename Pll::Speed>(BLDC_MAX_SPEED * STEPS_PER_REV));
-    pll.setGains(constant<typename Pll::Gain>(BLDC_PLL_KP), constant<typename Pll::Gain>(BLDC_PLL_KI));
+    Pll pll(constant<typename Pll::Speed>(MAX_SPEED_RPS * STEPS_PER_REV));
+    pll.setGains(constant<typename Pll::Gain>(PLL_KP), constant<typename Pll::Gain>(PLL_KI));
     pll.setUsePLL(true);
     Mechanics mechanics(plant, CurrentHz);
     pll.updateHall(mechanics.hall());
     pll.reset();
     Speed filtered_speed{};
     Accumulator limited_target{};
-    const auto ramp_step = divideByInteger<Accumulator>(constant<Speed>(BLDC_MAX_ACCELERATION), SPEED_HZ);
+    const auto ramp_step = divideByInteger<Accumulator>(constant<Speed>(COMMAND_RAMP_RPS2), SPEED_HZ);
 
     for (unsigned tick = 0; tick < 2 * PHASE_TICKS; ++tick) {
         const unsigned phase = tick / PHASE_TICKS;
         const float target = phase != 0 && plant.mass_kg == 0.0f ? plant.following_target : plant.initial_target;
         const Speed speed = divideByInteger<Speed>(pll.getSpeedStepsSec(), STEPS_PER_REV);
         filtered_speed += multiplyTo<Speed>(number_v<Fraction, 1, 2>, speed - filtered_speed);
-        // target LPF is disabled (alpha=0), exactly as configured by shared main.cpp.
+        // The original rig used no target LPF (alpha=0).
         const Accumulator difference = numberCast<Accumulator>(target) - limited_target;
         limited_target += numericClamp(difference, -ramp_step, ramp_step);
         const float request = numberCast<float>(pi.updateNative(numberCast<Speed>(limited_target), filtered_speed));
@@ -338,10 +343,10 @@ void runCases(float kp, float ki, Summary& summary) {
             require(response.tail_current.peakToPeak() <= 1.0f,
                     "sustained torque-current oscillation <=1.0 A peak-to-peak", summary);
         }
-        require(result.min_current >= BLDC_MIN_CURRENT && result.max_current <= BLDC_MAX_CURRENT,
+        require(result.min_current >= MIN_CURRENT_A && result.max_current <= MAX_CURRENT_A,
                 "current request stays inside configured limits", summary);
         require(result.min_integral >= -4.0f && result.max_integral <= 12.0f,
-                "PI integral stays inside shared main.cpp limits", summary);
+                "PI integral stays inside the fixture's static limits", summary);
         if (summary.failures != previous_failures) ++summary.failed_cases;
     }
 }
@@ -355,22 +360,22 @@ bool parseGain(const char* text, float& gain) {
 } // namespace
 
 int main(int argc, char** argv) {
-    float kp = BLDC_SPEED_CURRENT_KP;
-    float ki = BLDC_SPEED_CURRENT_KI;
+    float kp = REFERENCE_KP;
+    float ki = REFERENCE_KI;
     if (argc != 1 && (argc != 3 || !parseGain(argv[1], kp) || !parseGain(argv[2], ki))) {
         std::fprintf(stderr, "Usage: %s [kp_A_per_RPS ki_A_per_RPS_s] (both finite and positive)\n", argv[0]);
         return 2;
     }
     std::printf("MOTOR_1 speed-current PI: kp=%.6g A/RPS, ki=%.6g A/(RPS*s) [%s]\n",
-                kp, ki, argc == 1 ? "shared motor_config.hpp" : "exploratory CLI override");
+                kp, ki, argc == 1 ? "historical reference fixture" : "exploratory CLI override");
     std::printf("Plant estimates: Kt=%.5f Nm/A, Jwheel=%.5f, J80kg=%.5f+Jwheel kg*m^2; r=%.3f m.\n",
                 NOMINAL_KT, WHEEL_J, 80.0f * RADIUS_M * RADIUS_M, RADIUS_M);
     std::printf("Drag=(0.656+0.0484*|RPS|) A equivalent; road Crr 0.008 -> 0.020 at %u s.\n", PHASE_SECONDS);
     std::printf("100 Hz PI, feedback LPF=0.5, target LPF=0, ramp=%.2f RPS/s; real Hall PLL %.0f/%.0f.\n",
-                BLDC_MAX_ACCELERATION, BLDC_PLL_KP, BLDC_PLL_KI);
+                COMMAND_RAMP_RPS2, PLL_KP, PLL_KI);
     std::printf("Bounded 125..500 Hz torque response; no voltage/commutation/tyre-slip model.\n");
     std::printf("Current limits [%.1f,%.1f] A; integral [-4,12] A, kb=2, trapezoidal PI.\n",
-                BLDC_MIN_CURRENT, BLDC_MAX_CURRENT);
+                MIN_CURRENT_A, MAX_CURRENT_A);
     std::printf("Free: 0->6->3 or 0->0.3->1 RPS; road: 0->6 then load step. Phase %u s, tail last 20 s.\n",
                 PHASE_SECONDS);
     for (const PlantCase& plant : PLANTS) {

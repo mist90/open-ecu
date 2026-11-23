@@ -326,7 +326,7 @@ These matter even with a fixed pin map:
 | ADC1 | APB2/4 = 25 MHz, 12 bit, U/V/W injected, 15-cycle sampling |
 | DMA2 Stream0 Channel0 | Vbus/NTC/pot, circular, three halfwords; regular scan started by 1-kHz SysTick |
 | TIM5 | PSC=99, ARR=0xFFFFFFFF, 1 MHz counter; Hall XOR/IC1 with CKD=DIV2, IC1F=0xF |
-| SysTick | 1 kHz HAL tick, divided by 10 for the 100 Hz speed loop |
+| SysTick | 1 kHz HAL tick and speed PI; every tenth tick updates speed feedback, ramp and supervision (100 Hz) |
 | IRQ priorities | BKIN=0; ADC=1; Hall TIM5=2; SysTick=3; no regular-DMA IRQ |
 
 The TIM5 slave reset is disabled (`SMS=0`): Hall captures do not reset CNT,

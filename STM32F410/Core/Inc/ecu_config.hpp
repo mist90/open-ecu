@@ -5,8 +5,12 @@
 #define OPEN_ECU_STM32F410_CONFIG_HPP
 #include "control_timing.hpp"
 #include "numeric_profiles.hpp"
+#ifndef LIBECU_SPEED_PI_HZ
+#define LIBECU_SPEED_PI_HZ 1000
+#endif
 namespace libecu {
-using ActiveTiming = ControlTiming<20000, 100>;
+// HAL_IncTick and the regular ADC/DMA service share the 1 ms HAL SysTick.
+using ActiveTiming = ControlTiming<20000, 100, LIBECU_SPEED_PI_HZ, 1000>;
 #ifdef ECU_FIXED_NUMERIC
 using ActiveNumericProfile = FixedProfile;
 using ActivePiProfile = FixedProfile;

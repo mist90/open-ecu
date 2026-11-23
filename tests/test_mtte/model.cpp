@@ -1,10 +1,10 @@
 /**
  * @file model.cpp
- * @brief Non-drive A/B bench. Real fixed T60 speed PI, rolling I bound and Hall PLL.
+ * @brief Non-drive A/B bench. Real fixed scooter speed PI, rolling I bound and Hall PLL.
  * Only the plant, measurement transport and scene are synthetic. Model truth never enters MTTE.
  */
 #include "fixture.hpp"
-#include "motor1_t60_load.hpp"
+#include "control_calibration.hpp"
 #include "motor_pll_core.hpp"
 #include "pi_float_interface.hpp"
 #include "traction_acceleration.hpp"
@@ -148,9 +148,7 @@ void writeSummary(FILE* file, Scene s, Policy policy, const char* name, const Wi
 Result simulate(Scene scene, Policy policy, FILE* trace, FILE* summary) {
     Plant plant(scene);
     Pi pi;
-    PiParameters tuning{BLDC_SPEED_CURRENT_KP,BLDC_SPEED_CURRENT_KI,BLDC_MAX_CURRENT,BLDC_MIN_CURRENT,
-                        BLDC_MAX_CURRENT,-4.0f,2.0f};
-    require(pi.setParameters(tuning),"fixed T60 PI accepted");
+    require(pi.setParameters(COMS3_PI),"fixed COMS3 PI accepted");
     Pll pll(constant<P::PllSpeed>(BLDC_MAX_SPEED*HALL));
     pll.setGains(constant<Pll::Gain>(BLDC_PLL_KP),constant<Pll::Gain>(BLDC_PLL_KI));
     pll.setUsePLL(true);
@@ -166,11 +164,11 @@ Result simulate(Scene scene, Policy policy, FILE* trace, FILE* summary) {
     // Handoff the unchanged speed PI at the existing cruise torque, not an inferred friction floor.
     // Both arms share the same initial state, and the observer warms from sensor data alone.
     Pi::Gains gains{};
-    require(Pi::prepareGains(tuning.kp,tuning.ki,gains),"T60 gains representable");
+    require(Pi::prepareGains(COMS3_PI.kp,COMS3_PI.ki,gains),"COMS3 gains representable");
     Pi::Kernel::Accumulator initial_i{};
     require(Pi::Kernel::rebaseIntegral({P::Speed{},initial_a},gains.kp,number<P::Current>(-4),
             number<P::Current>(45),initial_i),"steady rolling point representable");
-    pi.applyGains(tuning.kp,tuning.ki,gains,&initial_i);
+    pi.applyGains(COMS3_PI.kp,COMS3_PI.ki,gains,&initial_i);
     P::Current last = initial_a;
     Interval previous{};
     MtteObserver::Result o;
@@ -213,10 +211,12 @@ Result simulate(Scene scene, Policy policy, FILE* trace, FILE* summary) {
         if (coast) { pi.reset(); legacy.reset(); target=numberCast<P::Accumulator>(feedback); }
         else target+=numericClamp(numberCast<P::Accumulator>(command)-target,-ramp,ramp);
         const auto ref=numberCast<P::Speed>(target);
-        const auto integral_max=motor1RollingIntegralCeiling<P, int(BLDC_MAX_CURRENT)>(feedback);
+        const auto integral_max=rollingIntegralCeiling<P, motor_config::rolling_integral>(
+            feedback, constant<P::Current>(COMS3_PI.integral_max));
         auto maximum=numberCast<P::Current>(coast ? 0.0f : HARD_A);
         if (policy.legacy && !coast)
-            maximum=legacy.ceiling(feedback,number_v<P::Speed,1,100>,last,maximum);
+            maximum=legacy.ceiling(feedback,number_v<P::Speed,1,100>,last,maximum,
+                                   constant<P::Speed>(motor_config::traction_gain_a_per_rps));
         // Side-effect-free preview of THIS tick's pre-MTTE PI demand (E17's T*). Only the actual PI is committed.
         auto preview=pi;
         const auto ordinary=coast ? P::Current{} : preview.updateNativeCapped(ref,feedback,0,integral_max,maximum);

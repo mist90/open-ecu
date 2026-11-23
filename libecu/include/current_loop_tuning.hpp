@@ -90,7 +90,7 @@ inline PiParameters tuneCurrentPi(const CurrentLoopModel& m) noexcept {
  *
  * @return PiParameters with kp/ki set; zeroed if the model is not usable.
  */
-inline PiParameters tuneFocCurrentPi(const CurrentLoopModel& m) noexcept {
+constexpr PiParameters tuneFocCurrentPi(const CurrentLoopModel& m) noexcept {
     PiParameters p{};
     if (m.l_phase_h <= 0.0f || m.r_phase_ohm <= 0.0f || m.bandwidth_hz <= 0.0f) {
         return p;

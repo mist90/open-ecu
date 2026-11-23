@@ -14,6 +14,7 @@
 #include "../include/critical_section.hpp"
 #include "../include/current_loop_tuning.hpp"
 #include "../include/motor_config.hpp"
+#include <algorithm>
 
 namespace {
 
@@ -43,15 +44,13 @@ libecu::MotorControlParams makeMotorParams(const libecu::BoardInfo& board_info) 
     libecu::MotorControlParams motor_params;
     motor_params.num_poles = BLDC_NUM_POLES;
     motor_params.max_duty_cycle = board_info.max_duty_cycle;
-    motor_params.max_current = BLDC_MAX_CURRENT;
+    motor_params.max_current = std::min(board_info.max_drive_current_a, BLDC_MAX_CURRENT);
     motor_params.min_current = BLDC_MIN_CURRENT;
     motor_params.max_voltage = board_info.max_bus_voltage;
     motor_params.max_temperature_c = BLDC_MAX_TEMPERATURE;
     motor_params.max_speed_rps = BLDC_MAX_SPEED;
     motor_params.acceleration_rate = BLDC_MAX_ACCELERATION;  // RPS/s
-#if LIBECU_TRACTION_ACCEL_RPS2
-    motor_params.traction_acceleration_rps2 = LIBECU_TRACTION_ACCEL_RPS2;
-#endif
+    motor_params.traction_acceleration_rps2 = libecu::motor_config::traction_acceleration_rps2;
     motor_params.target_speed_lpf_alpha = 0.0f;  // LPF smoothing for noisy potentiometer input
     motor_params.measured_speed_lpf_alpha = 0.5f; // LPF smoothing for noisy velocity measurement
     motor_params.measured_current_lpf_alpha = 0.005f; // 10 ms at 20 kHz; telemetry only
@@ -65,11 +64,8 @@ libecu::MotorControlParams makeMotorParams(const libecu::BoardInfo& board_info) 
     motor_params.pi_voltage_mode.kb = 2.0f;
 
     motor_params.pi_current_mode = {BLDC_SPEED_CURRENT_KP, BLDC_SPEED_CURRENT_KI};
-#if defined(LIBECU_MOTOR1_T60_LOAD)
-    motor_params.pi_current_mode.integral_max = BLDC_MAX_CURRENT; // rolling ceiling; 12 A at standstill
-#else
-    motor_params.pi_current_mode.integral_max = 12.0f;
-#endif
+    motor_params.pi_current_mode.integral_max = std::min(board_info.max_drive_current_a,
+                                                         libecu::motor_config::speed_integral_max_a);
     motor_params.pi_current_mode.integral_min = -4.0f;
     motor_params.pi_current_mode.kb = 2.0f;
 
@@ -100,25 +96,12 @@ libecu::MotorControlParams makeMotorParams(const libecu::BoardInfo& board_info) 
     motor_params.useInverseCommTable = BLDC_INVERTION;
 
     // ---- FOC ---------------------------------------------------------------
-    // FOC is the MOTOR_1 default. Measured against six-step at 6.00 RPS on that motor
-    // (docs/FOC_HANDOFF.md section 9.5): current ripple 0.0308 A vs 0.2398 A -
-    // 7.8x smoother - holding the same speed on about 17 % less RMS phase
-    // current, i.e. roughly a third less copper loss, with Id regulated to
-    // -2 mA. Six-step is still built and one command away (AT+ALGO=0), which is
-    // what makes an A/B on the same run possible.
-    //
-    // Caveat worth knowing at boot: FOC has only been run FORWARD, at or below
-    // 8 RPS, under about 1 A. High modulation index - where the low-side
-    // sampling window shrinks and the worst-phase shunt rejection starts
-    // earning its keep - is still unexercised.
     motor_params.algorithm = BLDC_START_WITH_FOC
                            ? libecu::DriveAlgorithm::FOC : libecu::DriveAlgorithm::SIX_STEP;
 
     motor_params.foc.max_modulation = board_info.max_modulation;
     motor_params.foc.max_duty_cycle = motor_params.max_duty_cycle;
     motor_params.foc.low_side_clamped_pwm = board_info.low_side_clamped_pwm;
-    // Motor/Hall alignment belongs to the motor configuration: -60 degrees for
-    // MOTOR_1, +120 for the inverse JK42BLS01 alignment verified on the bench.
     motor_params.foc.angle_offset_rad =
         (BLDC_FOC_ANGLE_OFFSET_DEG / 60.0f) * libecu::FOC_RAD_PER_STEP;
     motor_params.foc.id_target = 0.0f;   // surface-magnet rotor: no reluctance to exploit
@@ -137,17 +120,7 @@ libecu::MotorControlParams makeMotorParams(const libecu::BoardInfo& board_info) 
     motor_params.foc.hybrid_iq.enabled = board_info.hybrid_iq_control;
     motor_params.foc.hybrid_iq.r_phase_ohm = BLDC_R_PHASE_OHM;
 
-    // d/q current regulators. FOC has its own bandwidth tuning input so that
-    // feedback-filter tuning does not change the six-step regulator. FOC sees
-    // one phase rather than two in series and outputs volts rather than duty.
-    {
-        libecu::CurrentLoopModel floop;
-        floop.l_phase_h    = BLDC_L_PHASE_H;
-        floop.r_phase_ohm  = BLDC_R_PHASE_OHM;
-        floop.bus_voltage  = board_info.nominal_bus_voltage;
-        floop.bandwidth_hz = BLDC_FOC_ILOOP_BW_HZ;
-        motor_params.foc_current_regulator = libecu::tuneFocCurrentPi(floop);
-    }
+    motor_params.foc_current_regulator = libecu::motor_config::foc_current_pi;
 
     return motor_params;
 }

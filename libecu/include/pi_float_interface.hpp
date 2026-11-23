@@ -8,6 +8,7 @@
 #include "pi_controller.hpp"
 #include "control_optimization.hpp"
 #include <cmath>
+#include <optional>
 #include <type_traits>
 
 namespace libecu {
@@ -48,29 +49,43 @@ public:
     using Output = typename Kernel::Output;
     using StepGain = typename Kernel::StepGain;
     using Gains = typename Kernel::Gains;
+    using Tuning = typename Kernel::Tuning;
 
-    /** @brief Configure atomically with respect to update(); reject unrepresentable tuning. */
-    LIBECU_SLOW_PATH bool setParameters(const PiParameters& params) noexcept {
+    /** @brief Validate and encode the entire tuning without touching the live PI. */
+    LIBECU_SLOW_PATH static std::optional<Tuning> prepareTuning(const PiParameters& params) noexcept {
         using pi_interface_detail::convert;
         typename Kernel::Parameters converted{};
         if (!(convert(params.kp, converted.kp) && convert(params.ki, converted.ki) &&
               convert(params.kb, converted.kb) && convert(params.min_output, converted.min_output) &&
               convert(params.max_output, converted.max_output) &&
               convert(params.integral_min, converted.integral_min) &&
-              convert(params.integral_max, converted.integral_max))) return false;
+              convert(params.integral_max, converted.integral_max))) return std::nullopt;
         if (converted.min_output > converted.max_output ||
-            converted.integral_min > converted.integral_max) return false;
+            converted.integral_min > converted.integral_max) return std::nullopt;
 
         // Check the per-sample formats as well as the continuous gain formats.
         // Configuration is infrequent; division in the kernel itself is integer
         // and takes place only when these parameters are installed.
         StepGain step{};
         if (!convert(pi_interface_detail::toFloat(converted.ki) / (2u * SampleRateHz), step) ||
-            !convert(pi_interface_detail::toFloat(converted.kb) / SampleRateHz, step)) return false;
+            !convert(pi_interface_detail::toFloat(converted.kb) / SampleRateHz, step)) return std::nullopt;
+        // Construct directly in the caller's return slot once validation succeeds.
+        return std::optional<Tuning>(std::in_place, converted);
+    }
 
-        kernel_.setParameters(converted);
+    /** @brief Publish already validated tuning in place, optionally resetting sample history. */
+    template<bool Reset>
+    void applyTuning(const PiParameters& params, const Tuning& tuning) noexcept {
+        kernel_.template applyTuning<Reset>(tuning);
         params_ = params;
         configured_ = true;
+    }
+
+    /** @brief Install tuning under caller ownership without resetting a running integrator. */
+    LIBECU_SLOW_PATH bool setParameters(const PiParameters& params) noexcept {
+        const auto tuning = prepareTuning(params);
+        if (!tuning) return false;
+        applyTuning<false>(params, *tuning);
         return true;
     }
 

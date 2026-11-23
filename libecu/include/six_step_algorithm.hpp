@@ -51,7 +51,7 @@ struct SixStepParams {
      * and felt making. During the blanking window the duty is held and the PI
      * is not updated, so the integrator cannot wind up on the bad samples.
      *
-     * Measured on MOTOR_1 at 3.9 RPS: residual spread of the current reading is
+     * Measured on the scooter bench at 3.9 RPS: residual spread of the current reading is
      * 0.60 A one cycle after commutation, 0.28 A at three, 0.17 A at six and
      * 0.02 A - the noise floor - from nine onwards. Six covers the bulk of the
      * transient without holding the duty for much of a short sector.
@@ -90,8 +90,14 @@ public:
     /// @return false on unrepresentable tuning, retaining the previous configuration
     bool setCurrentPi(const PiParameters& params) noexcept;
     using CurrentPi = PiFloatInterface<ActivePiProfile::CurrentPiTypes, ActiveTiming::CURRENT_HZ>;
-    /** @brief Install a validated, reset regulator under the caller's publication mask. */
-    void installCurrentPi(const CurrentPi& next) noexcept { current_pi_ = next; }
+    /** @brief Install a first valid tuning or change only the gains of an already configured loop. */
+    void resetCurrentPi(const PiParameters& params, const CurrentPi::Tuning& tuning) noexcept {
+        current_pi_.applyTuning<true>(params, tuning);
+    }
+    void resetCurrentPiGains(float kp, float ki, const CurrentPi::Gains& gains) noexcept {
+        current_pi_.applyGains(kp, ki, gains, nullptr);
+        current_pi_.reset();
+    }
 
     /// @brief Get the inner current-loop PI parameters
     const PiParameters& getCurrentPi() const noexcept;

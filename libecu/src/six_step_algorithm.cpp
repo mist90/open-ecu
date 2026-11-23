@@ -45,8 +45,9 @@ void SixStepAlgorithm::setParams(const SixStepParams& params) noexcept
 
 bool SixStepAlgorithm::setCurrentPi(const PiParameters& params) noexcept
 {
-    if (!current_pi_.setParameters(params)) return false;
-    current_pi_.reset();
+    const auto native = CurrentPi::prepareTuning(params);
+    if (!native) return false;
+    resetCurrentPi(params, *native);
     return true;
 }
 

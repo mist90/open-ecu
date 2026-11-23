@@ -6,9 +6,10 @@ trap 'rm -rf "$build_dir"' EXIT
 for profile in float fixed; do
     flags=()
     if [[ $profile == fixed ]]; then flags+=(-DECU_FIXED_NUMERIC); fi
-    for motor in jk42 scooter; do
+    for motor in jk42 scooter scooter-loaded; do
         motor_flags=()
-        if [[ $motor == scooter ]]; then motor_flags+=(-DMOTOR_1); fi
+        if [[ $motor != jk42 ]]; then motor_flags+=(-DMOTOR_1); fi
+        if [[ $motor == scooter-loaded ]]; then motor_flags+=(-DMOTOR_1_LOADED=1); fi
         for manual in off on; do
             manual_flags=()
             if [[ $manual == on ]]; then manual_flags+=(-DTHROTTLE_BRAKE_CONTROL); fi
@@ -21,8 +22,14 @@ for profile in float fixed; do
                 echo "Protocol lifecycle and boot defaults: profile=$profile motor=$motor manual=$manual filter=$cutoff"
                 TEST_BOARD_CURRENT_FILTER_HZ=$cutoff "$build_dir/test"
             done
-            if [[ $motor == scooter ]]; then
-                echo "Hybrid Iq boot: profile=$profile manual=$manual"
+            # Distinguish the board rail (including a value below the 12 A rolling
+            # base) from the motor rail when the inverter has current to spare.
+            for drive_limit in 8.5 45 60; do
+                echo "Drive current cap: profile=$profile motor=$motor manual=$manual board=$drive_limit A"
+                TEST_BOARD_DRIVE_LIMIT_A=$drive_limit "$build_dir/test"
+            done
+            if [[ $motor != jk42 ]]; then
+                echo "PI-only motor rejects hybrid board: profile=$profile motor=$motor manual=$manual"
                 TEST_BOARD_HYBRID_IQ=1 TEST_BOARD_CURRENT_FILTER_HZ=1000 "$build_dir/test"
             fi
         done

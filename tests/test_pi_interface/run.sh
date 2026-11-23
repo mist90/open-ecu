@@ -3,10 +3,11 @@ set -eu
 cd "$(dirname "$0")"
 dir=$(mktemp -d)
 trap 'rm -rf "$dir"' EXIT
-for profile in standard t60-45a; do
+for motor in jk42 scooter scooter-loaded; do
     flags=()
-    if [[ $profile == t60-45a ]]; then flags=(-DLIBECU_MOTOR1_T60_LOAD=1 -DLIBECU_MOTOR1_T60_45A=1); fi
+    if [[ $motor != jk42 ]]; then flags+=(-DMOTOR_1); fi
+    if [[ $motor == scooter-loaded ]]; then flags+=(-DMOTOR_1_LOADED=1); fi
     g++ -std=c++17 -O2 -Wall -Wextra -Werror -fsanitize=undefined \
-        -fno-sanitize-recover=all -DMOTOR_1 "${flags[@]}" -I../../libecu/include -o "$dir/$profile" main.cpp
-    "$dir/$profile"
+        -fno-sanitize-recover=all "${flags[@]}" -I../../libecu/include -o "$dir/$motor" main.cpp
+    "$dir/$motor"
 done

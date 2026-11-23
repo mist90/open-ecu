@@ -4,7 +4,7 @@
 - **Language**: Mixed C/C++ (C++17 for libecu, C for STM32 HAL)
 - **Target Platform**: STM32G431CBU (Cortex-M4, FPU, 128KB Flash, 32KB RAM)
 - **Build System**: CMake 3.16+ with ARM GCC toolchain
-- **Control Loop**: 100Hz speed control + 20kHz current loop (Hall sensors: async)
+- **Control Loop**: STM32 speed PI at 1 kHz, feedback/ramp/telemetry at 100 Hz, current loop at 20 kHz
 - **Architecture**: Layered (libecu core → HAL → Application)
 - **Debug UART**: 2,000,000 baud, PA2 (TX), PA3 (RX) — primary debug output
 - **IDE support**: CMake generates `STM32G431/build/compile_commands.json`
@@ -110,7 +110,9 @@ cd STM32G431
   - `tests/test_motor_pll/run.sh` (also plots, needs numpy/matplotlib)
   - `tests/test_command_processor/run.sh` — real shared main with a non-AT
     processor, lifecycle/default silence, float/fixed and manual input on/off
-  - `tests/test_control/run.sh float|fixed|numeric-fixed` — controller and AT
+  - `tests/test_motor_calibration/run.sh` — signed d/q error weights and FOC
+    response for both motors and both scooter speed-PI gain pairs
+  - `tests/test_control/run.sh float|fixed|numeric-fixed|scooter-fixed` — controller and AT
     integration, including fragmented CRC and protocol lifecycle/capture hooks;
     `LIBECU_OSC_BUFFER_SIZE=256` exercises a smaller AT capture buffer
 - **Python simulations** in `tests/` (`sim_current.py`, `sim_3phase_current.py`) model current dynamics; they are not firmware tests
@@ -322,7 +324,7 @@ that:
 2. implements `libecu::createBoard()` returning that instance,
 3. implements `time_us()`, `disable_interrupts()` and `enable_interrupts()`,
 4. fills `BoardInfo` with the facts the ECU cannot know: PWM and control loop
-   rates, nominal bus voltage, requested and actually-programmed dead time.
+   rates, nominal bus voltage, positive drive-current limit and dead time.
 
 Motor properties (poles, limits, electrical model, loop tuning) stay in
 `libecu/include/motor_config.hpp`; board properties (shunt, divider, NTC,

@@ -22,8 +22,9 @@ public:
      *  @param step Maximum positive RPS change in one velocity tick; zero bypasses.
      *  @param applied Last speed PI output (A), after all output limits.
      *  @param maximum Configured current ceiling (A).
+     *  @param gain Current correction per unit of speed error (A/(rev/s)).
      */
-    Current ceiling(Speed speed, Speed step, Current applied, Current maximum) noexcept {
+    Current ceiling(Speed speed, Speed step, Current applied, Current maximum, Speed gain) noexcept {
         const Speed change = primed_ ? speed - previous_ : Speed{};
         previous_ = speed;
         primed_ = true;
@@ -34,7 +35,7 @@ public:
         // acceleration, so a loaded wheel can never recover its holding current.
         // A falling speed relaxes the ceiling; only the speed PI can request torque.
         const Speed error = step - change;
-        const Current correction = multiplyTo<Current>(error, number_v<Speed, 2>); // A/(rev/s)
+        const Current correction = multiplyTo<Current>(error, gain);
         return numericClamp(std::max(Current{}, applied) + correction, Current{}, maximum);
     }
 

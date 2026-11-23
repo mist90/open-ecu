@@ -110,12 +110,12 @@ struct HallMonitorParams {
     /**
      * Consecutive illegal *readings* that must arrive before one is scored.
      *
-     * Readings are already deferred ~50 us past the Hall edge and therefore
-     * settled, so 1 is the sensible default. It must stay at 1 to catch a
+     * The PWM owner samples after the edge, with no minimum settling delay.
+     * The default of 1 also catches a
      * single stuck line: that produces exactly one illegal code per electrical
      * revolution, always bracketed by valid ones, so requiring two in a row
-     * would never fire. Noise immunity comes from the leaky accumulator, not
-     * from this.
+     * would never fire. Persistence and the leaky accumulator reject brief
+     * or isolated readings according to their configured thresholds.
      */
     uint8_t invalid_debounce;
 
@@ -131,7 +131,7 @@ struct HallMonitorParams {
      */
     uint32_t invalid_persist_time_us;
     /**
-     * Measured basis for the 300 us default, on MOTOR_1 at 31 V:
+     * Measured basis for the 300 us default, on the 31 V scooter bench:
      *
      *   speed    illegal/s   max standing time   step period
      *   6 RPS         0            0 us            1389 us

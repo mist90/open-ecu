@@ -6,9 +6,6 @@
 #ifndef LIBECU_BLDC_CONTROLLER_HPP
 #define LIBECU_BLDC_CONTROLLER_HPP
 
-#if defined(LIBECU_MOTOR1_SPAN_BENCH) && LIBECU_MOTOR1_SPAN_BENCH
-#include "order_feedback.hpp"
-#endif
 #include <cstddef>
 #include <cstdint>
 #include <array>
@@ -25,12 +22,7 @@
 #include "open_loop_phase.hpp"
 #include "current_loop_tuning.hpp"
 #include "hall_monitor.hpp"
-#ifndef LIBECU_TRACTION_ACCEL_RPS2
-#define LIBECU_TRACTION_ACCEL_RPS2 0
-#endif
-#if LIBECU_TRACTION_ACCEL_RPS2
 #include "traction_acceleration.hpp"
-#endif
 
 namespace libecu {
 class CriticalSection;
@@ -57,9 +49,7 @@ struct MotorControlParams {
      *
      * There are `num_poles / 2` electrical revolutions per mechanical one and
      * 6 commutation steps per electrical revolution, so the conversion the
-     * whole controller uses is `steps_per_mech_rev = num_poles * 3`. MOTOR_1
-     * has 40 poles, hence 120 steps per mechanical revolution, hence
-     * RPS = steps_per_second / 120.
+     * whole controller uses is `steps_per_mech_rev = num_poles * 3`.
      *
      * Moved here from CommutationController, which no longer exists.
      */
@@ -141,9 +131,7 @@ struct MotorControlParams {
      * series, this one outputs volts and sees one. Use tuneFocCurrentPi().
      */
     PiParameters foc_current_regulator;
-#if LIBECU_TRACTION_ACCEL_RPS2
     float traction_acceleration_rps2 = 0.0f; ///< Mechanical feedback ceiling; 0 leaves speed PI unchanged.
-#endif
 };
 
 /**
@@ -279,9 +267,12 @@ public:
     bool initialize() noexcept;
 
     /**
-     * @brief Update motor control (call at control frequency)
+     * @brief Run the slow service tick: sample speed, update the ramp and limits, then take one speed PI step.
      */
     void update() noexcept;
+    /** @brief Take one intermediate speed PI step. Same SysTick owner as update(); never call both on one tick.
+     * Uses the last slow sample and ceilings; without a valid velocity command there is no work. */
+    void updateSpeedPi() noexcept;
 
     /**
      * @brief Set mechanical-RPS demand for velocity control or the open-loop field
@@ -419,10 +410,6 @@ public:
      *
      * @param rate_rps2 Rate in RPS per second, 0 disables the limiter
      */
-#if defined(LIBECU_MOTOR1_SPAN_BENCH) && LIBECU_MOTOR1_SPAN_BENCH
-    /** @brief Snapshot drive state and publish a held command on the 1-kHz board tick. */
-    void updateBenchTrims1k() noexcept;
-#endif
     void setAccelerationRate(float rate_rps2) noexcept;
 
     /// @brief Get the target-speed slew rate limit (RPS/s), 0 = disabled
@@ -564,7 +551,9 @@ public:
      * Performs no ADC reads, electrical algorithm update or PWM writes. A pending
      * preparation is not overwritten: another prepare is a no-op until complete
      * or cancel. Without an ADC interface it is also a no-op, like the wrapper.
-     * @note Prepare/complete/cancel share the board's serialized current-ISR ownership.
+     * @note The current IRQ owns Hall/PLL and outranks SysTick, configuration
+     * and telemetry. Prepare and complete never preempt each other. A break
+     * may gate off and cancel the frame, but must not access tracking state.
      */
     void preparePwmInterruptHandler() noexcept;
     /** Prepare and finish in the same single-writer IRQ. Lower-priority readers
@@ -597,25 +586,8 @@ public:
      * frame still requires parking/resetting the drive, as for the unsplit API.
      */
     void cancelPwmInterruptHandler() noexcept { pwm_prepared_ = false; }
-    /** @brief Whether a source snapshot survived intervening reconfiguration. */
+    /** @brief After prepare returns, whether the carrier still owns the frame. */
     bool hasPreparedPwmFrame() const noexcept { return pwm_prepared_; }
-
-    /**
-     * @brief Keep Hall/PLL rotor feedback alive after the current loop has stopped
-     *
-     * Call at ActiveTiming::CURRENT_HZ only after the board has disabled the
-     * bridge, selected NEUTRAL and permanently stopped current acquisition and
-     * pwmInterruptHandler() until reset. Use the current ISR's priority/ownership:
-     * the two handlers must never run concurrently or both tick the same period.
-     * Hall interrupts must remain enabled; update() still publishes speed at the
-     * slow-loop rate. NEUTRAL reports signed speed in the physical Hall frame.
-     *
-     * Consumes real Hall events and advances the existing PLL without resetting
-     * a coasting rotor's estimate. Reads no ADC, runs no drive algorithm and
-     * makes no PWM calls. Ignored outside NEUTRAL; the board owns the fault latch
-     * that prevents re-arming the bridge or restarting acquisition.
-     */
-    void rotorObservationInterruptHandler() noexcept;
 
 private:
     /// @brief The algorithm currently selected, never null
@@ -630,12 +602,14 @@ private:
     // Owned components
     HallMonitor hall_monitor_;
     MotorPLL motor_pll_;
-#if defined(LIBECU_MOTOR1_SPAN_BENCH) && LIBECU_MOTOR1_SPAN_BENCH
-    Order144Feedback shoulder_{};
-    bool bench_held_live_{};
-#endif
     OpenLoopPhase<Profile, ActiveTiming::CURRENT_HZ> open_loop_;
-    PiFloatInterface<ActivePiProfile::SpeedPiTypes, ActiveTiming::SPEED_HZ> pi_speed_controller_;
+    using SpeedPi = PiFloatInterface<ActivePiProfile::SpeedPiTypes, ActiveTiming::SPEED_PI_HZ>;
+    SpeedPi pi_speed_controller_;
+    struct {
+        SpeedPi::Input target{}, measured{};
+        SpeedPi::Output integral_ceiling{}, traction_ceiling{};
+    } speed_pi_frame_; // Prepared once per slow sample, including its acceleration allowance.
+    volatile bool speed_pi_ready_ = false; // A park in the higher-priority current ISR invalidates it.
 
     // Electrical algorithms. Both are constructed and kept alive; only the one
     // selected by algorithm_ is ticked. Keeping the unselected one around
@@ -671,7 +645,7 @@ private:
     volatile bool pwm_prepared_ = false; // A higher-priority break can cancel it.
 
     // Deferred Hall update (re-read by the active current-rate handler)
-    volatile bool hall_update_pending_;      ///< Set by Hall ISR, consumed by current/observation ISR
+    volatile bool hall_update_pending_;      ///< Set by Hall ISR, consumed at PWM frame preparation
 
     /**
      * @brief Voltage-mode duty request, 0.0 to 1.0
@@ -689,10 +663,8 @@ private:
     Current filtered_measured_current_;       ///< LPF-filtered current, telemetry only
     Accumulator limited_target_speed_;        ///< Retains sub-LSB ramp increments
     Accumulator acceleration_step_;           ///< Maximum target-speed change per control tick
-#if LIBECU_TRACTION_ACCEL_RPS2
     TractionAcceleration<Profile> traction_acceleration_{};
     Speed traction_acceleration_step_{};
-#endif
 
     /**
      * @brief Hold the velocity loop while the drive is parked in NEUTRAL
@@ -702,12 +674,13 @@ private:
      * a bumpless re-engagement needs. See the note at the call site.
      */
     void holdVelocityLoop() noexcept;
+    void publishSpeedPiOutput(SpeedPi::Output output) noexcept;
 
     /// @brief Refresh physical Hall after a mode change/parking; caller holds CriticalSection.
     void synchronizeHallPosition(bool discard_tracking = false) noexcept;
 
     /// @brief Age Hall health and consume a deferred reading; caller owns the current-rate ISR.
-    template<bool Owned> void observeHall(bool guard_active, uint8_t position = HALL_NOT_SAMPLED) noexcept;
+    void observeHall(bool guard_active, uint8_t position = HALL_NOT_SAMPLED) noexcept;
     template<bool Owned> void preparePwmFrame(uint8_t position = HALL_NOT_SAMPLED) noexcept;
     void clearParkedCommands() noexcept;
     void filterPublishedCurrent() noexcept;

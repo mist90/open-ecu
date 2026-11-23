@@ -1,20 +1,20 @@
-# MOTOR_1 mechanical speed-loop characterization
+# MOTOR_1 historical mechanical speed-loop characterization
 
-Current MOTOR_1 tuning is **3/20**, selected on 2026-11-17 after the user
-reported successful free-wheel operation on STM32F410. The transient budgets
-below characterize the earlier damping-oriented design; they are retained
-as comparative diagnostics, not relaxed to make a different tuning pass.
-Use `./tests/test_speed_loop/run.sh 3 0.15` to reproduce its 54-case result.
-The current default exits nonzero: **53 of 54 cases** fail at least one
-budget (135 checks). Of those, 42 fail only transient/rebound budgets;
-11 also fail settled-motion checks, all in the combined light/high-Kt
-free-wheel corner. Nominal free-wheel and all road cases converge.
-See [the SPID stability assessment](../../docs/software.md#spid-320-stability-assessment)
-for the interpretation and model limitations.
+This characterizes one variable: the speed PI gain pair. The default **3/0.15**
+reproduces the 54-case damping reference on the original 20 A, 100/5000 PLL
+fixture. For the active scooter calibration and traction/rolling limits, run
+the [100/500 Hz controller comparison](../test_speed_pi_rate/README.md).
+
+The earlier **3/20** tuning was run unloaded on STM32F410. Against this fixture's
+unchanged budgets, 53 of 54 cases fail at least one limit (135 checks): 42 fail
+only transient/rebound budgets; 11 also fail settled-motion checks, all in the
+combined light/high-Kt free-wheel corner. Nominal free-wheel and all road cases
+converge. The table below preserves that comparison.
 
 ```sh
-./tests/test_speed_loop/run.sh          # shared motor_config.hpp, -DMOTOR_1
-./tests/test_speed_loop/run.sh 3 2      # previous default, same acceptance limits
+./tests/test_speed_loop/run.sh          # 3/0.15 reference, all 54 cases pass
+./tests/test_speed_loop/run.sh 3 20     # historical 3/20, same plant and limits
+./tests/test_speed_loop/run.sh 3 2      # earlier 3/2
 ./tests/test_speed_loop/run.sh 3 0.1    # exploratory override; does not edit firmware tuning
 ./tests/test_speed_loop/run.sh 2 2      # old tuning comparison
 ```
@@ -28,11 +28,11 @@ PI behind floating-point feedback. Exit status is nonzero on any failed limit.
 ## Actual controller code and simulated plant
 
 The production `PiFloatInterface` / `PiController` and `MotorPLLCore` execute
-unchanged. The PI uses the shared MOTOR_1 Kp/Ki, current limits and acceleration;
-the PLL uses its shared gains and pole count. This harness mirrors the few lines
-of native feedback LPF and target ramp from `BldcController::update()` and
-`applyAccelerationLimit()`. Their settings come from shared `main.cpp`: 100 Hz,
-feedback alpha 0.5, target alpha 0, integral [-4,12] A and back-calculation gain 2.
+unchanged. The MOTOR_1 pole count and back-EMF constant set the mechanical
+conversion. For reproducible gain comparisons, the fixture sets the Hall PLL
+to 100/5000, the PI to 100 Hz, the command ramp to 6 rev/s², feedback alpha
+to 0.5, target alpha to 0, the static integral to [-4,12] A and
+back-calculation gain to 2. It uses no measured-acceleration limiter.
 The PLL's **integrator** is the speed observation, as in the actual controller.
 
 Mechanical speed and angle result from torque, never from a prescribed speed
@@ -56,7 +56,7 @@ artificially sticking at a speed LSB. Hall sectors come from the integrated
 electrical angle, sampled on the current clock.
 
 Torque current follows an exact first-order response with bandwidth 125, 250 or
-500 Hz and the shared current bounds (currently [-6,20] A). The current request is held for each 100 Hz tick;
+500 Hz and the fixture's [-6,20] A current bounds. The current request is held for each 100 Hz tick;
 its exact within-tick current average drives the mechanical equation. The PI
 still owns its real trapezoidal integration, saturation and anti-windup. There
 is no independent voltage saturation in this model, so external saturation is
@@ -107,8 +107,7 @@ Limits are the same for all gains, rates and numerical profiles:
 * Finite states and configured current/integral bounds throughout.
 
 The old 2/2 gains are a useful negative control for loaded-plant overshoot and
-load-step ringing. CLI overrides use exactly the same limits as the standard
-configured run.
+load-step ringing. CLI overrides use exactly the same limits as the reference run.
 
 ## Observed tuning trade-offs (20 A limit)
 
@@ -119,7 +118,7 @@ mechanical RPS, not the PLL's reported speed.
 |---|---:|---:|---|
 | 2 / 2 | 1.084 | 0.391 | All road cases fail damping; heavy tail 0.123 RPS peak-to-peak. |
 | 3 / 2 (previous) | 0.986 | 0.358 | Free cases pass; road cases settle but exceed earlier transient/rebound budgets. |
-| 3 / 20 (current) | 0.391 | 0.141-0.142 | Nominal free/road cases settle; 11/12 light/high-Kt cases fail settled limits, up to 1.643 RPS peak-to-peak. |
+| 3 / 20 | 0.391 | 0.141-0.142 | Nominal free/road cases settle; 11/12 light/high-Kt cases fail settled limits, up to 1.643 RPS peak-to-peak. |
 | 3 / 0.1 | 0.292 | 0.784 | Passes uncertainty and settled low-speed checks. |
 | 3 / 0.15 | 0.591 | 0.735 | Free-wheel stable; 100 kg overshoot 0.662–0.788 is within its 15% budget. |
 | 3 / 0.2 | 0.832 | 0.692 | Free-wheel stable; nominal/high-inertia road startup checks fail. |

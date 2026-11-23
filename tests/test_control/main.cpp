@@ -14,8 +14,17 @@
 static uint32_t fake_time_us = 0;
 uint32_t time_us() { return fake_time_us; }
 static unsigned mask_depth = 0, mask_entries = 0;
+static void (*before_mask_hook)() = nullptr;
 static void (*unmasked_hook)() = nullptr;
-extern "C" void disable_interrupts() { ++mask_depth; ++mask_entries; }
+extern "C" void disable_interrupts() {
+    if (!mask_depth && before_mask_hook) {
+        const auto hook = before_mask_hook;
+        before_mask_hook = nullptr;
+        hook();
+    }
+    ++mask_depth;
+    ++mask_entries;
+}
 extern "C" void enable_interrupts() {
     if (--mask_depth == 0 && unmasked_hook) {
         const auto hook = unmasked_hook;
@@ -144,6 +153,13 @@ static MotorControlParams makeParams() {
     return params;
 }
 
+// One interval starting with a fresh 100 Hz sample and ending just before the next one.
+static void serviceInterval(BldcController& drive) {
+    drive.update();
+    for (uint32_t i = 1; i < ActiveTiming::SPEED_PI_HZ / ActiveTiming::SPEED_HZ; ++i)
+        drive.updateSpeedPi();
+}
+
 static void testSpeedClock() {
     Pwm pwm;
     Hall hall;
@@ -155,10 +171,11 @@ static void testSpeedClock() {
     for (uint32_t tick = 0; tick < ActiveTiming::SPEED_HZ / 2; ++tick) {
         // Wall-clock jumps must not turn a fixed-frequency sample into a long integration step.
         fake_time_us += tick % 2 ? 1000000u : 1u;
-        controller.update();
+        serviceInterval(controller);
     }
-    const float expected = 0.5f - 0.5f / ActiveTiming::SPEED_HZ;
-    check(std::abs(controller.getStatus().target_current - expected) < 2e-6f,
+    const float expected = 0.5f - 0.5f / ActiveTiming::SPEED_PI_HZ;
+    // Float integrates up to 500 rounded increments in this window at 1 kHz.
+    check(std::abs(controller.getStatus().target_current - expected) < 5e-6f,
           "outer PI uses the speed clock rather than PWM or wall-clock intervals");
 
     controller.setDriveMode(DriveMode::NEUTRAL);
@@ -167,7 +184,7 @@ static void testSpeedClock() {
     controller.setDriveMode(DriveMode::FORWARD);
     controller.setTargetSpeed(1.0f);
     controller.update();
-    check(std::abs(controller.getStatus().target_current - 0.5f / ActiveTiming::SPEED_HZ) < 1e-6f,
+    check(std::abs(controller.getStatus().target_current - 0.5f / ActiveTiming::SPEED_PI_HZ) < 1e-6f,
           "re-engagement does not integrate the parked interval");
 }
 
@@ -198,6 +215,50 @@ static void testSlewClock() {
           "changing acceleration refreshes the cached increment");
 }
 
+static void testIntermediatePi() {
+    if constexpr (ActiveTiming::SPEED_PI_HZ == ActiveTiming::SPEED_HZ) return;
+    Pwm pwm;
+    Hall hall;
+    Adc adc;
+    auto params = makeParams();
+    params.acceleration_rate = 2.0f;
+    params.pi_current_mode.kp = 0;
+    params.pi_current_mode.ki = 24;
+    BldcController motor(pwm, hall, params, &adc);
+    check(motor.initialize(), "multirate controller initialized");
+    motor.start();
+    motor.setDriveMode(DriveMode::FORWARD);
+    motor.setTargetSpeed(3);
+    motor.updateSpeedPi();
+    check(motor.getNativeStatus().target_current == BldcController::Current{}, "no PI before first reference sample");
+    motor.update();
+    const auto first = motor.getStatus();
+    const auto reads = adc.reads(), writes = pwm.calls;
+    motor.setTargetSpeed(4); // New positive command waits for next slow ramp; the PI still uses the old sample.
+    motor.updateSpeedPi();
+    const auto next = motor.getStatus();
+    check(std::abs((next.target_current - first.target_current) - 24.f * .02f / ActiveTiming::SPEED_PI_HZ) < 2e-6f &&
+          next.current_speed_rps == first.current_speed_rps && reads == adc.reads() && writes == pwm.calls,
+          "intermediate PI integrates the held ramp once, without auxiliary acquisition or PWM writes");
+    // A higher-priority carrier parks after PI computation, immediately before committing the request.
+    static BldcController* interrupted;
+    interrupted = &motor;
+    before_mask_hook = [] { interrupted->parkFromCarrier(); };
+    motor.updateSpeedPi();
+    check(!before_mask_hook && motor.getDriveMode() == DriveMode::NEUTRAL &&
+          motor.getNativeStatus().target_current == BldcController::Current{} && !pwm.enabled,
+          "PI publication cannot reinstate a demand calculated across a carrier park");
+    motor.setDriveMode(DriveMode::FORWARD);
+    motor.setTargetSpeed(3);
+    motor.updateSpeedPi();
+    check(motor.getNativeStatus().target_current == BldcController::Current{},
+          "park and re-arm between service ticks cannot replay an old current demand");
+    motor.setControlMode(ControlMode::CLOSED_LOOP_TORQUE);
+    motor.setCurrent(-3);
+    motor.updateSpeedPi();
+    check(motor.getStatus().target_current == -3, "intermediate speed PI never takes ownership of torque mode");
+}
+
 static void testTractionAcceleration() {
     using Profile = ActiveNumericProfile;
     using S = Profile::Speed;
@@ -207,29 +268,31 @@ static void testTractionAcceleration() {
     const auto step = number_v<S, 2, 100>;
     const auto eight = number_v<C, 8>;
     const auto max = number_v<C, 45>;
+    const auto gain = number_v<S, 2>; // A per rev/s
     // Same current command and speed setpoint, only the *measured* trajectory differs.
-    const C first = limiter.ceiling(number_v<S, 3>, step, eight, max);
-    const C brisk = limiter.ceiling(number_v<S, 31, 10>, step, eight, max);
+    const C first = limiter.ceiling(number_v<S, 3>, step, eight, max, gain);
+    const C brisk = limiter.ceiling(number_v<S, 31, 10>, step, eight, max, gain);
     check(std::abs(amp(first) - 8.04f) < 0.001f && std::abs(amp(brisk) - 7.84f) < 0.001f,
           "real acceleration folds back positive torque; a coasting engagement has no fictitious impulse");
-    check(limiter.ceiling(number_v<S, 4>, step, C{}, max) == C{},
+    check(limiter.ceiling(number_v<S, 4>, step, C{}, max, gain) == C{},
           "external positive acceleration can remove traction but cannot demand braking");
-    check(limiter.ceiling(number_v<S, 4>, S{}, C{}, max) == max,
+    check(limiter.ceiling(number_v<S, 4>, S{}, C{}, max, gain) == max,
           "disabled feedback preserves the original current ceiling");
     limiter.reset();
-    check(limiter.ceiling(number_v<S, -4>, step, eight, max) == first,
+    check(limiter.ceiling(number_v<S, -4>, step, eight, max, gain) == first,
           "reversing the direction frame does not differentiate across directions");
+    check(std::abs(amp(limiter.ceiling(number_v<S, -4>, step, eight, max, number_v<S, 3, 4>)) - 8.015f) < 0.001f,
+          "the explicit feedback gain scales the change in applied torque");
     // A periodic Hall speed error has zero net acceleration. Rectifying the
     // changes here would ratchet the torque ceiling down on every full period.
     limiter.reset();
-    C applied = limiter.ceiling(number_v<S, 2>, step, eight, max);
+    C applied = limiter.ceiling(number_v<S, 2>, step, eight, max, gain);
     for (int i = 0; i < 10; ++i) {
-        applied = limiter.ceiling(number_v<S, 21, 10>, step, applied, max);
-        applied = limiter.ceiling(number_v<S, 2>, step, applied, max);
+        applied = limiter.ceiling(number_v<S, 21, 10>, step, applied, max, gain);
+        applied = limiter.ceiling(number_v<S, 2>, step, applied, max, gain);
     }
     check(std::abs(amp(applied) - 8.84f) < 0.002f, "alternating signed speed error does not consume net headroom");
-#if LIBECU_TRACTION_ACCEL_RPS2
-    using Pi = PiFloatInterface<ActivePiProfile::SpeedPiTypes, ActiveTiming::SPEED_HZ>;
+    using Pi = PiFloatInterface<ActivePiProfile::SpeedPiTypes, ActiveTiming::SPEED_PI_HZ>;
     Pi pi;
     PiParameters limits{};
     limits.kp = 6; limits.ki = 24; limits.kb = 0;
@@ -252,6 +315,7 @@ static void testTractionAcceleration() {
                                               number_v<Pi::Output, 12>, Pi::Output{});
     check(amp(brake) == -6.0f && pi.saturationSign() == -1,
           "zero traction authority does not mask speed PI braking or the hard current floor");
+#ifdef MOTOR_1
     Pwm pwm;
     Hall hall;
     auto params = makeParams();
@@ -260,14 +324,14 @@ static void testTractionAcceleration() {
     params.pi_current_mode.ki = 24.0f;
     params.pi_current_mode.kb = 2.0f;
     BldcController drive(pwm, hall, params);
-    check(drive.initialize(), "measured-acceleration controller accepts T60 calibration");
+    check(drive.initialize(), "scooter controller accepts the fixture's measured-acceleration rate");
     drive.start();
     drive.setDriveMode(DriveMode::FORWARD);
     drive.setTargetSpeed(4.0f);
     drive.update();
     check(std::abs(drive.getStatus().target_current - 0.04f) < 0.001f,
           "unramped speed step is bounded at the speed PI output");
-    for (unsigned i = 0; i < 25; ++i) drive.update();
+    for (unsigned i = 0; i < 25; ++i) serviceInterval(drive);
     check(std::abs(drive.getStatus().target_current - 1.04f) < 0.002f,
           "a loaded stationary rotor recovers more torque without bypassing the ceiling");
     drive.setControlMode(ControlMode::CLOSED_LOOP_TORQUE);
@@ -298,10 +362,11 @@ static void testLiveSpeedPiGains() {
         drive->start();
         drive->setDriveMode(DriveMode::FORWARD);
         drive->setTargetSpeed(1.0f);
-        for (unsigned i = 0; i < 25; ++i) drive->update();
+        for (unsigned i = 0; i < 25; ++i) serviceInterval(*drive);
     }
     const float before = motor.getStatus().target_current;
-    check(std::abs(before - 11.88f) < 0.00002f, "loaded PI has accumulated a nonzero integral");
+    check(std::abs(before - (12.0f - 12.0f / ActiveTiming::SPEED_PI_HZ)) < 0.00006f,
+          "250 ms at the selected PI frequency accumulates the expected trapezoidal integral");
     check(motor.setSpeedPi(6, 24), "repeating speed gains succeeds under load");
     motor.update();
     reference.update();
@@ -317,7 +382,7 @@ static void testLiveSpeedPiGains() {
     check(motor.setSpeedPi(4, 10), "Ki-only speed edit succeeds");
     motor.setTargetSpeed(1.0f);
     motor.update();
-    check(std::abs(motor.getStatus().target_current - (numberCast<float>(held) + 0.125f)) < 0.000003f,
+    check(std::abs(motor.getStatus().target_current - (numberCast<float>(held) + 12.5f / ActiveTiming::SPEED_PI_HZ)) < 0.000003f,
           "Ki-only edit retains I and both trapezoidal error endpoints");
 
     const auto command = motor.getNativeStatus().target_current;
@@ -326,8 +391,8 @@ static void testLiveSpeedPiGains() {
     motor.getSpeedPiGains(kp, ki);
     check(kp == 4 && ki == 10 && motor.getNativeStatus().target_current == command,
           "rejected transfer preserves gains and the active command");
-#if defined(LIBECU_MOTOR1_T60_LOAD)
-    check(!motor.setSpeedPi(0, 0), "stationary T60 rejects a rebase above 12 A but below the static limit");
+#ifdef MOTOR_1
+    check(!motor.setSpeedPi(0, 0), "stationary scooter rejects a rebase above 12 A but below the static limit");
 #endif
     static BldcController* interrupted;
     interrupted = &motor;
@@ -660,9 +725,11 @@ static void testSplitCurrentLoop() {
                     const unsigned writes = split_pwm.calls, halls = split_hall.reads;
                     check(!split.hasPreparedPwmFrame() && !wrapped.hasPreparedPwmFrame(),
                           "completed wrapper/split frame leaves no pending preparation");
+                    const unsigned masks = mask_entries;
                     split.preparePwmInterruptHandler();
                     owned.prepareOwnedCarrier();
-                    check(split.hasPreparedPwmFrame() && split.hasPreparedPwmFrame() &&
+                    check(mask_entries == masks, "neither current-IRQ entry masks IRQs around Hall or PLL");
+                    check(split.hasPreparedPwmFrame() && owned.hasPreparedPwmFrame() &&
                           split_adc.reads() == reads && split_adc.frame_reads == frames &&
                           split_pwm.calls == writes && split_hall.reads == halls + 1,
                           "prepare consumes one deferred Hall read with no ADC/algorithm/PWM work");
@@ -1002,14 +1069,13 @@ static void testNativePath() {
 
 // Generate physical Hall sectors from a prescribed mechanical coast, independently
 // of controller estimates and bridge commands. Only real sector changes raise the
-// Hall IRQ; the selected fast clock is the sole source of PLL time progression.
-enum class RotorClock { CURRENT, OBSERVATION, STOPPED };
+// Hall IRQ; only the PWM frame advances the PLL, including during a coast.
+enum class RotorClock { PWM, STOPPED };
 class RotorTrace {
 public:
-    RotorTrace(BldcController& controller, Hall& hall, Adc& adc, Pwm& pwm)
-        : controller_(controller), hall_(hall), adc_(adc), pwm_(pwm) {}
+    RotorTrace(BldcController& controller, Hall& hall) : controller_(controller), hall_(hall) {}
 
-    void advance(float from_rps, float to_rps, uint32_t ticks, RotorClock clock) {
+    void advance(float from_rps, float to_rps, uint32_t ticks, RotorClock clock = RotorClock::PWM) {
         const float steps_per_rev = controller_.getParams().num_poles * 3.0f;
         for (uint32_t i = 0; i < ticks; ++i) {
             const float rps = from_rps + (to_rps - from_rps) * float(i + 1) / float(ticks);
@@ -1020,25 +1086,17 @@ public:
                 controller_.hallSensorInterruptHandler();
             }
             fake_time_us += 1000000u / ActiveTiming::CURRENT_HZ;
-            if (clock == RotorClock::CURRENT) {
-                controller_.pwmInterruptHandler();
-            } else if (clock == RotorClock::OBSERVATION) {
-                const unsigned reads = adc_.reads();
-                const unsigned writes = pwm_.calls;
-                controller_.rotorObservationInterruptHandler();
-                observer_is_passive &= adc_.reads() == reads && pwm_.calls == writes;
-            }
+            if (clock == RotorClock::PWM) controller_.pwmInterruptHandler();
             if (++ticks_ % (ActiveTiming::CURRENT_HZ / ActiveTiming::SPEED_HZ) == 0)
                 controller_.update();
+            else if (ticks_ % (ActiveTiming::CURRENT_HZ / ActiveTiming::SPEED_PI_HZ) == 0)
+                controller_.updateSpeedPi();
         }
     }
 
-    bool observer_is_passive = true;
 private:
     BldcController& controller_;
     Hall& hall_;
-    Adc& adc_;
-    Pwm& pwm_;
     float phase_ = 0.0f;
     uint32_t ticks_ = 0;
 };
@@ -1048,7 +1106,7 @@ static void checkCoastTelemetry(Console& console, BldcController& controller, fl
     float speed = 1000.0f;
     check(std::sscanf(console.command("AT+SPD?").c_str(), "+SPD:%f", &speed) == 1 &&
           std::abs(speed - physical_rps) < tolerance,
-          "UART SPD? follows the signed physical coast after the current ISR stops");
+          "UART SPD? follows the signed physical coast while PWM continues");
     console.clearOutput();
     console.onControlTick();
     float instantaneous = 1000.0f, integral = 1000.0f, angle = -1.0f;
@@ -1056,17 +1114,17 @@ static void checkCoastTelemetry(Console& console, BldcController& controller, fl
     int sync = -1;
     check(std::sscanf(console.output().c_str(), "+PLL:%f;%f;%f;%u;%d",
                       &instantaneous, &integral, &angle, &hall, &sync) == 5,
-          "UART PLL telemetry remains available without current samples");
+          "UART PLL telemetry remains available with the bridge disabled");
     const auto status = controller.getStatus();
     check(std::abs(integral / (controller.getParams().num_poles * 3) - physical_rps) < tolerance,
-          "UART PLL integrator follows real coast speed rather than its pre-fault value");
+           "UART PLL integrator follows the changing physical coast speed");
     check(hall == status.measured_position && std::abs(angle - status.pll_angle) < 0.001f,
           "observer publishes native angle and Hall position used by UART telemetry");
     if (physical_rps == 0.0f)
         check(std::abs(instantaneous) < 0.1f, "PLL angle advance also settles at standstill");
 }
 
-static void testRotorObservation(int direction, DriveAlgorithm algorithm) {
+static void testParkedPwmTracking(int direction, DriveAlgorithm algorithm) {
     Pwm pwm;
     Hall hall;
     Adc adc;
@@ -1079,44 +1137,34 @@ static void testRotorObservation(int direction, DriveAlgorithm algorithm) {
     controller.setElectricMode(ElectricMode::VOLTAGE_MODE);
     controller.setDriveMode(direction > 0 ? DriveMode::FORWARD : DriveMode::REVERSE);
     controller.setDutyCycle(0.25f);
-    RotorTrace trace(controller, hall, adc, pwm);
-    trace.advance(direction * 8.08f, direction * 8.08f, 2 * ActiveTiming::CURRENT_HZ, RotorClock::CURRENT);
+    RotorTrace trace(controller, hall);
+    trace.advance(direction * 8.08f, direction * 8.08f, 2 * ActiveTiming::CURRENT_HZ);
     const float running_speed = controller.getStatus().current_speed_rps;
     check(pwm.enabled && std::abs(running_speed - 8.08f) < 0.15f && controller.getPllInfo().is_sync,
-          "healthy current loop tracks a real Hall sequence before failure in either drive direction");
+           "PWM tracks a real Hall sequence in either drive direction");
 
-    const auto active_pll = controller.getPllInfo();
-    const unsigned active_reads = adc.reads(), active_writes = pwm.calls, active_hall_reads = hall.reads;
-    controller.rotorObservationInterruptHandler();
-    check(controller.getPllInfo().angle == active_pll.angle &&
-          controller.getPllInfo().pll_integral == active_pll.pll_integral &&
-          adc.reads() == active_reads && pwm.calls == active_writes && hall.reads == active_hall_reads,
-          "observation handler is inert while drive mode is active");
-
-    // The board's latched failure disables acquisition and selects NEUTRAL.
-    // From here on this test never invokes pwmInterruptHandler() again.
+    // Disable torque, but keep the physical PWM time base and acquisition running.
     controller.setDriveMode(DriveMode::NEUTRAL);
     controller.update();
     check(!pwm.enabled && std::abs(controller.getStatus().current_speed_rps - direction * running_speed) < 0.0001f,
           "entering NEUTRAL retains physical signed rotor speed instead of faking zero");
-    const unsigned current_reads = adc.current_reads, bus_reads = adc.bus_reads, enables = pwm.enables;
+    const unsigned enables = pwm.enables;
     const auto hall_before = controller.getHallInfo();
-    trace.advance(direction * 8.08f, direction * 8.08f, 1, RotorClock::OBSERVATION);
+    trace.advance(direction * 8.08f, direction * 8.08f, 1);
     controller.update();
     check(std::abs(controller.getStatus().current_speed_rps) > 7.5f,
-          "first observation tick preserves the already-moving rotor estimate");
+          "first parked PWM tick preserves the already-moving rotor estimate");
 
     Console console(controller);
     console.setTelemetryEnabled(false);
-    check(console.command("AT+PLL=1") == "OK\r\n", "PLL telemetry enables after current-loop failure");
-    trace.advance(direction * 8.08f, direction * 6.0f, 3 * ActiveTiming::CURRENT_HZ / 5,
-                  RotorClock::OBSERVATION);
+    check(console.command("AT+PLL=1") == "OK\r\n", "PLL telemetry enables in NEUTRAL");
+    trace.advance(direction * 8.08f, direction * 6.0f, 3 * ActiveTiming::CURRENT_HZ / 5);
     checkCoastTelemetry(console, controller, direction * 6.0f);
     const float coast_fast = controller.getStatus().current_speed_rps;
     check(controller.getHallInfo().edges > hall_before.edges &&
           controller.getHallInfo().edge_accum < hall_before.edge_accum &&
           controller.getStatus().measured_position == hall.position,
-          "observation-only ticks consume real Hall edges and age Hall health");
+          "parked PWM ticks consume real Hall edges and age Hall health");
 
     for (int repeat = 0; repeat < 3; ++repeat) {
         const auto before = controller.getPllInfo();
@@ -1132,19 +1180,19 @@ static void testRotorObservation(int direction, DriveAlgorithm algorithm) {
               "repeated neutral and AT demands cannot reset an actual coast estimate");
     }
 
-    trace.advance(direction * 6.0f, direction * 2.0f, ActiveTiming::CURRENT_HZ, RotorClock::OBSERVATION);
+    const unsigned duty_writes = pwm.native_writes;
+    trace.advance(direction * 6.0f, direction * 2.0f, ActiveTiming::CURRENT_HZ);
     checkCoastTelemetry(console, controller, direction * 2.0f);
     const float coast_slow = controller.getStatus().current_speed_rps;
-    trace.advance(direction * 2.0f, 0.0f, ActiveTiming::CURRENT_HZ, RotorClock::OBSERVATION);
-    trace.advance(0.0f, 0.0f, 2 * ActiveTiming::CURRENT_HZ, RotorClock::OBSERVATION);
+    trace.advance(direction * 2.0f, 0.0f, ActiveTiming::CURRENT_HZ);
+    trace.advance(0.0f, 0.0f, 2 * ActiveTiming::CURRENT_HZ);
     checkCoastTelemetry(console, controller, 0.0f);
     check(std::abs(controller.getStatus().current_speed_rps) < 0.005f,
-          "speed reaches telemetry zero from stationary Hall feedback without ADC or control ticks");
-    check(trace.observer_is_passive && adc.current_reads == current_reads && adc.bus_reads == bus_reads,
-          "every observation interrupt performs zero ADC reads and zero PWM calls, including at standstill");
+          "speed reaches telemetry zero from stationary Hall feedback on PWM ticks");
+    check(pwm.native_writes == duty_writes, "parked PWM frames do not apply new electrical outputs");
     check(!pwm.enabled && pwm.enables == enables && controller.getHallFault() == HallFault::NONE,
           "coast observation leaves the bridge disabled and preserves healthy Hall diagnostics");
-    std::printf("Rotor observation %s %s: drive %.3f, coast %.3f -> %.3f -> %.6f RPS\n",
+    std::printf("Parked PWM %s %s: drive %.3f, coast %.3f -> %.3f -> %.6f RPS\n",
                 algorithm == DriveAlgorithm::FOC ? "FOC" : "six-step", direction > 0 ? "forward" : "reverse",
                 running_speed, coast_fast, coast_slow, controller.getStatus().current_speed_rps);
 }
@@ -1224,17 +1272,17 @@ static void testVelocityBrakingRelease(int direction) {
     check(controller.initialize(), "braking release controller initializes");
     controller.start();
     controller.setDriveMode(direction > 0 ? DriveMode::FORWARD : DriveMode::REVERSE);
-    RotorTrace trace(controller, hall, adc, pwm);
-    trace.advance(direction * 2.0f, direction * 2.0f, ActiveTiming::CURRENT_HZ, RotorClock::CURRENT);
+    RotorTrace trace(controller, hall);
+    trace.advance(direction * 2.0f, direction * 2.0f, ActiveTiming::CURRENT_HZ);
     check(controller.getStatus().current_speed_rps > 1.8f && controller.getStatus().target_current < -0.1f,
           "zero speed command retains braking current while the rotor moves in the selected direction");
-    trace.advance(direction * 2.0f, 0.0f, ActiveTiming::CURRENT_HZ, RotorClock::CURRENT);
-    trace.advance(0.0f, 0.0f, 3 * ActiveTiming::CURRENT_HZ, RotorClock::CURRENT);
+    trace.advance(direction * 2.0f, 0.0f, ActiveTiming::CURRENT_HZ);
+    trace.advance(0.0f, 0.0f, 3 * ActiveTiming::CURRENT_HZ);
     check(std::abs(controller.getPllInfo().pll_integral) < 0.1f,
           "decelerated Hall trace settles the real PLL into standstill");
     check(controller.getStatus().target_current == 0.0f,
           "braking integral releases to exact zero after real Hall deceleration");
-    trace.advance(-direction * 2.0f, -direction * 2.0f, ActiveTiming::CURRENT_HZ, RotorClock::CURRENT);
+    trace.advance(-direction * 2.0f, -direction * 2.0f, ActiveTiming::CURRENT_HZ);
     check(controller.getStatus().current_speed_rps < -1.8f && controller.getStatus().target_current > 0.1f,
           "zero command still applies opposite corrective current when the rotor moves against drive direction");
 }
@@ -1389,30 +1437,24 @@ static void testFrozenRotorClock() {
     check(controller.initialize(), "frozen-clock regression setup initializes");
     controller.start();
     controller.setDriveMode(DriveMode::FORWARD);
-    RotorTrace trace(controller, hall, adc, pwm);
-    trace.advance(8.08f, 8.08f, 2 * ActiveTiming::CURRENT_HZ, RotorClock::CURRENT);
+    RotorTrace trace(controller, hall);
+    trace.advance(8.08f, 8.08f, 2 * ActiveTiming::CURRENT_HZ);
     const float before = controller.getStatus().current_speed_rps;
     controller.setDriveMode(DriveMode::NEUTRAL);
+    const auto pll = controller.getPllInfo();
+    const auto health = controller.getHallInfo();
+    const unsigned reads = hall.reads;
     trace.advance(8.08f, 0.0f, 2 * ActiveTiming::CURRENT_HZ, RotorClock::STOPPED);
     trace.advance(0.0f, 0.0f, ActiveTiming::CURRENT_HZ, RotorClock::STOPPED);
-    check(before > 7.5f && controller.getStatus().current_speed_rps == before,
-          "negative control reproduces frozen speed: Hall IRQs plus slow updates cannot replace the PLL clock");
-}
-
-static void testObservationWithoutAdc() {
-    Pwm pwm;
-    Hall hall;
-    BldcController controller(pwm, hall, makeParams());
-    check(controller.initialize(), "observation without an ADC initializes");
-    controller.start();
-    const unsigned writes = pwm.calls;
-    hall.position = 1;
-    controller.hallSensorInterruptHandler();
-    for (unsigned tick = 0; tick < ActiveTiming::CURRENT_HZ / 10; ++tick)
-        controller.rotorObservationInterruptHandler();
-    check(controller.getStatus().measured_position == 1 && controller.getPllInfo().angle > 0.9f,
-          "rotor observation does not depend on the current handler's ADC prerequisite");
-    check(pwm.calls == writes && !pwm.enabled, "ADC-less observation cannot touch the bridge");
+    const auto after = controller.getPllInfo();
+    check(before > 7.5f && controller.getStatus().current_speed_rps == before &&
+          after.angle == pll.angle && after.pll_integral == pll.pll_integral &&
+          after.hall_state_raw == pll.hall_state_raw &&
+          hall.reads == reads && controller.getHallInfo().edges == health.edges,
+          "Hall edges, speed PI, slow service and telemetry never advance tracking without PWM");
+    controller.pwmInterruptHandler();
+    check(hall.reads == reads + 1 && controller.getPllInfo().hall_state_raw == hall.position,
+          "first real PWM frame consumes the pending Hall sector once");
 }
 
 #if defined(ECU_FIXED_PI) || defined(ECU_FIXED_NUMERIC)
@@ -1432,6 +1474,7 @@ static void testRejectedModeTuning() {
 int main() {
     testReusableCurrentFrame();
     testSpeedClock();
+    testIntermediatePi();
     testLiveSpeedPiGains();
     testSlewClock();
     testTractionAcceleration();
@@ -1449,10 +1492,9 @@ int main() {
     testSplitCurrentLoop();
     testSplitCancellationAndGuards();
     testFrozenRotorClock();
-    testRotorObservation(1, DriveAlgorithm::FOC);
-    testRotorObservation(-1, DriveAlgorithm::FOC);
-    testRotorObservation(1, DriveAlgorithm::SIX_STEP);
-    testObservationWithoutAdc();
+    testParkedPwmTracking(1, DriveAlgorithm::FOC);
+    testParkedPwmTracking(-1, DriveAlgorithm::FOC);
+    testParkedPwmTracking(1, DriveAlgorithm::SIX_STEP);
     testOneFrameReconstruction();
     testControllerReconstruction();
 #if defined(ECU_FIXED_PI) || defined(ECU_FIXED_NUMERIC)

@@ -172,6 +172,10 @@ template<class Profile, uint32_t Hz> static void pllCore() {
 
 static void wrappers() {
     HallMonitor monitor;
+    HallMonitor explicit_defaults;
+    check(explicit_defaults.setParameters(monitor.getParameters()) &&
+          hallConfig(monitor.core_) == hallConfig(explicit_defaults.core_),
+          "constructor matches the public Hall defaults down to the native coefficient");
     monitor.onPosition(0, true); monitor.onPosition(1, true);
     auto params = monitor.getParameters();
     params.decay_time_us = 135791;
@@ -239,6 +243,35 @@ public:
     bool initialize() override { return true; }
     uint8_t getPosition() override { return 0; }
 };
+static void currentPiPublication() {
+    Pwm pwm;
+    Hall hall;
+    MotorControlParams params{};
+    params.num_poles = 20;
+    params.max_speed_rps = 10.0f;
+    params.pi_current_regulator = {0.5f, 250.0f, 0.75f, 0.0f, 0.5f, 0.0f, 0.0f};
+    BldcController motor(pwm, hall, params);
+    auto& pi = motor.six_step_.current_pi_;
+    check(pi.update(2.0f, 0.0f) == 0.75f && pi.saturationSign() == 1 && pi.getIntegral() > 0,
+          "current tuning fixture starts with a saturated, nonzero history");
+    const float integral = pi.getIntegral();
+    const auto invalid = std::numeric_limits<float>::quiet_NaN();
+    check(!motor.setCurrentPi(invalid, 2.0f) && pi.getIntegral() == integral && pi.getOutput() == 0.75f,
+          "rejected gains leave the running current loop intact");
+    check(motor.setCurrentPi(0.25f, 0.0f) && pi.getIntegral() == 0 && pi.getOutput() == 0 &&
+          !pi.saturationSign() && pi.native().operatingPoint().error == SixStepAlgorithm::CurrentPi::Input{},
+          "current gain publication starts a fresh loop, including trapezoid and saturation history");
+    check(pi.update(1.0f, 0.0f) == 0.25f && pi.update(10.0f, 0.0f) == 0.75f,
+          "new gains take effect without changing the configured rails");
+    params.pi_current_regulator.ki = invalid;
+    BldcController recover(pwm, hall, params);
+    check(!recover.six_step_.isCurrentPiConfigured() && recover.setCurrentPi(0.25f, 2.0f) &&
+          recover.six_step_.isCurrentPiConfigured(), "valid replacement gains repair a rejected initial tuning");
+    params.pi_current_regulator.kb = invalid;
+    BldcController bad_kb(pwm, hall, params);
+    check(!bad_kb.setCurrentPi(0.25f, 2.0f) && !bad_kb.six_step_.isCurrentPiConfigured(),
+          "replacing gains cannot bypass an invalid initial back-calculation coefficient");
+}
 static BldcController* boundary_controller = nullptr;
 static void advanceAtBoundary() {
     check(lock_depth == 0, "ISR runs before the setter masks interrupts");
@@ -292,6 +325,7 @@ int main() {
     pllCore<FixedProfile, 8000>(); pllCore<FixedProfile, 16000>(); pllCore<FixedProfile, 20000>();
     wrappers();
 #ifndef TEST_NARROW_PLL_STEP
+    currentPiPublication();
     controllerBoundary();
 #endif
     std::printf("Parameter publication %s, %u Hz: %u checks passed\n",

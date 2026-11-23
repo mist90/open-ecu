@@ -5,9 +5,9 @@
 
 namespace libecu {
 
-HallMonitor::HallMonitor() noexcept {
-    setParameters(HallMonitorParams{500000, 0.0f, 1, 300, 0.35f, 10.0f, true});
-}
+// The float API's 0.35f rounds differently from exact 35/100 in Q30.
+HallMonitor::HallMonitor() noexcept : core_(constant<Core::Fraction>(0.35f)),
+    params_{500000, 0.0f, 1, 300, 0.35f, 10.0f, true} {}
 
 LIBECU_SLOW_PATH
 bool HallMonitor::prepareParameters(const HallMonitorParams& params, PreparedParameters& prepared) noexcept {
@@ -19,9 +19,8 @@ bool HallMonitor::prepareParameters(const HallMonitorParams& params, PreparedPar
     if (!tryNumber(params.invalid_threshold, typed.invalid_threshold) ||
         !tryNumber(params.erratic_fraction, typed.erratic_fraction) ||
         !tryNumber(params.erratic_min_edges, typed.erratic_min_edges)) return false;
-    Core::PreparedParameters core;
-    if (!Core::prepareParameters(typed, core)) return false;
-    prepared = {params, core};
+    if (!Core::prepareParameters(typed, prepared.core)) return false;
+    prepared.params = params;
     return true;
 }
 
@@ -41,11 +40,7 @@ HallMonitor::Info HallMonitor::getInfo() const noexcept {
     return describe(snapshot());
 }
 HallMonitor::Info HallMonitor::describe(const Core::Snapshot& state) noexcept {
-    const auto info = Core::describe(state);
-    return {numberCast<float>(info.invalid_score), numberCast<float>(info.erratic_score),
-            numberCast<float>(info.edge_accum), numberCast<float>(info.reversal_accum),
-            info.invalid_events, info.invalid_run, info.invalid_time_us, info.edges,
-            info.last_position, info.fault};
+    return Core::describe<Info>(state);
 }
 
 } // namespace libecu

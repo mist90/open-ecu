@@ -210,6 +210,7 @@ extern "C" int board_console_read() {
 extern "C" void board_break_interrupt() {
     if (TIM1->SR & TIM_SR_BIF) {
         trip(BREAK); // Hardware has already cleared MOE asynchronously.
+        if (controller) controller->cancelPwmInterruptHandler();
         // BKIN may remain low: disable its IRQ after latching to avoid an IRQ storm.
         CLEAR_BIT(TIM1->DIER, TIM_DIER_BIE);
         TIM1->SR = ~TIM_SR_BIF;
@@ -317,8 +318,13 @@ extern "C" void board_systick() {
     static uint32_t divider = 0;
     static uint32_t last_samples = 0;
     if (adc_running && !adc_driver.serviceRegular(time_us())) trip(ADC_FAILURE);
-    if (!control_enabled || ++divider < 1000 / libecu::ActiveTiming::SPEED_HZ) return;
-    divider = 0;
+    if (!control_enabled) return;
+    const auto tick = libecu::ActiveTiming::nextSysTick(divider);
+    if (tick != libecu::ControlTick::Service) {
+        if (tick == libecu::ControlTick::SpeedPiOnly && !pwm_driver.faulted())
+            controller->updateSpeedPi();
+        return;
+    }
     const uint32_t samples = adc_driver.samples();
     if (samples == last_samples) trip(ADC_FAILURE);
     last_samples = samples;
