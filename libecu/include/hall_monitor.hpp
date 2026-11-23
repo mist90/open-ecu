@@ -76,6 +76,7 @@
 #define LIBECU_HALL_MONITOR_HPP
 
 #include <cstdint>
+#include <atomic>
 #include "ecu_config.hpp"
 #include "hall_monitor_core.hpp"
 
@@ -266,6 +267,28 @@ public:
     static Info describe(const Core::Snapshot& state) noexcept;
 
 private:
+    friend class BldcController;
+    // Label an IRQ mark with the carrier's transition count. An illegal-code run leaves
+    // a gap larger than the entire Hall period window, even if no EXTI caught that code.
+    uint32_t periodOrdinal() const noexcept { return core_.edges_ + (core_.invalid_events_ << 4); }
+    // Pair an EXTI with its carrier ordinal, whether it ran before or after the ADC IRQ.
+    // Never mask BRK/ADC here. Retry once if the carrier changed the pair between loads.
+    uint32_t tagPeriodEdge(uint8_t& sector) const noexcept {
+        for (int attempt = 0; attempt < 2; ++attempt) {
+            const uint32_t ordinal = periodOrdinal();
+            std::atomic_signal_fence(std::memory_order_acq_rel);
+            const uint8_t last = core_.last_position_;
+            std::atomic_signal_fence(std::memory_order_acq_rel);
+            if (ordinal == periodOrdinal()) return ordinal + (last != sector);
+        }
+        sector = HALL_POSITION_INVALID;
+        return 0;
+    }
+    uint8_t periodSector() const noexcept {
+        // A multi-read debounce can hide a brief illegal code between slow samples.
+        return core_.have_last_ && !core_.last_invalid_ && !isFaulted() && params_.invalid_debounce <= 1
+             ? core_.last_position_ : HALL_POSITION_INVALID;
+    }
     Core core_;
     HallMonitorParams params_{};
 };

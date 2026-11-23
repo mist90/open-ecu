@@ -294,6 +294,19 @@ static void testTractionAcceleration() {
         applied = limiter.ceiling(number_v<S, 2>, step, applied, max, gain);
     }
     check(std::abs(amp(applied) - 8.84f) < 0.002f, "alternating signed speed error does not consume net headroom");
+    const auto loss = [&](float lag, float change) {
+        limiter.reset();
+        const typename TractionAcceleration<Profile>::Recovery tuning{
+            number_v<S, 1, 4>, number_v<S, 6>, number_v<C, 3, 2>};
+        limiter.ceiling(number_v<S, 3>, number_v<S, 3, 100>, eight, max, number_v<S, 3>);
+        return amp(limiter.ceiling(numberCast<S>(3.f + change), number_v<S, 3, 100>, eight,
+                                   max, number_v<S, 3>, numberCast<S>(lag), tuning));
+    };
+    check(std::abs(loss(.25f, -.20f) - 8.69f) < .001f &&
+          std::abs(loss(.3f, -.20f) - 9.50f) < .001f,
+          "only an actual speed loss behind the ramp earns recovery; total positive rise is bounded");
+    check(std::abs(loss(.3f, .30f) - 7.19f) < .001f && loss(2.f, -2.f) <= 9.5001f,
+          "unloading can remove torque immediately and a single bad sample cannot add unbounded current");
     using Pi = PiFloatInterface<ActivePiProfile::SpeedPiTypes, ActiveTiming::SPEED_PI_HZ>;
     Pi pi;
     PiParameters limits{};
@@ -331,10 +344,10 @@ static void testTractionAcceleration() {
     drive.setDriveMode(DriveMode::FORWARD);
     drive.setTargetSpeed(4.0f);
     drive.update();
-    check(std::abs(numberCast<float>(drive.io().in.target_current) - 0.04f) < 0.001f,
+    check(std::abs(numberCast<float>(drive.io().in.target_current) - 0.06f) < 0.001f,
           "unramped speed step is bounded at the speed PI output");
     for (unsigned i = 0; i < 25; ++i) serviceInterval(drive);
-    check(std::abs(numberCast<float>(drive.io().in.target_current) - 1.04f) < 0.002f,
+    check(std::abs(numberCast<float>(drive.io().in.target_current) - 1.56f) < 0.002f,
           "a loaded stationary rotor recovers more torque without bypassing the ceiling");
     drive.setControlMode(ControlMode::CLOSED_LOOP_TORQUE);
     drive.setCurrent(-3.0f);
@@ -347,7 +360,7 @@ static void testTractionAcceleration() {
     drive.setDriveMode(DriveMode::REVERSE);
     drive.setTargetSpeed(4.0f);
     drive.update();
-    check(std::abs(numberCast<float>(drive.io().in.target_current) - 0.04f) < 0.001f, "reverse launch starts without stored torque");
+    check(std::abs(numberCast<float>(drive.io().in.target_current) - 0.06f) < 0.001f, "reverse launch starts without stored torque");
 #endif
 }
 
@@ -928,6 +941,55 @@ private:
     uint32_t ticks_ = 0;
 };
 
+static void testVelocityDirectionRearm() {
+    Pwm pwm;
+    Hall hall;
+    Adc adc;
+    auto params = makeParams();
+    params.acceleration_rate = 4;
+    params.traction_acceleration_rps2 = 3;
+    params.measured_speed_lpf_alpha = .5f;
+    params.speed_pi.kp = 11;
+    params.speed_pi.ki = 3;
+    params.shape_velocity_error = true;
+    BldcController motor(pwm, hall, params, &adc);
+    check(motor.initialize(), "moving rearm fixture initializes");
+    motor.start();
+    motor.setDriveMode(DriveMode::FORWARD);
+    motor.setTargetSpeed(12);
+    RotorTrace rotor(motor, hall);
+    rotor.advance(2.f, 2.f, 3*ActiveTiming::CURRENT_HZ);
+    check(numberCast<float>(motor.io().in.target_current) > 5.f, "loaded wheel has pending forward torque");
+    motor.brakeToZeroSpeed();
+    check(motor.io().in.target_current == BldcController::Current{}, "brake wins before next speed sample");
+    for (unsigned i=0; i<10; ++i) {
+        rotor.advance(2.f, 2.f, ActiveTiming::CURRENT_HZ/100);
+        motor.brakeToZeroSpeed();
+        check(numberCast<float>(motor.io().in.target_current) < 0, "held brake retains retarding torque on a moving wheel");
+    }
+    motor.setTargetSpeed(12);
+    rotor.advance(2.f, 2.f, 3*ActiveTiming::CURRENT_HZ);
+    check(numberCast<float>(motor.io().in.target_current) > 5.f, "fixture reloads before rapid rearm");
+    motor.parkFromCarrier();
+    motor.setDriveMode(DriveMode::FORWARD); // No intervening slow sample and no new SPD.
+    motor.updateSpeedPi();
+    check(motor.io().in.target_current == BldcController::Current{}, "empty rearm cannot replay fast PI output");
+    for (unsigned i=0; i<15; ++i) {
+        rotor.advance(2.f, 2.f, ActiveTiming::CURRENT_HZ/100);
+        check(numberCast<float>(motor.io().in.target_current) <= .1f, "old ramp cannot pull a rearmed wheel");
+    }
+    motor.setDriveMode(DriveMode::NEUTRAL);
+    rotor.advance(2.f, -4.f, ActiveTiming::CURRENT_HZ);
+    rotor.advance(-4.f, -4.f, ActiveTiming::CURRENT_HZ);
+    motor.setDriveMode(DriveMode::REVERSE);
+    motor.setTargetSpeed(5);
+    motor.update();
+    check(numberCast<float>(motor.io().in.velocity_feedback_rps) > 3.8f &&
+          numberCast<float>(motor.io().in.current_speed_rps) > 3.8f &&
+          numberCast<float>(motor.io().in.target_current) >= 0,
+          "engaging reverse on a backward coast uses the proper sign for both filters and command ramp");
+}
+
 static void checkCoastTelemetry(Console& console, BldcController& controller, float physical_rps) {
     const float tolerance = physical_rps == 0.0f ? 0.005f : 0.15f;
     float speed = 1000.0f;
@@ -1279,6 +1341,7 @@ int main() {
     testLiveSpeedPiGains();
     testSlewClock();
     testTractionAcceleration();
+    testVelocityDirectionRearm();
     for (bool filtered : {false, true}) testVelocityStandstillRelease(filtered);
     for (int direction : {1, -1}) testVelocityBrakingRelease(direction);
     testCommands();

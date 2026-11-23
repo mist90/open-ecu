@@ -51,6 +51,7 @@ libecu::MotorControlParams makeMotorParams(const libecu::BoardInfo& board_info) 
     motor_params.max_speed_rps = BLDC_MAX_SPEED;
     motor_params.acceleration_rate = BLDC_MAX_ACCELERATION;  // RPS/s
     motor_params.traction_acceleration_rps2 = libecu::motor_config::traction_acceleration_rps2;
+    motor_params.shape_velocity_error = libecu::motor_config::velocity_error_band_rps > 0;
     motor_params.target_speed_lpf_alpha = 0.0f;  // LPF smoothing for noisy potentiometer input
     motor_params.measured_speed_lpf_alpha = 0.5f; // LPF smoothing for noisy velocity measurement
     motor_params.measured_current_lpf_alpha = 0.005f; // 10 ms at 20 kHz; telemetry only
@@ -239,12 +240,12 @@ int main(void)
             }
 
             if (wanted != libecu::DriveMode::NEUTRAL) {
-                // The brake zeroes the demand but deliberately does not park the
-                // drive: with the bridge still live, a zero setpoint is what lets
-                // the speed loop hold the motor down rather than let it coast.
-                const NativeDuty demand = board.brakeEngaged() ? NativeDuty{} : throttle - native_deadband;
-
-                motor_controller.setNativeTargetSpeed(libecu::multiplyTo<NativeSpeed>(demand, native_max_speed));
+                if (board.brakeEngaged()) {
+                    motor_controller.brakeToZeroSpeed();
+                } else {
+                    const NativeDuty demand = throttle - native_deadband;
+                    motor_controller.setNativeTargetSpeed(libecu::multiplyTo<NativeSpeed>(demand, native_max_speed));
+                }
             } else {
                 motor_controller.setNativeTargetSpeed(NativeSpeed{});
             }

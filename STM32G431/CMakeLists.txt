@@ -18,6 +18,7 @@ endif()
 # Debug options
 option(ENABLE_DEBUG_PWM_ISR "Enable PWM ISR debug data capture (uses ~8KB RAM)" OFF)
 option(ENABLE_THROTTLE_BRAKE_CONTROL "Use the physical throttle and brake as control inputs" OFF)
+option(MOTOR_1 "Select the 40-pole scooter motor instead of JK42BLS01" OFF)
 option(ENABLE_BENCH_PROFILING "Capture PWM callback cycle counts through SWD" OFF)
 option(ENABLE_LIBECU_PWM_RAM "Copy shared PWM hot functions and the fixed-point sine LUT to SRAM at startup" OFF)
 set(PI_NUMERIC_PROFILE "float" CACHE STRING "Legacy PI-only override when NUMERIC_PROFILE=float")
@@ -52,6 +53,9 @@ add_compile_definitions(
 
 if(ENABLE_THROTTLE_BRAKE_CONTROL)
     add_compile_definitions(THROTTLE_BRAKE_CONTROL)
+endif()
+if(MOTOR_1)
+    add_compile_definitions($<$<COMPILE_LANGUAGE:CXX>:MOTOR_1>)
 endif()
 if(ENABLE_BENCH_PROFILING)
     add_compile_definitions(BENCH_PROFILING)

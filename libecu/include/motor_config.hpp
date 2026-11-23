@@ -22,18 +22,18 @@ namespace libecu::motor_config {
 #define BLDC_MAX_CURRENT 45.0f
 #define BLDC_MIN_CURRENT  -6.0f
 #define BLDC_MAX_SPEED 12.0f
-#define BLDC_MAX_ACCELERATION 6.0f
+#define BLDC_MAX_ACCELERATION 4.0f
 // Thermal cut-out, degrees C, measured by the NTC on the board. Above this the
 // drive goes to NEUTRAL, the same way over-voltage does. Not yet calibrated
 // against a reference thermometer - see the NTC note in stm32_adc.cpp.
 #define BLDC_MAX_TEMPERATURE 100.0f
 #define BLDC_INVERTION false
-// Select the outer speed PI here. Both gain pairs use the same current/PLL calibration.
-#ifndef MOTOR_1_LOADED
-#define MOTOR_1_LOADED 0
-#endif
-#if MOTOR_1_LOADED == 0
-// Measured on the unloaded wheel.
+// One default for the light wheel and a rolling load. Explicit legacy selections change only Kp/Ki.
+#if !defined(MOTOR_1_LOADED)
+#define BLDC_SPEED_CURRENT_KP 11.0f
+#define BLDC_SPEED_CURRENT_KI 3.0f
+#elif MOTOR_1_LOADED == 0
+// Reference free-wheel gains.
 #define BLDC_SPEED_CURRENT_KP 1.25f
 #define BLDC_SPEED_CURRENT_KI 5.0f
 #elif MOTOR_1_LOADED == 1
@@ -45,6 +45,10 @@ namespace libecu::motor_config {
 #endif
 #define BLDC_PLL_KP 50.0f
 #define BLDC_PLL_KI 1250.0f
+// Mechanical velocity PI feedback only. Set to 0 for a stock-PLL comparison build.
+#ifndef LIBECU_HALL_PERIOD_SPEED
+#define LIBECU_HALL_PERIOD_SPEED 1
+#endif
 // Hall sectors/s (120 per mechanical revolution here). Both axes recover full
 // PI authority after the low-speed ramp; only Iq fades again at high speed.
 inline constexpr ErrorWeightRamp low_speed_weight{60, 75, 1.0f / 16};
@@ -55,8 +59,15 @@ inline constexpr CurrentLoopCalibration current_loop{
 // measured acceleration and the port's hardware phase-current trip are separate.
 inline constexpr RollingIntegralLimit rolling_integral{12.0f, 0.125f, 16.0f};
 inline constexpr float speed_integral_max_a = BLDC_MAX_CURRENT;
-inline constexpr float traction_acceleration_rps2 = 1.0f, traction_gain_a_per_rps = 2.0f;
-inline constexpr float soft_start_rps2 = 2.0f; // Command ramp, independent of acceleration feedback.
+inline constexpr float traction_acceleration_rps2 = 3.0f, traction_gain_a_per_rps = 3.0f;
+// Extra positive authority only when speed is falling faster than the allowed acceleration
+// and the ramp is already ahead. The total positive increment still has a hard per-time limit.
+inline constexpr float recovery_lag_rps = .25f, recovery_gain_a_per_rps = 6.f, max_traction_rise_a_s = 150.f;
+inline constexpr float soft_start_rps2 = BLDC_MAX_ACCELERATION; // Command ramp, independent of traction feedback.
+// Retain 1/8 of fast speed error within a 0.25 RPS band around its moving mean.
+// Sustained error and large transients still reach the PI (no steady-state deadband).
+inline constexpr float velocity_error_band_rps = .25f, velocity_fast_weight = .125f;
+inline constexpr float velocity_error_alpha = 1.f/80; // 100 Hz service, ~0.8 s.
 #define BLDC_SIX_STEP_USE_MOTOR_MODEL true
 #define BLDC_CURRENT_FALLBACK_KP 0.1f
 #define BLDC_CURRENT_FALLBACK_KI 50.0f
@@ -103,13 +114,18 @@ inline constexpr CurrentLoopCalibration current_loop{};
 inline constexpr RollingIntegralLimit rolling_integral{};
 inline constexpr float speed_integral_max_a = 12.0f;
 inline constexpr float traction_acceleration_rps2 = 0.0f, traction_gain_a_per_rps = 0.0f;
+inline constexpr float recovery_lag_rps = 0.f, recovery_gain_a_per_rps = 0.f, max_traction_rise_a_s = 0.f;
 inline constexpr float soft_start_rps2 = BLDC_MAX_ACCELERATION;
+inline constexpr float velocity_error_band_rps = 0.f, velocity_fast_weight = 1.f, velocity_error_alpha = 1.f;
 // Six-step uses its independently tuned duty-output current PI.
 #define BLDC_SIX_STEP_USE_MOTOR_MODEL false
 #define BLDC_CURRENT_FALLBACK_KP 0.15f
 #define BLDC_CURRENT_FALLBACK_KI 200.0f
 #define BLDC_PLL_KP 100.0f
 #define BLDC_PLL_KI 5000.0f
+#ifndef LIBECU_HALL_PERIOD_SPEED
+#define LIBECU_HALL_PERIOD_SPEED 0
+#endif
 #define BLDC_START_WITH_FOC true
 // The inverse commutation alignment needs the opposite vector to MOTOR_1.
 #define BLDC_FOC_ANGLE_OFFSET_DEG 120.0f

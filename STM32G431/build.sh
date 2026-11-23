@@ -46,6 +46,7 @@ CLEAN_BUILD=false
 VERBOSE=false
 DEBUG_PWM_ISR=true
 NUMERIC_PROFILE="float"
+MOTOR_1=OFF
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -69,6 +70,10 @@ while [[ $# -gt 0 ]]; do
             DEBUG_PWM_ISR=false
             shift
             ;;
+        --motor-1)
+            MOTOR_1=ON
+            shift
+            ;;
         --numeric-profile)
             NUMERIC_PROFILE="${2:-}"
             if [[ $NUMERIC_PROFILE != float && $NUMERIC_PROFILE != fixed ]]; then
@@ -86,6 +91,7 @@ while [[ $# -gt 0 ]]; do
             echo "  -v, --verbose    Verbose build output"
             echo "  --nodebug-pwm    Disable PWM ISR debug capture (default: enabled)"
             echo "  --numeric-profile float|fixed  Control/ADC/PWM arithmetic (default: float)"
+            echo "  --motor-1        Use the scooter motor instead of JK42BLS01"
             echo "  -h, --help       Show this help message"
             exit 0
             ;;
@@ -122,7 +128,7 @@ cd $BUILD_DIR
 
 # Configure with CMake
 echo -e "${YELLOW}Configuring with CMake...${NC}"
-CMAKE_ARGS="-DCMAKE_BUILD_TYPE=$BUILD_TYPE -DNUMERIC_PROFILE=$NUMERIC_PROFILE -DPI_NUMERIC_PROFILE=float"
+CMAKE_ARGS="-DCMAKE_BUILD_TYPE=$BUILD_TYPE -DNUMERIC_PROFILE=$NUMERIC_PROFILE -DPI_NUMERIC_PROFILE=float -DMOTOR_1=$MOTOR_1"
 if [[ $VERBOSE == true ]]; then
     CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_VERBOSE_MAKEFILE=ON"
 fi

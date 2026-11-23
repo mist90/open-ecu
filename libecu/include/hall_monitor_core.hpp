@@ -198,6 +198,7 @@ public:
     }
 
 private:
+    friend class HallMonitor;
     static constexpr bool defaultWindowFits() noexcept {
         if constexpr (std::is_same<Count, float>::value) return true;
         else return uint64_t(FrequencyHz) <=

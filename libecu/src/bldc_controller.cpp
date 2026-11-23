@@ -158,15 +158,38 @@ LIBECU_SLOW_PATH void BldcController::update() noexcept
     // Signed feedback fixes all four quadrants: turning against the command now
     // yields a *positive* error and therefore corrective torque, while turning
     // with it behaves exactly as before.
+#if LIBECU_HALL_PERIOD_SPEED
+    struct Observation { HallPeriodSpeed::Window window; Profile::PllSpeed pll; };
+    auto observation = [this] {
+        CriticalSection lock;
+        return Observation{hall_period_.pin(io_.out.hall.periodOrdinal(), io_.out.hall.periodSector()),
+                           io_.out.pll.speed_steps_s};
+    }();
+    __asm__ volatile("" : "+m"(observation) : : "memory"); // All speed arithmetic follows PRIMASK restore.
+    const auto speed_steps_s = observation.pll;
+#else
     const auto speed_steps_s = io_.out.pll.speed_steps_s;
+#endif
     Speed speed_rps = divideByInteger<Speed>(speed_steps_s, params_.num_poles * BLDC_NUM_PHASES);
-    if (io_.in.drive_mode == DriveMode::REVERSE) speed_rps = -speed_rps;
-
-    const Fraction alpha = limits_.speed_alpha;
-    const Speed previous_speed = io_.in.current_speed_rps;
-    if (alpha > Fraction{} && alpha < number_v<Fraction, 1>) {
-        speed_rps = previous_speed + multiplyTo<Speed>(alpha, speed_rps - previous_speed);
-    }
+#if LIBECU_HALL_PERIOD_SPEED
+    Speed feedback = hall_period_.select<Profile, ActiveTiming::CURRENT_HZ>(
+        observation.window, time_us(), params_.num_poles, limits_.max_speed, speed_rps);
+#endif
+    const bool reverse = io_.in.drive_mode == DriveMode::REVERSE;
+    const bool invert_history = reverse != velocity_sample_reverse_;
+    const auto filter = [alpha = limits_.speed_alpha, reverse, invert_history](Speed speed, Speed previous) {
+        if (reverse) speed = -speed;
+        if (invert_history) previous = -previous; // History and new sample must use the same direction frame.
+        return alpha > Fraction{} && alpha < number_v<Fraction, 1>
+            ? previous + multiplyTo<Speed>(alpha, speed - previous) : speed;
+    };
+    speed_rps = filter(speed_rps, io_.in.current_speed_rps);
+#if LIBECU_HALL_PERIOD_SPEED
+    feedback = filter(feedback, io_.in.velocity_feedback_rps);
+    __asm__ volatile("" : : "m"(feedback), "m"(speed_rps) : "memory");
+#else
+    const Speed feedback = speed_rps;
+#endif
 
     // ---- Thermal protection -----------------------------------------------
     // Convert the last complete auxiliary snapshot at the slow-loop rate.
@@ -201,6 +224,8 @@ LIBECU_SLOW_PATH void BldcController::update() noexcept
     {
         CriticalSection cs;
         io_.in.current_speed_rps = speed_rps;
+        io_.in.velocity_feedback_rps = feedback;
+        velocity_sample_reverse_ = reverse;
 #if LIBECU_FOC_DUTY_TELEMETRY
         const auto& e = io_.out.electrical;
         modulation_snapshot = {e.v_d, e.v_q, e.bus_voltage, io_.in.algorithm};
@@ -242,7 +267,7 @@ LIBECU_SLOW_PATH void BldcController::update() noexcept
     constexpr auto stopped_steps_s = number_v<Profile::PllSpeed, 1, 10>;
     const Speed target = io_.in.target_speed_rps;
     if (target == Speed{} && numericAbs(speed_steps_s) <= stopped_steps_s &&
-        numericAbs(io_.in.current_speed_rps) <=
+        numericAbs(io_.in.velocity_feedback_rps) <=
             divideByInteger<Speed>(stopped_steps_s, params_.num_poles * BLDC_NUM_PHASES)) {
         speed_pi_ready_ = false;
         pi_speed_controller_.reset();
@@ -253,19 +278,47 @@ LIBECU_SLOW_PATH void BldcController::update() noexcept
         return;
     }
 
+    if (velocity_ramp_needs_seed_) {
+        // Even a park/rearm *between* service ticks invalidates the old ramp. Both speed filters
+        // above have now been expressed in the newly selected direction.
+        filtered_target_speed_ = io_.in.velocity_feedback_rps;
+        limited_target_speed_ = numberCast<Accumulator>(io_.in.velocity_feedback_rps);
+        velocity_ramp_needs_seed_ = false;
+    }
     applyAccelerationLimit(target);
+    // One observation per slow frame. Preserve the original rounding of the setpoint and measured
+    // speed before differencing in PI units. Intermediate PI ticks reuse this error, not a new sample.
+    const auto raw_error = numberCast<SpeedPi::Input>(numberCast<Speed>(limited_target_speed_)) -
+                           numberCast<SpeedPi::Input>(io_.in.velocity_feedback_rps);
+    speed_pi_error_ = raw_error;
+    if constexpr (motor_config::velocity_error_band_rps > 0) {
+        if (params_.shape_velocity_error) {
+            using Input = SpeedPi::Input;
+            constexpr auto band = constant<Input>(motor_config::velocity_error_band_rps);
+            constexpr auto alpha = constant<typename ActivePiProfile::Fraction>(motor_config::velocity_error_alpha);
+            constexpr auto attenuation = constant<typename ActivePiProfile::Fraction>(1.f - motor_config::velocity_fast_weight);
+            if (!speed_pi_ready_) mean_velocity_error_ = Input{};
+            mean_velocity_error_ += multiplyTo<Input>(alpha, raw_error - mean_velocity_error_);
+            speed_pi_error_ -= multiplyTo<Input>(attenuation, numericClamp(raw_error - mean_velocity_error_, -band, band));
+        }
+    }
     if constexpr (rolling_limit || traction_limit) {
         if constexpr (rolling_limit)
             speed_pi_limits_.integral_ceiling = numberCast<SpeedPi::Output>(
-                rollingIntegralCeiling<Profile, motor_config::rolling_integral>(io_.in.current_speed_rps, limits_.max_current));
+                rollingIntegralCeiling<Profile, motor_config::rolling_integral>(
+                    io_.in.velocity_feedback_rps, limits_.max_current));
         else
             speed_pi_limits_.integral_ceiling = pi_speed_controller_.native().integralCeiling();
         if constexpr (traction_limit) {
             // Earn acceleration authority only once per new measured-speed sample.
             constexpr auto gain = constant<Speed>(motor_config::traction_gain_a_per_rps);
+            constexpr typename TractionAcceleration<Profile>::Recovery recovery{
+                constant<Speed>(motor_config::recovery_lag_rps), constant<Speed>(motor_config::recovery_gain_a_per_rps),
+                constant<Current>(motor_config::max_traction_rise_a_s / ActiveTiming::SPEED_HZ)};
             speed_pi_limits_.traction_ceiling = numberCast<SpeedPi::Output>(traction_acceleration_.ceiling(
-                io_.in.current_speed_rps, traction_acceleration_step_,
-                numberCast<Current>(pi_speed_controller_.native().getOutput()), limits_.max_current, gain));
+                io_.in.velocity_feedback_rps, traction_acceleration_step_,
+                numberCast<Current>(pi_speed_controller_.native().getOutput()), limits_.max_current, gain,
+                numberCast<Speed>(raw_error), recovery));
         }
     }
     speed_pi_ready_ = true;
@@ -280,20 +333,18 @@ LIBECU_SLOW_PATH void BldcController::updateSpeedPi() noexcept {
         if constexpr (traction_limit) traction_acceleration_.reset();
         return;
     }
-    const auto target = numberCast<SpeedPi::Input>(numberCast<Speed>(limited_target_speed_));
-    const auto measured = numberCast<SpeedPi::Input>(io_.in.current_speed_rps);
     SpeedPi::Output output;
     // Saturation comes from the live current loop, not the last 100 Hz measurement.
     const int saturation = io_.out.electrical.current_pi_saturation;
     if constexpr (rolling_limit || traction_limit) {
         if constexpr (traction_limit)
-            output = pi_speed_controller_.updateNativeCapped(target, measured, saturation,
+            output = pi_speed_controller_.updateNativeCapped(speed_pi_error_, {}, saturation,
                                                              speed_pi_limits_.integral_ceiling, speed_pi_limits_.traction_ceiling);
         else
-            output = pi_speed_controller_.updateNativeCapped(target, measured, saturation,
+            output = pi_speed_controller_.updateNativeCapped(speed_pi_error_, {}, saturation,
                                                              speed_pi_limits_.integral_ceiling);
     } else {
-        output = pi_speed_controller_.updateNative(target, measured, saturation);
+        output = pi_speed_controller_.updateNative(speed_pi_error_, {}, saturation);
     }
     publishSpeedPiOutput(output);
 }
@@ -324,6 +375,24 @@ void BldcController::setTargetSpeed(float speed_rps) noexcept
 void BldcController::setNativeTargetSpeed(Speed target) noexcept {
     PreparedTargetSpeed prepared;
     if (prepareNativeTargetSpeed(target, prepared)) commitNativeTargetSpeed(prepared);
+}
+
+void BldcController::brakeToZeroSpeed() noexcept {
+    CriticalSection lock;
+    if (io_.in.drive_mode == DriveMode::NEUTRAL || io_.in.control_mode != ControlMode::CLOSED_LOOP_VELOCITY)
+        return;
+    // A held button must not repeatedly clear the negative braking integral. Positive torque
+    // is also corrective if the wheel rolls backwards relative to the selected direction.
+    if (!velocity_ramp_needs_seed_ && io_.in.target_speed_rps == Speed{} && limited_target_speed_ == Accumulator{} &&
+        (io_.in.target_current <= Current{} || io_.in.velocity_feedback_rps < Speed{})) return;
+    speed_pi_ready_ = false;
+    velocity_ramp_needs_seed_ = false;
+    limited_target_speed_ = Accumulator{};
+    filtered_target_speed_ = io_.in.target_speed_rps = Speed{};
+    io_.in.field_rate = {};
+    io_.in.target_current = {};
+    pi_speed_controller_.reset();
+    if constexpr (traction_limit) traction_acceleration_.reset();
 }
 
 LIBECU_SLOW_PATH
@@ -387,6 +456,8 @@ void BldcController::setControlMode(ControlMode mode) noexcept
         // Reset PI when switching to velocity control
         if (mode == ControlMode::CLOSED_LOOP_VELOCITY) {
             pi_speed_controller_.reset();
+            velocity_ramp_needs_seed_ = true;
+            io_.in.target_current = {};
         }
     }
 }
@@ -496,6 +567,12 @@ LIBECU_HOT_LOOP void BldcController::setDriveMode(DriveMode mode) noexcept
     const bool was_neutral = io_.in.drive_mode == DriveMode::NEUTRAL;
     if (io_.in.drive_mode != mode) {
         speed_pi_ready_ = false;
+        velocity_ramp_needs_seed_ = true;
+        if (io_.in.control_mode == ControlMode::CLOSED_LOOP_VELOCITY && !was_neutral && mode != DriveMode::NEUTRAL) {
+            // Direct reversal without a neutral tick must not apply the old sign of torque.
+            pi_speed_controller_.reset();
+            io_.in.target_current = {};
+        }
         if constexpr (traction_limit) traction_acceleration_.reset();
     }
     io_.in.drive_mode = mode;
@@ -574,7 +651,7 @@ LIBECU_SLOW_PATH bool BldcController::setSpeedPi(float kp, float ki) noexcept
         point = pi.operatingPoint();
         floor = pi.integralFloor();
         ceiling = pi.integralCeiling();
-        if constexpr (rolling_limit) rolling_speed = io_.in.current_speed_rps;
+        if constexpr (rolling_limit) rolling_speed = io_.in.velocity_feedback_rps;
     }
     if constexpr (rolling_limit) {
         const auto limit = rollingIntegralCeiling<Profile, motor_config::rolling_integral>(rolling_speed, limits_.max_current);
@@ -590,7 +667,7 @@ LIBECU_SLOW_PATH bool BldcController::setSpeedPi(float kp, float ki) noexcept
     if (!active() || io_.in.drive_mode != direction ||
         pi.isSaturated() || io_.out.electrical.current_pi_saturation ||
         now.error != point.error || now.output != point.output) return false;
-    if (rolling_limit && io_.in.current_speed_rps != rolling_speed) return false;
+    if (rolling_limit && io_.in.velocity_feedback_rps != rolling_speed) return false;
     publish(&integral);
     return true;
 }
@@ -643,6 +720,9 @@ HallFault BldcController::getHallFault() const noexcept {
 void BldcController::clearHallFault() noexcept {
     CriticalSection cs;
     io_.out.hall.clearFault();
+#if LIBECU_HALL_PERIOD_SPEED
+    hall_period_.discard();
+#endif
 }
 
 bool BldcController::setHallMonitorParams(const HallMonitorParams& params) noexcept {
@@ -652,6 +732,9 @@ bool BldcController::setHallMonitorParams(const HallMonitorParams& params) noexc
     // coefficient arithmetic must not be sunk into the publication section.
     __asm__ volatile("" : : "m"(prepared) : "memory");
     CriticalSection cs;
+#if LIBECU_HALL_PERIOD_SPEED
+    if (params.invalid_debounce != io_.out.hall.getParameters().invalid_debounce) hall_period_.discard();
+#endif
     io_.out.hall.applyPrepared(prepared);
     return true;
 }
@@ -703,6 +786,7 @@ void BldcController::start() noexcept
     CriticalSection cs;
     speed_pi_ready_ = false;
     io_.in.is_running = true;
+    velocity_ramp_needs_seed_ = true;
     synchronizeHallPosition(true);
     io_.out.field.seed(io_.out.pll.angle_steps);
 
@@ -731,6 +815,7 @@ void BldcController::start() noexcept
     if constexpr (traction_limit) traction_acceleration_.reset();
     filtered_target_speed_ = Speed{};
     io_.in.current_speed_rps = Speed{};
+    io_.in.velocity_feedback_rps = Speed{};
     limited_target_speed_ = Accumulator{};
 }
 
@@ -744,6 +829,10 @@ void BldcController::stop() noexcept
     pwm_interface_.updateNativeDutyCycle(Duty{});
 
     io_.in.current_speed_rps = Speed{};
+    io_.in.velocity_feedback_rps = Speed{};
+#if LIBECU_HALL_PERIOD_SPEED
+    hall_period_.discard();
+#endif
 }
 
 void BldcController::synchronizeHallPosition(bool discard_tracking) noexcept
@@ -753,7 +842,12 @@ void BldcController::synchronizeHallPosition(bool discard_tracking) noexcept
     const bool changed = io_.out.pll.getHallStateRaw() != hall;
     if (hall <= 5) io_.out.pll.updateHall(hall);
     // Preserve a real PLL that is already tracking a coasting rotor.
-    if (discard_tracking || changed || hall > 5) io_.out.pll.reset();
+    if (discard_tracking || changed || hall > 5) {
+        io_.out.pll.reset();
+#if LIBECU_HALL_PERIOD_SPEED
+        hall_period_.discard();
+#endif
+    }
     // Also feed the Hall monitor through the normal debounced PWM path, and
     // retry an invalid sample without requiring another physical edge.
     hall_update_pending_ = true;
@@ -767,7 +861,7 @@ void BldcController::holdVelocityLoop() noexcept
     // Park the ramp at the *measured* speed rather than at zero, so that
     // re-engaging starts from where the rotor actually is - bumpless whether
     // it is standing still or still coasting.
-    limited_target_speed_ = numberCast<Accumulator>(io_.in.current_speed_rps);
+    limited_target_speed_ = numberCast<Accumulator>(io_.in.velocity_feedback_rps);
 }
 
 void BldcController::applyAccelerationLimit(Speed target_speed) noexcept
@@ -798,6 +892,16 @@ void BldcController::applyAccelerationLimit(Speed target_speed) noexcept
         limited_target_speed_ -= max_change;
     }
 
+}
+
+void BldcController::hallEdgeInterruptHandler() noexcept {
+    hallSensorInterruptHandler();
+#if LIBECU_HALL_PERIOD_SPEED
+    const uint32_t stamp = time_us();
+    uint8_t sector = hall_interface_.getPosition();
+    const uint32_t ordinal = io_.out.hall.tagPeriodEdge(sector);
+    hall_period_.capture(stamp, sector, ordinal);
+#endif
 }
 
 LIBECU_HOT_LOOP void BldcController::hallSensorInterruptHandler() noexcept

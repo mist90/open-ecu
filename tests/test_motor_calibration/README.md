@@ -14,8 +14,8 @@ integrator when the error vanishes across a change in gain.
 | 360–480 | 1 | linear to 1/16 |
 | ≥480 | 1 | 1/16 |
 
-The test runs float and fixed point for both MOTOR_1 speed PI selections
-(default 1.25/5; `MOTOR_1_LOADED=1` selects 3/24) and JK42. JK42 and the
+The test runs float and fixed point for the default MOTOR_1 speed PI (11/3),
+the explicit 3/24 reference and JK42. JK42 and the
 standalone generic FOC have unity weights. The fixed-point probe also checks
 raw currents against a separately rounded oracle at single-LSB offsets,
 including negative ties and both limits of signed speed and current.

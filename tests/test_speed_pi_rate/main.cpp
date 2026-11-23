@@ -61,6 +61,7 @@ MotorControlParams parameters(Tuning t) {
     p.useInverseCommTable = BLDC_INVERTION;
     p.acceleration_rate = motor_config::soft_start_rps2; // Mechanical rev/s² slew, for every run.
     p.traction_acceleration_rps2 = t.traction;
+    p.shape_velocity_error = motor_config::velocity_error_band_rps > 0;
     p.measured_speed_lpf_alpha = 0.5f;
     p.speed_pi = {t.kp, t.ki, BLDC_MAX_CURRENT, BLDC_MIN_CURRENT, BLDC_MAX_CURRENT, -4, 2};
     return p;
@@ -158,15 +159,15 @@ double run(double mass_kg, Tuning t, FILE* trace) {
             if (due == ControlTick::Service) {
                 motor.update(); // Slow frame, including exactly one coincident PI sample.
                 m.add(carrier_tick / (CARRIER_HZ / SLOW_HZ),
-                      {plant.speed, state.current_speed_rps.toFloat(), plant.sector});
+                       {plant.speed, state.velocity_feedback_rps.toFloat(), plant.sector});
             } else if (due == ControlTick::SpeedPiOnly) {
                 require(io.ntc_reads > 0, "PI-only tick before first service frame");
                 const auto before = state.target_current;
-                const auto feedback = state.current_speed_rps;
+                const auto feedback = state.velocity_feedback_rps;
                 motor.updateSpeedPi(); // Publish immediately; the next plant substep sees this new Iq.
                 ++mid_ticks;
                 mid_changes += state.target_current != before;
-                require(state.current_speed_rps == feedback, "intermediate tick refreshed slow feedback");
+                require(state.velocity_feedback_rps == feedback, "intermediate tick refreshed slow feedback");
             }
         }
         const float request = state.target_current.toFloat();
@@ -175,14 +176,14 @@ double run(double mass_kg, Tuning t, FILE* trace) {
         if (trace && carrier_tick % (CARRIER_HZ / SYSTICK_HZ) == 0)
             std::fprintf(trace, "%u,%s,%g,%g,%g,%.3f,%.8f,%.8f,%d,%.8f,%.8f\n", PI_HZ, load,
                          t.kp, t.ki, t.traction, carrier_tick * DT, plant.speed,
-                         state.current_speed_rps.toFloat(), plant.sector, request, plant.iq);
+                         state.velocity_feedback_rps.toFloat(), plant.sector, request, plant.iq);
 
         const int old_sector = plant.sector;
         plant.step(request);
         if (plant.sector != old_sector) {
             require(std::abs(plant.sector - old_sector) == 1, "more than one Hall edge in a carrier tick");
             io.position = uint8_t((plant.sector % 6 + 6) % 6);
-            motor.hallSensorInterruptHandler();
+            motor.hallEdgeInterruptHandler();
         }
         // The plant integrates the requested Iq; the real carrier still consumes one qualified sample.
         motor.pwmInterruptHandler();
@@ -214,6 +215,7 @@ int main(int argc, char** argv) {
     }
     for (double mass : {0.0, 80.0}) {
         constexpr float traction = motor_config::traction_acceleration_rps2;
+        run(mass, {BLDC_SPEED_CURRENT_KP, BLDC_SPEED_CURRENT_KI, traction}, trace);
         // Preserve all historical comparison arms regardless of the motor's boot PI selection.
         run(mass, {1.25f, 5, traction}, trace);
         const double cap_on = run(mass, {3, 24, traction}, trace);

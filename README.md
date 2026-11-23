@@ -226,11 +226,15 @@ are shared by both paths. The F410 bridge-disabled timing image also checks the 
 integer operations before starting its synthetic control loop.
 
 Motor parameters live in [`motor_config.hpp`](libecu/include/motor_config.hpp).
-STM32F410 selects the scooter (`MOTOR_1`); the default motor on STM32G431
-is JK42BLS01. `MOTOR_1_LOADED=0` selects the free-wheel speed PI (1.25/5);
-`1` selects the loaded pair (3/24). Only the two outer-loop gains change.
+STM32F410 selects the scooter (`MOTOR_1`); STM32G431 defaults to JK42BLS01 and
+accepts `./build.sh --platform STM32G431 --motor-1` or CMake `-DMOTOR_1=ON`.
+The common scooter velocity PI is **11/3** and observes the period of six Hall sectors.
+Explicit `MOTOR_1_LOADED=0` and `=1` retain 1.25/5 and 3/24 as reference gains.
+See [speed-loop tuning](docs/software.md#speed-loop-tuning).
 
 Additional host regressions:
+- `tests/test_speed_dynamics/run.sh` — closed-loop PMSM speed steps and external brake pulses
+- `tests/test_hall_period_speed/run.sh` — Hall timing, missed edges, reversals and stale data
 - `tests/test_motor_calibration/run.sh` — current-error curves and FOC response for both motors
 - `tests/test_speed_pi_rate/run.sh` — matched 100/500-Hz speed PI with 100-Hz feedback
 - `tests/test_motor_alignment/run.sh` — both motors, both directions, PLL and discrete commutation

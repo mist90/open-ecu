@@ -27,11 +27,12 @@ struct MotorInput {
     DriveAlgorithm algorithm = DriveAlgorithm::SIX_STEP;
     bool is_running = false;
 
-    P::Speed current_speed_rps{};  // 100 Hz, filtered and signed relative to drive_mode.
+    P::Speed current_speed_rps{};  // 100 Hz stock PLL: telemetry and drive guards, relative to drive_mode.
     P::Temperature temperature_c = number_v<P::Temperature, -273>;
 #if LIBECU_FOC_DUTY_TELEMETRY
     P::Duty foc_modulation{};      // Slow telemetry derived from a coherent dq/bus sample.
 #endif
+    P::Speed velocity_feedback_rps{}; // Same units/sign/LPF; outer PI and traction only.
 };
 
 /** Storage shared by the electrical kernel and its standalone numerical adapter. */

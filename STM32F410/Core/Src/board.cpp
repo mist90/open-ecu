@@ -310,7 +310,7 @@ extern "C" void board_hall_timer_interrupt() {
 extern "C" void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef* timer) {
     if (timer->Instance == TIM5 && timer->Channel == HAL_TIM_ACTIVE_CHANNEL_1) {
         ++f410_diagnostics.hall_captures;
-        if (controller) controller->hallSensorInterruptHandler();
+        if (controller) controller->hallEdgeInterruptHandler();
     }
 }
 extern "C" void board_systick() {

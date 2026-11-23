@@ -18,10 +18,12 @@
 #include "foc_algorithm.hpp"
 #include "pi_float_interface.hpp"
 #include "ecu_config.hpp"
+#include "motor_config.hpp"
 #include "motor_pll.hpp"
 #include "motor_io.hpp"
 #include "current_loop_tuning.hpp"
 #include "hall_monitor.hpp"
+#include "hall_period_speed.hpp"
 #include "traction_acceleration.hpp"
 
 namespace libecu {
@@ -117,6 +119,7 @@ struct MotorControlParams {
      */
     PiParameters foc_current_regulator;
     float traction_acceleration_rps2 = 0.0f; ///< Mechanical feedback ceiling; 0 leaves speed PI unchanged.
+    bool shape_velocity_error = false; ///< Apply the motor's transient-error calibration in velocity mode.
 };
 
 /**
@@ -179,6 +182,8 @@ public:
     void setTargetSpeed(float speed_rps) noexcept;
     /** @brief Set a native throttle/speed-loop request without float conversion. */
     void setNativeTargetSpeed(Speed speed_rps) noexcept;
+    /** @brief Physical brake: discard a positive request/ramp immediately, then regulate zero speed. */
+    void brakeToZeroSpeed() noexcept;
 
     /**
      * @brief Clamp and convert a demand without masking interrupts or reading live drive state
@@ -401,6 +406,8 @@ public:
     const MotorControlParams& getParams() const noexcept { return params_; }
 
     void hallSensorInterruptHandler() noexcept;
+    /** @brief Physical Hall EXTI/capture only; synthetic carrier notifications still use hallSensorInterruptHandler. */
+    void hallEdgeInterruptHandler() noexcept;
 
     /**
      * @brief Process one qualified current frame at ActiveTiming::CURRENT_HZ.
@@ -473,6 +480,11 @@ private:
     Accumulator acceleration_step_{};        ///< Maximum target-speed change per control tick
     TractionAcceleration<Profile> traction_acceleration_{};
     Speed traction_acceleration_step_{};
+#if LIBECU_HALL_PERIOD_SPEED
+    HallPeriodSpeed hall_period_{};
+#endif
+    SpeedPi::Input speed_pi_error_{}, mean_velocity_error_{};
+    bool velocity_ramp_needs_seed_ = true, velocity_sample_reverse_ = false;
 
     /**
      * @brief Hold the velocity loop while the drive is parked in NEUTRAL

@@ -23,10 +23,11 @@ sampling, PWM limits and loop rates enter through `BoardInfo`.
 The controller separates the mechanical command from electrical actuation:
 
 ```text
-Current demand (A): velocity -> ramp -> speed PI; torque / open loop -> AT+CUR
-Field position:     Hall / PLL in feedback modes; generated phase in open loop
-
-current demand + field position + sampled currents/Vbus -> six-step or FOC -> PWM
+Velocity mode, MOTOR_1 with FOC:
+Hall edges -> six-sector period / PLL -> mechanical feedback
+ramped speed - mechanical feedback -> shape error -> speed PI with current limits -> Iq* (A)
+phase ADC + rotor angle from PLL -> measured Id/Iq
+Id* = 0, Iq* and measured Id/Iq -> d/q current PIs -> Vd/Vq -> voltage limit -> SVPWM
 ```
 
 The current loop and PLL run at **20 kHz** on STM32 (`Ts = 50 us`). The
@@ -46,7 +47,8 @@ optional q-axis strategy within FOC.
 
 In open-loop operation, a PWM-clocked angle generator supplies the commanded
 field angle and speed. Hall tracking continues to describe the physical rotor.
-In feedback operation, the PLL supplies angle and speed.
+In feedback operation, the PLL supplies electrical angle and speed to FOC;
+the outer loop uses the mechanical feedback below.
 
 `U` and `V` both denote voltage in this document; source fields use `v_d/v_q`.
 Currents are amperes, the regulator's voltage outputs are volts, and PWM duty
@@ -70,26 +72,49 @@ Sources: [shared application](../libecu/src/main.cpp),
 
 ## Speed-loop tuning
 
-The velocity controller compares the acceleration-limited speed request with
-filtered mechanical speed obtained from the PLL integrator. Its output is a
-current demand in amperes for either electrical algorithm.
+**Mechanical feedback, 100 Hz.** The MOTOR_1 Hall IRQ timestamps real transitions.
+The speed service checks six consecutive sector intervals against the sectors accepted
+by the current interrupt. They span one electrical turn: signed mechanical RPS is
+`direction / (pole_pairs * elapsed_seconds)`. Use the PLL through 0.5 RPS, blend
+linearly up to 1 RPS, then use the period alone (thresholds use its magnitude).
+A reversal, missing/invalid edge, IRQ-only bounce, stale window or implied speed over
+twice the motor maximum falls back to the PLL until there is a valid new turn.
+Duplicate IRQs do not refresh a timestamp.
 
-The generic PI uses trapezoidal integration:
+`in.velocity_feedback_rps` filters this estimate for the speed PI and both current
+ceilings. `in.current_speed_rps` independently filters the original PLL speed for
+telemetry and guards. Both are signed relative to the selected direction and use
+`alpha = 0.5` per 10 ms. JK42 uses the PLL for both. See the
+[period estimator](../libecu/include/hall_period_speed.hpp) and [signal ownership](CONTROL_IO.md).
+
+**Setpoint and error, 100 Hz.** MOTOR_1 ramps the requested speed at 4 RPS/s
+(0.04 RPS per tick). From the ramped target and measured speed, prepare one PI input:
 
 ```text
-e = target - feedback
-integral_next = clamp(integral + Ki*Ts*(e + e_previous)/2)
-requested = Kp*e + integral_next
-applied = clamp(requested, output_min, output_max)
+e    = ramped_target - velocity_feedback_rps
+m   += (e - m)/80
+e_PI = e - (7/8)*clamp(e - m, -0.25, +0.25)     # mechanical RPS
 ```
 
-If the inner loop reports saturation and the error would drive it further
-into that limit, integration is held. The PI also back-calculates its own
-output clipping using `Kb*Ts*(applied-requested)` and clamps the integral.
-The standstill-release logic clears residual current demand after stopping.
-Tuning prepares `Ki*Ts/2`, `Kb*Ts` and the configured bounds outside the
-update loop. The fixed kernel compares in Q32 accumulator units; rolling
-integral and traction limits are local to each PI step.
+Small, rapid deviations from the moving mean get about one eighth of their usual
+gain. A sustained error passes in full as the mean catches up; there is no deadband.
+For a large transient the correction is at most 0.21875 RPS. Both P and I use
+`e_PI`; the traction ceiling uses the **unshaped** lag `e`.
+
+**Speed PI, 1 kHz on STM32 by default.** Each PI tick reuses the latest error
+and ceilings; it does not manufacture a new speed measurement:
+
+```text
+I = clamp(I + Ki*Ts*(e_PI + previous_e_PI)/2, I_min, I_max)  # trapezoidal
+requested = Kp*e_PI + I
+Iq* = clamp(requested, braking_floor, traction_ceiling)       # A in FOC
+I = clamp(I + Kb*Ts*(Iq* - requested), I_min, I_max)         # back-calculation
+```
+
+If the live inner-loop saturation has the same sign as the error, skip the
+trapezoidal increment; the integral bounds and back-calculation still apply.
+Parking discards the prepared demand. Rearming seeds the ramp from the new signed
+feedback, and a zero request at standstill clears the residual PI output.
 
 `BldcController::setSpeedPi(kp, ki)` retunes the speed PI without resetting it.
 A live Kp change adjusts the integral to preserve the last output at the last
@@ -104,21 +129,41 @@ the rebase. On failure it returns `false` and keeps the previous gains.
 
 | Setting | Value |
 |---|---:|
-| Current-output speed Kp | 1.25 A / mechanical RPS |
-| Current-output speed Ki | 5 A / (mechanical RPS * s) |
-| Current output limits | -6 to +20 A on STM32F410 (motor ceiling +45 A, limited by the board) |
+| Current-output speed Kp | 11 A / mechanical RPS |
+| Current-output speed Ki | 3 A / (mechanical RPS * s) |
+| Current output limits | -6 to +20 A on STM32F410 and STM32G431 with MOTOR_1 (motor ceiling +45 A, limited by the board) |
 | Speed-PI integral limits | -4 A to a rolling upper bound: 12 A through 0.125 RPS, then +16 A per RPS up to the current limit |
-| Measured acceleration limit | 1 RPS/s; correction gain 2 A/RPS |
+| Command ramp / measured acceleration setting | 4 / 3 rev/s² |
+| Positive traction ceiling | 3 A/RPS base gain; 6 A/RPS extra on excess speed loss; at most +1.5 A per 10 ms |
 | Speed-PI back-calculation gain | 2 / s |
 | Measured-speed LPF alpha | 0.5 per 10-ms measurement |
 | Target-speed LPF | Disabled; acceleration limiting is separate |
 
-The [motor configuration](../libecu/include/motor_config.hpp) defines both
-outer-loop gain pairs. `MOTOR_1_LOADED=0` (default) selects **1.25/5** for
-the free wheel; `1` selects **3/24** for operation under load. Only the two
-gains change. Validate the loaded pair with the intended load. The rolling
-ceiling limits the integral; the acceleration ceiling limits positive output.
-Neither changes the board's raw phase-current protection.
+With `MOTOR_1_LOADED` undefined, the [calibration](../libecu/include/motor_config.hpp)
+uses **11/3** for both the free wheel and a rolling load. It does not estimate
+inertia or switch gains at runtime. Explicit `=0` and `=1` select only the earlier
+Kp/Ki pairs **1.25/5** and **3/24**, respectively.
+
+### How much positive current is available?
+
+Every 10 ms the [traction limiter](../libecu/include/traction_acceleration.hpp)
+compares the change in measured speed `dv` with `3 RPS/s * 0.01 s = 0.03 RPS`.
+It starts from the **last limited PI output**, not accumulated unused headroom:
+
+```text
+dA = 3 * (0.03 - dv)
+if e > 0.25 and dv < -0.03: dA += 6 * (-dv - 0.03)
+traction_ceiling = clamp(max(last_Iq_request, 0) + min(dA, 1.5), 0, board_motor_limit)
+```
+
+At constant speed this allows +0.09 A per tick (**9 A/s**) if the PI needs it.
+A sudden load can unlock extra current; after load release the ceiling can drop
+immediately. This bounds positive **demand**, not physical acceleration or braking.
+The rolling ceiling in the table limits only the integral. Neither ceiling changes
+the raw phase-current trip. The [dynamics fixture](../tests/test_speed_dynamics/README.md)
+exercises the startup, load application and release.
+
+### Inertia and earlier gains
 
 Load inertia explains the tuning trade-off. An ideal continuous model for a
 surface-magnet motor, before current/estimator/filter/sampling delays, gives:
@@ -241,9 +286,9 @@ MOTOR_1 uses `Kp = 50`, `Ki = 1250`, regardless of the outer speed PI.
 Its ideal linear natural frequency is about 5.63 Hz; Hall quantization,
 detector clipping and reseeding modify the actual response.
 
-**Reported speed is the integral term.** Angle advancement uses the full
-`Kp*error + integral` result. The speed controller and hybrid back-EMF model
-therefore do not directly consume the Hall-sector proportional ripple.
+**Reported PLL speed is the integral term.** Angle advancement uses the full
+`Kp*error + integral` result. The mechanical fallback and any optional
+back-EMF model use the integral speed, not the phase-correction ripple.
 Diagnostics expose both quantities as `pll_integral` and `angle_per_second`.
 
 ### Synchronization and reseeding
@@ -374,12 +419,33 @@ not establish this motor-specific alignment.
 
 ### Ordinary d/q PI strategy
 
-Each axis forms `requested = Kp*error + integral`, where
-`error = (target-filtered_current) * weight(abs(speed_steps_s))`.
-For MOTOR_1 the weight rises from 1/16 to 1 between 60 and 75 electrical
-Hall steps/s on both axes. Only q fades back from 1 to 1/16 between 360 and
-480 steps/s. JK42BLS01 uses unit weights on both axes.
-After limiting, its integral receives `Ki*Ts*error`, followed, when enabled,
+**MOTOR_1 closes both axes on measured current** (`current_loop.pi_only=true`).
+At 20 kHz on STM32 the d PI uses `Id* = 0`; the q PI uses the signed current
+request `Iq*` from the outer PI. Feedback filtering is [board-specific](#current-feedback-filtering).
+Neither axis adds model-led voltage or decoupling.
+
+```text
+ed = wd * (Id* - filtered_Id)     Vd_requested = Kp*ed + integral_d
+eq = wq * (Iq* - filtered_Iq)     Vq_requested = Kp*eq + integral_q
+```
+
+Both axes use **Kp = 0.549775 V/A, Ki = 516.792 V/(A·s)**. The weights use
+the magnitude of electrical PLL speed; for this 120-sector/rev motor:
+
+| Mechanical speed | d-axis error weight | q-axis error weight |
+|---|---:|---:|
+| Up to 0.5 RPS (60 sectors/s) | 1/16 | 1/16 |
+| 0.5–0.625 RPS | Linear rise to 1 | Linear rise to 1 |
+| 0.625–3 RPS | 1 | 1 |
+| 3–4 RPS (360–480 sectors/s) | 1 | Linear fall to 1/16 |
+| At or above 4 RPS | 1 | 1/16 |
+
+At 4 RPS (240 RPM) the effective q gains are about **0.0344 V/A** and
+**32.3 V/(A·s)**. The controller corrects a measured current error more slowly;
+it does **not** divide `Iq*` by 16 or switch to hybrid voltage control. JK42BLS01
+uses unit weights on both axes.
+
+After voltage limiting, each axis integral receives `Ki*Ts*error`, followed, when enabled,
 by `Kb*(limited-requested)`. Here FOC `Kb` is a **dimensionless per-sample
 fraction**, normally 1; it differs from the time-scaled `Kb` of the generic
 speed/six-step PI. Integrals are also bounded by the available voltage scale.

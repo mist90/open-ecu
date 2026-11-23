@@ -9,7 +9,7 @@ persist between calls.
 | Writer | Fields it updates |
 |---|---|
 | Command interface | `in.control_mode`, `in.drive_mode`, `in.algorithm`, speed/current demand and the prepared open-loop field rate. |
-| SysTick | `in.current_speed_rps`, `in.temperature_c` and (in velocity mode) `in.target_current`. |
+| SysTick | `in.current_speed_rps`, `in.velocity_feedback_rps`, `in.temperature_c` and (in velocity mode) `in.target_current`. |
 | Current interrupt | `out.measured_position`, `out.hall`, `out.pll`, `out.field` and `out.electrical`: shunts, bus voltage, d/q results, phase duties and saturation. |
 
 Setters validate and convert commands before publishing related values in
@@ -26,6 +26,10 @@ speed PI sets the current demand in amperes. In torque mode (`MODE=2`),
 `out.pll.angle_steps` and electrical speed in `out.pll.speed_steps_s` still
 describe the **rotor**. `in.current_speed_rps` is the filtered mechanical
 speed in revolutions per second, signed relative to the drive direction.
+For MOTOR_1, `in.velocity_feedback_rps` uses a qualified period of six Hall sectors
+for the outer PI and the traction ceiling; the monitor and standstill gates retain
+the independently filtered PLL speed. The Hall capture IRQ dates transitions;
+period arithmetic and filtering run at 100 Hz. See the [speed and current cascade](software.md#speed-loop-tuning).
 `NEUTRAL` clears the drive demands while acquisition can continue tracking it.
 
 Six-step regulates the conducting shunt; FOC regulates d/q current. `v_d`,

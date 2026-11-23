@@ -194,7 +194,7 @@ static bool readBrakeButton(void)
 extern "C" void motor_controller_hall_interrupt_handler(void)
 {
     if (motor_controller != nullptr) {
-        motor_controller->hallSensorInterruptHandler();
+        motor_controller->hallEdgeInterruptHandler();
     }
 }
 
