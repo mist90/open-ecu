@@ -1,69 +1,48 @@
 # Current-frame ownership and interrupt-state hooks
 
-The STM32 ports call `BldcController::pwmInterruptHandler()` once per period.
-The [controller interface](../libecu/include/bldc_controller.hpp) also exposes
-two paths for other interrupt schedules. They differ in when a reader may
-inspect status. See [Software and control algorithms](software.md#real-time-execution)
-for the full pipeline.
+## One control call per PWM period
 
-## Reusable control frame
+The [controller](../libecu/include/bldc_controller.hpp) consumes ready phase
+currents and cached bus voltage in one `pwmInterruptHandler()` call. The two
+STM32 ports run this tick at **20 kHz (50 µs)**, but enter it differently:
 
-[`MotorAlgorithmFrameT<Profile>`](../libecu/include/motor_samples.hpp) holds
-one native input and output. `BldcController` owns persistent frame storage;
-the serialized current ISR fills it, runs the selected algorithm and applies
-PWM without returning a temporary output aggregate.
+- **STM32F410:** [`ADC_IRQHandler`](../STM32F410/Core/Src/stm32f4xx_it.c)
+  calls [`board_adc_interrupt()`](../STM32F410/Core/Src/board.cpp). JEOC
+  marks the end of one timer-triggered 12-bit U/V/W scan. The port captures
+  all three ranks and checks raw overcurrent and auxiliary freshness before
+  the control call. At 100 Hz it checks that injected samples are still arriving.
+- **STM32G431:** [`HAL_TIM_PeriodElapsedCallback`](../STM32G431/Core/Src/stm32g4xx_it.c)
+  calls [`motor_controller_pwm_interrupt_handler()`](../STM32G431/Core/Src/board.cpp)
+  on the **down-counting** TIM1 update only. Both timer extrema raise update
+  events; only one runs control. TIM1 also triggers dual injected ADCs with
+  hardware ×2 oversampling. The callback does not check JEOS.
 
-- `preparePwmInterruptHandler()` advances Hall/PLL once and snapshots commands
-  and rotor state. It performs no ADC reads or PWM writes.
-- `completePwmInterruptHandler()` consumes the preparation once, reads ready
-  currents and bus voltage, runs FOC or six-step in place, then publishes the
-  completed status under a critical section.
-- `cancelPwmInterruptHandler()` discards pending work without another Hall/PLL
-  tick. The tick already performed during preparation is not rolled back.
-- `pwmInterruptHandler()` remains the prepare/complete convenience wrapper.
-  `pwmInterruptHandler(adc, pwm)` and `completePwmInterruptHandler(adc, pwm)`
-  accept the same concrete drivers that the board bound to the controller.
-  They can avoid virtual calls for ADC reads and FOC PWM writes; the frame
-  ownership and publication order are the same.
+Both ports service regular auxiliary DMA from the 1-kHz SysTick. It does not
+poll injected currents or run a rotor tick. Hall input capture (TIM5 on F410,
+TIM4 on G431) marks a pending reading. The current interrupt observes Hall
+and advances the PLL once, including while parked if acquisition continues.
+Open loop advances its own phase without replacing the rotor feedback.
 
-The port owns acquisition qualification and serializes prepare/complete/cancel.
-Repeated preparation preserves the pending snapshot; completion without a
-pending preparation does nothing. A live park or fault still prevents drive
-output even when commands were captured earlier.
+The [current handler](../libecu/include/bldc_pwm_frame.hpp) reads commands
+directly from `MotorIo::in` and updates `out.electrical` in place. Its
+`pwmInterruptHandler(adc, pwm)` overload takes statically bound drivers;
+a port that already sampled Hall may pass the decoded sector (0–5, or `0xff`
+for invalid) as a third argument. It runs the same single tick. Do not
+inspect live results from a PWM write callback or retain a
+reference as a snapshot. See [controller I/O](CONTROL_IO.md) for reader rules.
+The value-returning `update()` and `updateNative()` algorithm adapters still
+serve standalone callers; the board's current tick does not copy their results.
 
-Hall edges only mark a pending reading. Neither those IRQs nor SysTick advance
-the PLL if the carrier stops. When the carrier keeps running in `NEUTRAL`, it
-continues to track the physical wheel. Tracking runs with interrupts enabled:
-a higher-priority hardware break can cancel a frame without changing PLL state.
+On F410 a higher-priority break latches the bridge off and calls
+`cancelPwmTick()`. The handler can return `false` even after some computation
+or preload writes: cancellation is not a rollback, and PWM writes must not
+re-enable a tripped bridge. The port only captures a requested scope sample
+when the handler returns `true`.
 
-Each algorithm overwrites the frame's output. Six-step clears unused dq
-fields, and parking clears electrical output without applying PWM. During
-the PWM write, current, dq and duty fields still describe the previous frame.
-Value-returning `update()` / `updateNative()` overloads remain available as
-compatibility adapters on the STM32 builds.
-
-## Direct status writes in a single PWM interrupt
-
-Use `prepareOwnedCarrier()` and `completeOwnedCarrier(adc, pwm)` **in the
-same single-writer IRQ**. If the board already sampled the Hall pins, pass
-the decoded sector (0–5, or `0xff` for an illegal code) to the preparation.
-Omitting it uses the usual `HallInterface` read when a Hall sample is due.
-
-This path reads commands from controller status and writes the new electrical
-results directly there. There is no atomic copy of the finished frame: the
-PWM callback must not inspect status mid-update. Lower-priority readers must
-mask the carrier IRQ while copying a snapshot; `getNativeStatus()` returns
-a reference and supplies no lock. A higher-priority hardware break may latch
-the outputs off, but must not read or change motor status, rotor state or
-commands, or enable gates. `parkFromCarrier()` is for the carrier owner.
-`writeCarrierDuty()` and `applyCarrierStates()` must never re-enable a
-bridge stopped by the break. Use the regular split interface above if
-other contexts need to run between preparation and completion.
-
-The [controller host tests](../tests/test_control/main.cpp) compare the
-single-call, split and single-writer results in both algorithms. They also
-exercise publication order on the regular path, transitions, cancellation
-and parking (`tests/test_control/run.sh float` or `numeric-fixed`).
+The [controller host tests](../tests/test_control/main.cpp) cover the shared
+tick, command transitions, both electrical algorithms, parking and capture.
+They do not measure either port's interrupt latency. For timing and
+acquisition requirements see the [porting guide](PORTING_GUIDE.md#current-acquisition).
 
 ## Optional interrupt-state tokens
 
@@ -84,5 +63,5 @@ and cannot be copied or moved.
 
 Token guards and legacy disable/enable pairs must be released in reverse
 acquisition order; the port supplies the matching nesting and memory-ordering
-semantics. No target-specific interrupt implementation is part of this
-header. Existing ports need no new hooks unless they enable the token option.
+semantics. The [G431 build](../STM32G431/CMakeLists.txt) enables per-guard
+tokens; [F410](../STM32F410/Core/Src/board.cpp) uses the nesting-safe pair.

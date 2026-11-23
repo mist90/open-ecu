@@ -112,22 +112,23 @@ static void testPreparedRate() {
 
     Phase phase;
     phase.seed(number_v<Angle, 23, 4>);
-    check(phase.setSpeed(number_v<Speed, 2>, 40), "old rate starts the phase");
+    typename Phase::PreparedRate rate;
+    check(Phase::prepareSpeed(number_v<Speed, 2>, 40, rate), "old rate starts the phase");
     const Angle before = phase.angle();
     check(Phase::prepareSpeed(number_v<Speed, 3>, 40, prepared), "next rate prepares independently of phase");
-    for (unsigned tick = 0; tick < 100; ++tick) phase.advance(DriveMode::FORWARD);
+    for (unsigned tick = 0; tick < 100; ++tick) phase.advance(DriveMode::FORWARD, rate);
     const Angle advanced = phase.angle();
     check(advanced != before, "phase has advanced while the prepared command waited");
-    phase.applyPreparedRate(prepared);
-    check(phase.angle() == advanced && phase.speed(DriveMode::FORWARD) == number_v<Rate, 360> &&
-          phase.speed(DriveMode::REVERSE) == number_v<Rate, -360> && phase.speed(DriveMode::NEUTRAL) == Rate{},
+    rate = prepared;
+    check(phase.angle() == advanced && rate.signedSpeed(DriveMode::FORWARD) == number_v<Rate, 360> &&
+          rate.signedSpeed(DriveMode::REVERSE) == number_v<Rate, -360> && rate.signedSpeed(DriveMode::NEUTRAL) == Rate{},
           "publishing a prepared rate preserves the advanced phase and direction semantics");
-    phase.advance(DriveMode::FORWARD);
+    phase.advance(DriveMode::FORWARD, rate);
     float delta = numberCast<float>(phase.angle()) - numberCast<float>(advanced);
     if (delta < 0) delta += 6;
     check(std::abs(delta - 360.0f / Frequency) < 0.000002f, "next PWM sample uses the new rate");
     const Angle held = phase.angle();
-    phase.advance(DriveMode::NEUTRAL);
+    phase.advance(DriveMode::NEUTRAL, rate);
     check(phase.angle() == held, "neutral still holds phase after a prepared-rate commit");
 }
 
@@ -161,47 +162,46 @@ static void testPreparedController(DriveMode direction) {
     check(motor.initialize(), "prepared-command controller initializes");
     motor.start();
     motor.setControlMode(ControlMode::OPEN_LOOP);
-    motor.setElectricMode(ElectricMode::VOLTAGE_MODE);
     motor.setDriveMode(direction);
     motor.setTargetSpeed(2.0f);
     for (unsigned tick = 0; tick < 100; ++tick) motor.pwmInterruptHandler();
-    const float before = motor.getStatus().angle_e_rad;
+    const float before = numberCast<float>(motor.io().out.electrical.angle_e_rad);
     BldcController::PreparedTargetSpeed prepared;
     check(motor.prepareNativeTargetSpeed(number_v<BldcController::Speed, 3>, prepared),
           "controller prepares rate without changing target");
-    check(motor.getStatus().target_speed_rps == 2.0f, "preparation leaves the live target alone");
+    check(numberCast<float>(motor.io().in.target_speed_rps) == 2.0f, "preparation leaves the live target alone");
     for (unsigned tick = 0; tick < 100; ++tick) motor.pwmInterruptHandler();
-    const float advanced = motor.getStatus().angle_e_rad;
+    const float advanced = numberCast<float>(motor.io().out.electrical.angle_e_rad);
     check(advanced != before && motor.commitNativeTargetSpeed(prepared),
           "controller accepts prepared target after intervening PWM interrupts");
     motor.pwmInterruptHandler();
     const float sign = direction == DriveMode::FORWARD ? 1.0f : -1.0f;
-    check(std::abs(angleDelta(motor.getStatus().angle_e_rad, advanced) -
+    check(std::abs(angleDelta(numberCast<float>(motor.io().out.electrical.angle_e_rad), advanced) -
                    sign * FOC_TWO_PI * 20 * 3 / ActiveTiming::CURRENT_HZ) < 0.00001f,
           "real FOC uses current phase plus new increment, never a stale prepared phase");
 
     for (float speed : {0.0f, 3.0f, 100.0f}) {
         check(motor.prepareNativeTargetSpeed(numberCast<BldcController::Speed>(speed), prepared) &&
               motor.commitNativeTargetSpeed(prepared), "native requests retain zero and maximum clamping");
-        check(motor.getStatus().target_speed_rps == (speed > 12 ? 12 : speed),
+        check(numberCast<float>(motor.io().in.target_speed_rps) == (speed > 12 ? 12 : speed),
               "prepared target retains the configured maximum");
     }
     check(!motor.prepareNativeTargetSpeed(number_v<BldcController::Speed, -1>, prepared) &&
-          !motor.commitNativeTargetSpeed(prepared) && motor.getStatus().target_speed_rps == 12.0f,
+          !motor.commitNativeTargetSpeed(prepared) && numberCast<float>(motor.io().in.target_speed_rps) == 12.0f,
           "failed preparation invalidates an older command without changing the live target");
     motor.setTargetSpeed(std::numeric_limits<float>::quiet_NaN());
     motor.setTargetSpeed(std::numeric_limits<float>::infinity());
-    check(motor.getStatus().target_speed_rps == 12.0f, "legacy float setter still ignores nonfinite inputs");
+    check(numberCast<float>(motor.io().in.target_speed_rps) == 12.0f, "legacy float setter still ignores nonfinite inputs");
 #ifndef ECU_FIXED_NUMERIC
     check(!motor.prepareNativeTargetSpeed(std::numeric_limits<float>::quiet_NaN(), prepared) &&
           !motor.commitNativeTargetSpeed(prepared), "native float NaN remains rejected");
     check(motor.prepareNativeTargetSpeed(std::numeric_limits<float>::infinity(), prepared) &&
-          motor.commitNativeTargetSpeed(prepared) && motor.getStatus().target_speed_rps == 12.0f,
+          motor.commitNativeTargetSpeed(prepared) && numberCast<float>(motor.io().in.target_speed_rps) == 12.0f,
           "native positive infinity preserves the old finite-limit clamping semantics");
 #endif
     motor.setDriveMode(DriveMode::NEUTRAL);
     motor.setNativeTargetSpeed(number_v<BldcController::Speed, 3>);
-    check(!pwm.enabled && motor.getStatus().target_speed_rps == 0.0f,
+    check(!pwm.enabled && numberCast<float>(motor.io().in.target_speed_rps) == 0.0f,
           "legacy native setter still ignores requests in NEUTRAL");
 }
 
@@ -213,12 +213,11 @@ static void testRate(uint8_t poles, float rps, DriveMode direction, unsigned sec
     check(motor.initialize(), "open-loop test controller initializes");
     motor.start();
     motor.setControlMode(ControlMode::OPEN_LOOP);
-    motor.setElectricMode(ElectricMode::VOLTAGE_MODE);
     motor.setDriveMode(direction);
     motor.pwmInterruptHandler();
-    uint8_t last = motor.getNativeStatus().target_position;
+    uint8_t last = motor.io().out.electrical.target_position;
     motor.setTargetSpeed(rps);
-    const float accepted = motor.getStatus().target_speed_rps;
+    const float accepted = numberCast<float>(motor.io().in.target_speed_rps);
     const float expected_rate = accepted * poles * 3;
     const float interval = ActiveTiming::CURRENT_HZ / expected_rate;
     unsigned changes = 0, wrong_direction = 0, wrong_interval = 0, last_change = 0;
@@ -227,7 +226,7 @@ static void testRate(uint8_t poles, float rps, DriveMode direction, unsigned sec
         // No update() calls at all. Wall-clock jumps/wraps cannot change PWM-clocked phase.
         clock_us += tick % 2 ? UINT32_MAX - 50 : 1234567;
         motor.pwmInterruptHandler();
-        const uint8_t step = motor.getNativeStatus().target_position;
+        const uint8_t step = motor.io().out.electrical.target_position;
         if (step != last) {
             const unsigned delta = (step + 6 - last) % 6;
             wrong_direction += delta != (direction == DriveMode::FORWARD ? 1u : 5u);
@@ -245,19 +244,19 @@ static void testRate(uint8_t poles, float rps, DriveMode direction, unsigned sec
     check(wrong_direction == 0, "forward/reverse field visits every sector in the requested order");
     check(wrong_interval == 0, "commutation intervals follow the PWM clock within one tick");
     motor.update();
-    check(std::abs(motor.getStatus().current_speed_rps) < 0.0001f,
+    check(std::abs(numberCast<float>(motor.io().in.current_speed_rps)) < 0.0001f,
           "a stationary physical rotor is not reported at the virtual field speed");
     motor.setTargetSpeed(0);
     motor.pwmInterruptHandler();
-    const float held = motor.getStatus().angle_e_rad;
+    const float held = numberCast<float>(motor.io().out.electrical.angle_e_rad);
     for (unsigned i = 0; i < 1000; ++i) motor.pwmInterruptHandler();
-    check(motor.getStatus().angle_e_rad == held, "zero RPS holds the field exactly");
+    check(numberCast<float>(motor.io().out.electrical.angle_e_rad) == held, "zero RPS holds the field exactly");
     motor.setTargetSpeed(rps);
     motor.stop();
     motor.pwmInterruptHandler();
-    const float stopped = motor.getStatus().angle_e_rad;
+    const float stopped = numberCast<float>(motor.io().out.electrical.angle_e_rad);
     for (unsigned i = 0; i < 1000; ++i) motor.pwmInterruptHandler();
-    check(motor.getStatus().angle_e_rad == stopped, "stop freezes phase even if a speed request was present");
+    check(numberCast<float>(motor.io().out.electrical.angle_e_rad) == stopped, "stop freezes phase even if a speed request was present");
     motor.setDriveMode(DriveMode::NEUTRAL);
 }
 
@@ -271,11 +270,10 @@ static void testFocContinuity(DriveMode direction) {
     check(motor.initialize(), "FOC open loop initializes");
     motor.start();
     motor.setControlMode(ControlMode::OPEN_LOOP);
-    motor.setElectricMode(ElectricMode::VOLTAGE_MODE);
     motor.setDriveMode(direction);
-    motor.setDutyCycle(0.1f);
+    motor.setCurrent(1.0f);
     motor.pwmInterruptHandler();
-    float previous = motor.getStatus().angle_e_rad;
+    float previous = numberCast<float>(motor.io().out.electrical.angle_e_rad);
     float max_error = 0;
     const float sign = direction == DriveMode::FORWARD ? 1.0f : -1.0f;
     for (float speed : {0.5f, 3.0f, 0.0f, 12.0f}) {
@@ -283,7 +281,7 @@ static void testFocContinuity(DriveMode direction) {
         const float expected_delta = sign * FOC_TWO_PI * 20 * speed / ActiveTiming::CURRENT_HZ;
         for (unsigned tick = 0; tick < 1000; ++tick) {
             motor.pwmInterruptHandler();
-            const float angle = motor.getStatus().angle_e_rad;
+            const float angle = numberCast<float>(motor.io().out.electrical.angle_e_rad);
             max_error = std::max(max_error, std::abs(angleDelta(angle, previous) - expected_delta));
             previous = angle;
         }
@@ -293,11 +291,11 @@ static void testFocContinuity(DriveMode direction) {
     hall.position = 3;
     motor.setDriveMode(direction);
     motor.pwmInterruptHandler();
-    const float seeded = motor.getStatus().angle_e_rad;
+    const float seeded = numberCast<float>(motor.io().out.electrical.angle_e_rad);
     check(std::abs(seeded - (3 * FOC_RAD_PER_STEP + configuration.foc.angle_offset_rad)) < 0.00001f,
           "rearming seeds the field from the present physical Hall angle");
     for (unsigned i = 0; i < 1000; ++i) motor.pwmInterruptHandler();
-    check(motor.getStatus().angle_e_rad == seeded, "parking clears the cached speed increment before rearming");
+    check(numberCast<float>(motor.io().out.electrical.angle_e_rad) == seeded, "parking clears the cached speed increment before rearming");
     motor.setDriveMode(DriveMode::NEUTRAL);
 }
 
@@ -320,14 +318,14 @@ static void testIndependentHall() {
             motor.hallSensorInterruptHandler();
         }
         motor.pwmInterruptHandler();
-        const uint8_t step = motor.getNativeStatus().target_position;
+        const uint8_t step = motor.io().out.electrical.target_position;
         if (step != last) { ++changes; last = step; }
         if (tick % 200 == 0) motor.update();
     }
     check(changes >= 359 && changes <= 361, "physical Hall events cannot steer the open-loop field");
-    check(std::abs(motor.getStatus().current_speed_rps - 0.5f) < 0.08f,
+    check(std::abs(numberCast<float>(motor.io().in.current_speed_rps) - 0.5f) < 0.08f,
           "open-loop speed telemetry measures the physical rotor");
-    check(motor.getStatus().measured_position == hall.position && motor.getHallInfo().edges > 50,
+    check(motor.io().out.measured_position == hall.position && motor.getHallInfo().edges > 50,
           "Hall position and edge diagnostics remain live in open loop");
     const auto pll = motor.getPllInfo();
     motor.setControlMode(ControlMode::CLOSED_LOOP_TORQUE);
@@ -376,9 +374,10 @@ int main() {
     }
     testIndependentHall();
     testInvalidHall();
-    OpenLoopPhase<ActiveNumericProfile, 20000> phase;
-    check(!phase.setSpeed(number<ActiveNumericProfile::Speed>(-1), 40), "negative magnitude rejected");
-    check(!phase.setSpeed(number<ActiveNumericProfile::Speed>(1), 3), "odd pole count rejected");
+    using Phase = OpenLoopPhase<ActiveNumericProfile, 20000>;
+    Phase::PreparedRate rate;
+    check(!Phase::prepareSpeed(number<ActiveNumericProfile::Speed>(-1), 40, rate), "negative magnitude rejected");
+    check(!Phase::prepareSpeed(number<ActiveNumericProfile::Speed>(1), 3, rate), "odd pole count rejected");
     std::printf("Open-loop PWM phase: %d checks, %d failures\n", checks, failures);
     return failures != 0;
 }

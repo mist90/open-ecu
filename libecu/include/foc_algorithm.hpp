@@ -13,7 +13,7 @@
  *                                                    SVPWM  ->  duty_u, duty_v, duty_w
  *
  * The maths is in foc_math.hpp and is pure; this class holds the state -
- * regulator integrators, the previous duties, the angle offset - and owns the
+ * regulator integrators, the previous highest-duty phase, the angle offset - and owns the
  * PWM interface.
  *
  * ## What FOC assumes about the bridge
@@ -79,9 +79,9 @@
 #include "ecu_config.hpp"
 #include "foc_control_core.hpp"
 #include "motor_config.hpp"
+#include "motor_io.hpp"
 
 namespace libecu {
-template<class Profile> struct MotorStatusT;
 
 /**
  * @brief Tuning for the FOC algorithm
@@ -173,7 +173,7 @@ struct FocParams {
 class FocAlgorithm final : public MotorAlgorithm {
 public:
     using Core = FocControlCore<ActiveNumericProfile, ActiveTiming::CURRENT_HZ, motor_config::current_loop>;
-    /** @brief Exact next FOC reconstruction identity, including resets of its private duty history. */
+    /** @brief Next discarded phase, including a one-frame override or reset to U. */
     unsigned reconstructedPhase() const noexcept { return core_.reconstructedPhase(); }
     /** @brief Select one frame's discarded phase; caller qualifies both retained phases and owns the ISR. */
     bool setNextReconstructedPhase(unsigned phase) noexcept { return core_.setNextReconstructedPhase(phase); }
@@ -181,23 +181,12 @@ public:
 #if defined(LIBECU_PWM_BUS_LOOKAHEAD) && LIBECU_PWM_BUS_LOOKAHEAD
     void prepareBus(Core::Voltage voltage) noexcept { core_.prepareBus(voltage); }
 #endif
-    /** @brief PWM path: fill/apply the caller's persistent frame without a returned aggregate. */
-    void updateNative(Core::Frame& frame) noexcept;
-    /** @brief Same kernel/commit, with a known concrete PWM on synchronous boards. */
-    template<class Pwm> void updateNative(Core::Frame& frame, Pwm& pwm) noexcept {
-        core_.update(frame);
-        const auto& out = frame.output;
-        pwm.updateNativeDutyCycle(out.duty_u, out.duty_v, out.duty_w);
-        recordLoopStage(LoopStage::Pwm);
-    }
-    template<class Status, class Pwm>
-    void updateOwnedCarrier(const Core::Input& in, Status& status, Pwm& pwm) noexcept {
-#if defined(LIBECU_PWM_DEADLINE_ONLY) && LIBECU_PWM_DEADLINE_ONLY
-        updateDriveStatus(in, status);
-#else
-        core_.update(in, status, status);
-#endif
-        pwm.writeCarrierDuty(status.duty_u, status.duty_v, status.duty_w);
+    /** @brief Compute in the PWM owner's electrical storage and commit its three phase duties. */
+    template<class Pwm>
+    void updateCarrier(const MotorInput& in, MotorElectricalOutput& out, Core::Angle angle_steps,
+                       Core::PllSpeed speed_steps_s, Pwm& pwm) noexcept {
+        updateDriveStatus(in, out, angle_steps, speed_steps_s);
+        pwm.writeCarrierDuty(out.duty_u, out.duty_v, out.duty_w);
         recordLoopStage(LoopStage::Pwm);
     }
     /**
@@ -215,7 +204,7 @@ public:
     /**
      * @brief Set the d/q current regulator gains
      *
-     * In ordinary current mode both axes share one set of gains, which is
+     * With PI feedback both axes share one set of gains, which is
      * correct for a motor with Ld == Lq. Hybrid Iq uses these gains for Id
      * only; its q-axis correction is configured through HybridIqParams.
      * The output of these regulators is in **volts**, not duty, so
@@ -255,9 +244,8 @@ public:
     static float modulationMagnitude(float d, float q, float bus) noexcept;
 
 private:
-#if defined(LIBECU_PWM_DEADLINE_ONLY) && LIBECU_PWM_DEADLINE_ONLY
-    void updateDriveStatus(const Core::Input& in, MotorStatusT<ActiveNumericProfile>& status) noexcept;
-#endif
+    void updateDriveStatus(const MotorInput& in, MotorElectricalOutput& out, Core::Angle angle_steps,
+                           Core::PllSpeed speed_steps_s) noexcept;
     PwmInterface& pwm_interface_;
     FocParams params_{};
     Core core_;

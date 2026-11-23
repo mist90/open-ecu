@@ -58,16 +58,11 @@ libecu::MotorControlParams makeMotorParams(const libecu::BoardInfo& board_info) 
     // about nine PWM cycles after a commutation on this motor. Six covers the
     // bulk of the transient without holding the duty for much of a short sector.
     motor_params.current_blanking_cycles = 6;
-    motor_params.pi_voltage_mode = {BLDC_SPEED_VOLTAGE_KP, BLDC_SPEED_VOLTAGE_KI};
-    motor_params.pi_voltage_mode.integral_max = 0.8f;
-    motor_params.pi_voltage_mode.integral_min = 0.0f;
-    motor_params.pi_voltage_mode.kb = 2.0f;
-
-    motor_params.pi_current_mode = {BLDC_SPEED_CURRENT_KP, BLDC_SPEED_CURRENT_KI};
-    motor_params.pi_current_mode.integral_max = std::min(board_info.max_drive_current_a,
-                                                         libecu::motor_config::speed_integral_max_a);
-    motor_params.pi_current_mode.integral_min = -4.0f;
-    motor_params.pi_current_mode.kb = 2.0f;
+    motor_params.speed_pi = {BLDC_SPEED_CURRENT_KP, BLDC_SPEED_CURRENT_KI};
+    motor_params.speed_pi.integral_max = std::min(board_info.max_drive_current_a,
+                                                 libecu::motor_config::speed_integral_max_a);
+    motor_params.speed_pi.integral_min = -4.0f;
+    motor_params.speed_pi.kb = 2.0f;
 
     // Current-loop PI from the electrical model: kp = 2*L*w_c/Vbus,
     // ki = 2*R*w_c/Vbus, which places the PI zero on the plant pole (Ti = L/R)
@@ -209,7 +204,7 @@ int main(void)
         // motor control loop
         if (board.takeControlTick()) {
 #ifdef THROTTLE_BRAKE_CONTROL
-            const libecu::ControlMode control_mode = motor_controller.getNativeStatus().control_mode;
+            const libecu::ControlMode control_mode = motor_controller.io().in.control_mode;
             // Reads the throttle sampled during the last control tick, not the
             // hardware. The board port owns ADC scheduling, including any
             // sharing with the NTC. See Board::readThrottle().

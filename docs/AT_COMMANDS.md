@@ -17,24 +17,27 @@ Stop:     1 bit
 Flow:     None
 ```
 
-The UART is routed through **USART2** on the STM32G431:
+Both STM32 ports use **USART2**:
 
-| Signal | Pin | Direction |
-|--------|-----|-----------|
-| TX | PB3 | MCU output |
-| RX | PB4 | MCU input |
+| Board | MCU TX | MCU RX |
+|-------|--------|--------|
+| STM32G431 | PB3 | PB4 |
+| STM32F410 | PA2 | PA3 |
+
+On the Nucleo the [ST-LINK USB VCP](NUCLEO_F410RB_IHM08M1.md#uart-over-usb-and-swd)
+carries this link.
 
 ### Sending Your First Command
 
-1. Connect your serial adapter
-2. Send a command with CRC: `AT+VER?*CRC\r\n`
-3. Calculate CRC of `AT+VER?` using CRC-16/CCITT-FALSE
-4. You should receive `+VER:1.0.0\r\n`
+1. Open the board's serial port.
+2. Send `AT+VER?*0DA3\r\n` (`0DA3` is the CRC-16/CCITT-FALSE of `AT+VER?`).
+3. Look for `+VER:<version>\r\n`; periodic telemetry can be interleaved.
 
 Python example:
 
 ```python
 import serial
+import time
 
 CRC_POLY = 0x1021
 
@@ -50,18 +53,30 @@ def crc16(data: bytes) -> int:
             crc &= 0xFFFF
     return crc
 
-def send(ser: serial.Serial, cmd: str):
+def query(ser: serial.Serial, cmd: str, prefix: str):
     crc = crc16(cmd.encode("ascii"))
     frame = f"{cmd}*{crc:04X}\r\n"
     ser.write(frame.encode("ascii"))
-    return ser.readline().decode("ascii").strip()
+    deadline = time.monotonic() + 1
+    while time.monotonic() < deadline:
+        line = ser.readline().decode("ascii").strip()
+        if line.startswith(prefix) or line == "ERROR":
+            return line
+    raise TimeoutError(cmd)
 
-ser = serial.Serial("/dev/ttyACM0", 2000000, timeout=1)
-print(send(ser, "AT+VER?"))   # +VER:1.0.0
-print(send(ser, "AT+SPD=50.0"))  # OK
+with serial.Serial("/dev/ttyACM0", 2000000, timeout=0.1) as ser:
+    print(query(ser, "AT+VER?", "+VER:"))
+    print(query(ser, "AT+STATUS?", "+STATUS:"))
 ```
 
 A PyQt6-based monitor application is available at `utility/monitor.py` with real-time telemetry plotting and a current waveform tab.
+
+Connecting or reconnecting the monitor only sends CRC-framed queries; it does
+not change the mode or demand. It restores the speed setpoint from the first
+`+TM:tgt_speed`, not the measured speed in `+STATUS`. In open-field mode,
+`AT+SPD` sets field speed and `AT+CUR` sets current. The former voltage-mode
+selection (`AT+EMODE`) and direct duty (`AT+DUT`) commands return `ERROR` on
+both reads and writes. Applied duty and bus voltage remain available in telemetry.
 
 ## CRC-16 Checksum
 
@@ -83,8 +98,8 @@ The implementation uses a 256-entry lookup table for speed. The full source is i
 ### Wire Format
 
 ```
-AT+CMD=value*A1B2\r\n
-             ^^^^  4 hexadecimal digits of the CRC
+AT+SPD=50.5*1ED8\r\n
+            ^^^^  4 hexadecimal digits of the CRC
 ```
 
 The CRC hex digits are uppercase. Four digits, zero-padded. For example a CRC of `0x00F1` becomes `*00F1`.
@@ -92,7 +107,7 @@ The CRC hex digits are uppercase. Four digits, zero-padded. For example a CRC of
 ### Frame Breakdown
 
 ```
-  A   T   +   S   P   D   =   5   0   .   5   *   A   1   B   2   \r  \n
+  A   T   +   S   P   D   =   5   0   .   5   *   1   E   D   8   \r  \n
   |<--- command text (CRC input) --->|   |<- CRC ->|   |<- line end ->|
 ```
 
@@ -136,7 +151,9 @@ def format_at_command(cmd: str) -> str:
 
 ### Speed Control (AT+SPD)
 
-Set target motor speed or read the current measured speed.
+Set a nonnegative mechanical-RPS request. In VELOCITY it is the rotor speed
+target; in OPEN_LOOP it is the rotating field speed. `DMODE` sets direction.
+`AT+SPD?` always returns **measured rotor speed**, not the request.
 
 | | |
 |---|---|
@@ -144,29 +161,32 @@ Set target motor speed or read the current measured speed.
 | **Query** | `AT+SPD?*<CRC>\r\n` |
 | **Set response** | `OK\r\n` |
 | **Query response** | `+SPD:123.45\r\n` |
-| **Range** | 0.0 to 200.0 RPS |
+| **Set range** | 0.0 to 200.0 RPS on the wire; the controller clamps to its configured `max_speed_rps`. |
 | **Unit** | Revolutions per second |
 
 In VELOCITY mode, `SPD=0` continues regulating while the rotor slows down. Once
 both the PLL speed and filtered speed feedback settle within 0.1 Hall steps/s
 (0.000833 RPS for a 40-pole motor), the speed PI integral and target-speed filters
-are cleared and the current/duty demand is exactly zero. This releases residual
+are cleared and the current demand is exactly zero. This releases residual
 torque after stopping, including any unfinished setpoint ramp. Nonzero speed
 commands retain normal PI control, even at standstill.
 
 **Examples:**
 
 ```
-> AT+SPD=50.5*A1B2\r\n     (CRC of "AT+SPD=50.5")
+> AT+SPD=50.5*1ED8\r\n     (CRC of "AT+SPD=50.5")
 < OK\r\n
 
-> AT+SPD?*B3C4\r\n         (CRC of "AT+SPD?")
+> AT+SPD?*B0A0\r\n         (CRC of "AT+SPD?")
 < +SPD:48.32\r\n
 ```
 
 ### Current Control (AT+CUR)
 
-Set target motor current or read the current target value.
+Set the torque-current demand in TORQUE or OPEN_LOOP, or read the active current
+target. In VELOCITY the next active speed PI step overwrites a manual current
+setting. In NEUTRAL the drive clears the target and ignores new current and
+speed demands, even though well-formed writes in range receive `OK`.
 
 | | |
 |---|---|
@@ -176,15 +196,19 @@ Set target motor current or read the current target value.
 | **Query response** | `+CUR:2.50\r\n` |
 | **Range** | -6.0 to 6.0 A |
 
-Negative current values reverse the current direction, enabling regenerative braking when the motor is spinning forward.
+The AT setter accepts −6 to +6 A; the controller also clamps to its configured
+motor/board limits. The velocity PI can use the configured limits reported by
+`AT+MAXVALS?`, independently of the AT setter range. Current is signed relative
+to `AT+DMODE`. FOC can request braking torque with negative current; the
+six-step PI can reduce duty to zero but cannot apply negative duty.
 
 **Examples:**
 
 ```
-> AT+CUR=3.5*D1E2\r\n
+> AT+CUR=3.5*6CA6\r\n
 < OK\r\n
 
-> AT+CUR?*F3A4\r\n
+> AT+CUR?*E922\r\n
 < +CUR:3.50\r\n
 ```
 
@@ -200,16 +224,16 @@ second.
 | **Set response** | `OK\r\n` |
 | **Query response** | `+ACC:4.00\r\n` |
 | **Range** | 0.0 to 1000.0 RPS/s |
-| **Default** | `BLDC_MAX_ACCELERATION` from `libecu/include/motor_config.hpp` (4.0 on MOTOR_1) |
+| **Startup setting** | `BLDC_MAX_ACCELERATION` from `libecu/include/motor_config.hpp`; the selected protocol may change it. Query `AT+ACC?` for the live value. |
 
 This limits how fast the *command* is allowed to move, not the torque: it is
 the second stage of the target-speed filter (LPF → slew rate limiter, see
-`applyAccelerationLimit()`), so it only bites in `MODE=1` (VELOCITY). In TORQUE
-and OPEN_LOOP the speed setpoint is not used at all and the setting has no
-effect.
+`applyAccelerationLimit()`), so it only applies in `MODE=1` (VELOCITY). In
+OPEN_LOOP, `SPD` sets the rotating field's speed directly; in TORQUE, the
+speed loop does not run.
 
 `0` disables the limiter, which makes `AT+SPD` a step command — the drive will
-demand whatever current the speed PID asks for to close the gap immediately.
+demand the current the speed PI asks for, up to the configured limits.
 
 Changing the rate does not move the ramp that is already in progress; the new
 rate applies from the next control tick.
@@ -223,31 +247,19 @@ Note that `AT+SPD` is ignored entirely while `DMODE=2` (NEUTRAL), so a ramp
 cannot be observed there.
 
 **Keep it below what the PLL can follow.** The steady-state PLL tracking error
-during a ramp is `e_ss = α / ki` steps (α in steps/s², 1 RPS/s = 48 steps/s² on
+during a ramp is `e_ss = α / ki` steps (α in steps/s², 1 RPS/s = 120 steps/s² on
 a 40-pole motor), and past 1.5 steps the commutation lead goes negative and the
 motor runs away. See the tuning notes under [AT+PLLID](#pll-gain-tuning-atpllid).
 
 **Examples:**
 
 ```
-> AT+ACC=2.5*XXXX\r\n
+> AT+ACC=2.5*021B\r\n
 < OK\r\n
 
-> AT+ACC?*XXXX\r\n
+> AT+ACC?*C5CB\r\n
 < +ACC:2.50\r\n
 ```
-
-### Duty Cycle (AT+DUT)
-
-Set duty cycle in open-loop mode or read current duty cycle.
-
-| | |
-|---|---|
-| **Set** | `AT+DUT=<val>*<CRC>\r\n` |
-| **Query** | `AT+DUT?*<CRC>\r\n` |
-| **Set response** | `OK\r\n` |
-| **Query response** | `+DUT:0.30\r\n` |
-| **Range** | 0.0 to 1.0 |
 
 ### Control Mode (AT+MODE)
 
@@ -262,40 +274,25 @@ Set or read the mechanical control mode.
 
 | Value | Mode | Description |
 |-------|------|-------------|
-| 0 | OPEN_LOOP | Open loop control, timing-based, no sensors |
-| 1 | VELOCITY | Closed loop velocity control with PID and Hall sensors |
-| 2 | TORQUE | Closed loop torque control, fixed duty or current with Hall sensors |
+| 0 | OPEN_LOOP | `SPD` sets the rotating field's mechanical RPS; `CUR` sets its current. Hall telemetry still measures the rotor. |
+| 1 | VELOCITY | The speed PI compares `SPD` with measured rotor speed and supplies the current demand. |
+| 2 | TORQUE | `CUR` sets current directly; the field follows rotor feedback. |
 
 **Examples:**
 
 ```
-> AT+MODE=1*ABCD\r\n
+> AT+MODE=1*1A11\r\n
 < OK\r\n
 
-> AT+MODE?*EF01\r\n
+> AT+MODE?*234E\r\n
 < +MODE:1\r\n
 ```
 
-### Electric Mode (AT+EMODE)
-
-Set or read the electrical control strategy.
-
-| | |
-|---|---|
-| **Set** | `AT+EMODE=<val>*<CRC>\r\n` |
-| **Query** | `AT+EMODE?*<CRC>\r\n` |
-| **Set response** | `OK\r\n` |
-| **Query response** | `+EMODE:1\r\n` |
-
-| Value | Mode | Description |
-|-------|------|-------------|
-| 0 | VOLTAGE | Direct voltage or duty cycle control |
-| 1 | CURRENT | Current control with PI inner loop at 40kHz (PWM frequency) |
-
 ### Drive Algorithm (AT+ALGO)
 
-Select the electrical algorithm that drives the inverter. Orthogonal to
-`AT+EMODE`: the two combine into four working modes.
+Select how the inverter regulates the current demand. Both algorithms run at
+the board's current-loop rate. Voltage and phase duties are regulator outputs;
+the host does not set them.
 
 | | |
 |---|---|
@@ -306,21 +303,8 @@ Select the electrical algorithm that drives the inverter. Orthogonal to
 
 | Value | Algorithm | Description |
 |-------|-----------|-------------|
-| 0 | SIX_STEP | Trapezoidal six-step commutation |
-| 1 | FOC | Field-oriented control with space-vector modulation (default) |
-
-Combined with `AT+EMODE`:
-
-| ALGO | EMODE | What runs |
-|------|-------|-----------|
-| 0 | 0 | Trapezoidal, duty commanded directly by `AT+DUT` |
-| 0 | 1 | Trapezoidal, inner current PI on the DOWN-phase shunt (`AT+CPID`) |
-| 1 | 0 | SVPWM, q-axis voltage commanded by `AT+DUT`, no current loop |
-| 1 | 1 | SVPWM with d/q current PI (`AT+FPID`) — full field-oriented control |
-
-`ALGO=1, EMODE=0` exists for bring-up: it exercises the modulator and the
-angle without a current loop in the way, which is the only practical way to
-find a wrong `AT+FANG` offset.
+| 0 | SIX_STEP | The current PI (`AT+CPID`) uses the active DOWN-phase shunt and sets duty for the commutated phases. |
+| 1 | FOC | The d/q regulators set voltage for space-vector PWM. `AT+FPID` tunes the ordinary d/q PIs; configured hybrid Iq replaces only the q regulator. |
 
 > **Switch at standstill or in NEUTRAL.** Changing algorithm is a step change
 > in the applied voltage — the outgoing algorithm's integrators are cleared and
@@ -336,13 +320,13 @@ gains, which is correct for a motor with Ld == Lq.
 | **Set** | `AT+FPID=<kp>,<ki>*<CRC>\r\n` |
 | **Query** | `AT+FPID?*<CRC>\r\n` |
 | **Set response** | `OK\r\n` |
-| **Query response** | `+FPID:2.1991,2067.2000\r\nOK\r\n` |
+| **Query response** | `+FPID:0.5498,516.7920\r\nOK\r\n` (MOTOR_1 example) |
 
 > **These are not `AT+CPID` numbers.** The FOC regulators output **volts**
-> (kp in V/A, ki in V/A/s) and see one phase; the six-step regulator outputs
-> **duty** and sees two phases in series. For MOTOR_1 at 500 Hz the six-step
-> gains are ≈0.141 / 132 and the FOC gains are ≈2.20 / 2067. Setting one from
-> the other will not end well.
+> (kp in V/A, ki in V/(A·s)) and see one phase; the six-step regulator outputs
+> **duty** and sees two phases in series. For MOTOR_1 at 31.3 V the six-step
+> gains are ≈0.141 / 132 (500-Hz design input). The [motor calibration](../libecu/include/motor_config.hpp)
+> sets FOC to 0.549775 / 516.792; the two pairs are not interchangeable.
 
 Derivation: placing the PI zero on the plant pole (`Ti = L/R`) gives
 `kp = L·ω_c` and `ki = R·ω_c`. See `tuneFocCurrentPi()` in
@@ -358,19 +342,19 @@ angle and the rotor d axis, in **electrical degrees**.
 | **Set** | `AT+FANG=<degrees>*<CRC>\r\n` |
 | **Query** | `AT+FANG?*<CRC>\r\n` |
 | **Set response** | `OK\r\n` |
-| **Query response** | `+FANG:-60.00\r\nOK\r\n` |
+| **Query response** | `+FANG:-60.00\r\n` |
 
 Range -360.0 to 360.0.
 
-The default of -60° is **derived, not measured**: row *k* of the six-step
+The MOTOR_1 offset of -60° is derived from the normal table: row *k* of the six-step
 commutation table places the stator field at (k·60 − 30)°, and the PLL applies
 step round(angle + 1) in FORWARD, so the field sits at (angle·60 + 30)°. At the
 six-step torque optimum the field leads the rotor by 90°, giving
 θ_d = (angle − 1)·60°.
 
-Expect to trim it on the bench. If it is wrong it is wrong by a whole multiple
-of 60°, and the symptom is little or no torque. An inverse commutation table
-needs its own value.
+An inverse commutation table needs its own alignment: the
+[JK42BLS01 profile](JK42BLS01_FOC.md) uses +120°. A misaligned field can
+produce little torque or accelerate the rotor the wrong way.
 
 ### Drive Mode (AT+DMODE)
 
@@ -391,7 +375,8 @@ Set or read the motor rotation direction.
 
 ### Speed PI Parameters (AT+SPID)
 
-Set or read the speed (outer-loop) PI gains for the current electrical mode.
+Set or read the speed (outer-loop) PI gains. Its output is current in amperes
+for either electrical algorithm.
 Repeating a setting or changing only `ki` retains the integral and the previous
 error. With velocity control active, a `kp` change compensates the integral to
 preserve the last command at the same error. Normal integration and response to
@@ -416,10 +401,10 @@ and the setpoint ramp are updated separately at 100 Hz.
 **Examples:**
 
 ```
-> AT+SPID=0.05,1.0*XXXX\r\n
+> AT+SPID=0.05,1.0*EB29\r\n
 < OK\r\n
 
-> AT+SPID?*XXXX\r\n
+> AT+SPID?*5695\r\n
 < +SPID:0.050,1.000\r\n
 < OK\r\n
 ```
@@ -441,25 +426,23 @@ compile-time current-loop rate (20 kHz on STM32G431).
 **Examples:**
 
 ```
-> AT+CPID=0.1,2.0*XXXX\r\n
+> AT+CPID=0.1,2.0*F47B\r\n
 < OK\r\n
 
-> AT+CPID?*XXXX\r\n
+> AT+CPID?*52CF\r\n
 < +CPID:0.100,2.000\r\n
 < OK\r\n
 ```
 
 ### Firmware Version (AT+VER)
 
-Read the firmware version string.
-
-The numerical-profile branch reports `1.0.0-pi-float` or `1.0.0-pi-fixed` to
-identify the selected speed/six-step-current PI kernel arithmetic.
+Read the version string selected by the board and numeric profile in
+[G431](../STM32G431/Core/Inc/ecu_config.hpp) or [F410](../STM32F410/Core/Inc/ecu_config.hpp).
 
 | | |
 |---|---|
 | **Query** | `AT+VER?*<CRC>\r\n` |
-| **Response** | `+VER:1.0.0\r\n` |
+| **Response** | `+VER:1.2.0-control-float\r\n` (G431 float example) |
 
 ### Motor Status (AT+STATUS)
 
@@ -468,30 +451,34 @@ Read a snapshot of the motor's current state.
 | | |
 |---|---|
 | **Query** | `AT+STATUS?*<CRC>\r\n` |
-| **Response** | `+STATUS:<ctrl_mode>,<elec_mode>,<speed>,<target_cur>,<duty>,<bus_volt>,<algo>,<id>,<iq>,<angle_e>\r\n` |
+| **Response** | `+STATUS:<ctrl_mode>,1,<speed>,<target_cur>,<duty>,<bus_volt>,<algo>,<id>,<iq>,<angle_e>\r\n` |
 
 Response fields in order:
 
 | Field | Type | Description |
 |-------|------|-------------|
 | ctrl_mode | int | Control mode (0=OPEN_LOOP, 1=VELOCITY, 2=TORQUE) |
-| elec_mode | int | Electric mode (0=VOLTAGE, 1=CURRENT) |
-| speed | float | Current motor speed in RPS |
+| 1 | int | Legacy field 2: always the literal `1` for wire compatibility. |
+| speed | float | Filtered mechanical rotor speed in RPS, signed relative to the drive direction; not the speed command. |
 | target_cur | float | Target current in Amperes |
-| duty | float | Current duty cycle (0.0 to 1.0) |
+| duty | float | Six-step applied duty, or FOC modulation depth when enabled (see below). |
 | bus_volt | float | Bus voltage in Volts |
 | algo | int | Drive algorithm (0=SIX_STEP, 1=FOC) |
 | id | float | Measured d-axis current in Amperes (0 in six-step) |
 | iq | float | Measured q-axis current in Amperes (0 in six-step) |
 | angle_e | float | Electrical angle used by the algorithm, degrees |
 
-The last four fields were added with FOC; the first six are unchanged, so a
-consumer that only knows them still parses.
+`+STATUS`, `+TM` and `+OSC` report the same scalar duty: the applied duty for
+six-step, or the modulation depth derived from `Ud`, `Uq` and the DC bus on
+the 100-Hz tick for FOC. It reads zero in NEUTRAL or if the controller is
+not running. With `LIBECU_FOC_DUTY_TELEMETRY=0`, only the FOC scalar is suppressed; FOC still
+updates all three phase duties each current tick. Field positions have not
+changed.
 
 **Example:**
 
 ```
-> AT+STATUS?*DEAD\r\n
+> AT+STATUS?*A8D4\r\n
 < +STATUS:1,1,23.45,1.50,0.35,24.56,1,-0.02,1.48,213.7\r\n
 ```
 
@@ -520,13 +507,15 @@ Response fields in order (all printed with 2 decimals):
 **Example:**
 
 ```
-> AT+MAXVALS?*XXXX\r\n
+> AT+MAXVALS?*2C81\r\n
 < +MAXVALS:200.00,-6.00,6.00,36.00,0.95,100.00\r\n
 ```
 
 ## Telemetry (AT+TM)
 
-Enable or disable continuous telemetry streaming. The foreground sends motor state data every 10 ms on the 100-Hz service flag. Both +TM and +PLL telemetry (see [AT+PLL](#pll-telemetry-at+pll)) use that same cadence.
+Enable or disable continuous telemetry streaming. The foreground sends motor
+state on the 100-Hz service flag. [PLL telemetry](#pll-telemetry-atpll) uses
+the same cadence.
 
 | | |
 |---|---|
@@ -552,12 +541,12 @@ Each line is a newline-terminated tuple (uses `\n` only, not `\r\n`):
 | tgt_pos | uint8 | Target rotor position (commutation step, 0-5) |
 | tgt_speed | float | Target speed in RPS |
 | cur_speed | float | Current measured speed in RPS |
-| duty | float | Current duty cycle |
+| duty | float | Six-step duty or reported FOC modulation depth |
 | tgt_cur | float | Target current in Amperes |
-| meas_cur | float | Measured current in Amperes, low-pass filtered (`measured_current_lpf_alpha`, 10 ms by default). The raw per-PWM-cycle sample would alias the chopping ripple at the 100 Hz telemetry rate; use `AT+OSC` for the unfiltered waveform |
+| meas_cur | float | Measured current in amperes. Builds with `LIBECU_RAW_CURRENT_TELEMETRY` report the latest sample; other builds apply the configured low-pass filter. Use `AT+OSC` for consecutive unfiltered current samples. |
 | bus_volt | float | Bus voltage in Volts |
 | pll_angle | float | PLL rotor angle in steps (0.0-6.0, one electrical period) |
-| temp | float | NTC temperature in degrees Celsius (PB14). `-273.0` means the sensor read open or the conversion failed -- not a cold motor. Above `max_temperature_c` (see [AT+MAXVALS](#maximum-values-at+maxvals)) the drive trips to NEUTRAL |
+| temp | float | NTC temperature in degrees Celsius (G431 PB14, F410 PC2). `-273.0` means an invalid reading. Above `max_temperature_c` (see [AT+MAXVALS](#maximum-values-atmaxvals)) the drive trips to NEUTRAL. |
 
 `temp` was appended after the other nine fields, so a parser that splits on `;` and
 reads the first nine still works. Prefer `len(fields) >= 9` over `== 9`.
@@ -574,7 +563,7 @@ SysTick signals the 100-Hz service tick; the foreground emits +TM and +PLL. Each
 
 ## Oscilloscope (AT+OSC)
 
-Start or stop the oscilloscope feature, which captures high-speed samples from the PWM ISR at 40kHz (PWM frequency).
+Start or stop oscilloscope capture from the current-loop interrupt.
 
 | | |
 |---|---|
@@ -590,16 +579,18 @@ Start or stop the oscilloscope feature, which captures high-speed samples from t
 
 ### Buffer Architecture
 
-The oscilloscope uses a **single buffer with two-phase swapping** for safe capture from the PWM ISR:
+The oscilloscope alternates between capture and transmission using one buffer:
 
 | Parameter | Value |
 |-----------|-------|
-| Buffer size | 1024 samples |
-| Capture rate | 40kHz (from PWM ISR) |
-| Burst duration | 1024 / 40000 = 25.6ms per burst |
-| Swap trigger | Buffer full (write index reaches 1024) |
+| Buffer size | `LIBECU_OSC_BUFFER_SIZE` (default 1024 samples) |
+| Capture rate | One sample per completed current tick while accumulating (20 kHz on both STM32 ports) |
+| Burst duration | 1024 / 20000 = 51.2 ms at 20 kHz |
+| End of capture | Buffer full |
 
-When the write phase fills the buffer (write index reaches 1024), the phase swaps under a critical section (interrupts disabled): the accumulated buffer becomes the output buffer, and the output buffer is reset for the next capture cycle.
+Foreground code transmits the completed burst without overwriting it. After
+the final sample and end marker, capture resumes; samples are contiguous
+within a burst, with gaps between bursts.
 
 ### Captured Data
 
@@ -612,15 +603,12 @@ Each sample captures seven values, packed into 12 bytes:
 | i_d_ma | int16 | d-axis current, milliamps (0 in six-step) |
 | i_q_ma | int16 | q-axis current, milliamps (0 in six-step) |
 | angle_e | uint16 | Electrical angle, full scale = one electrical revolution |
-| duty_cycle | uint8 | Current duty cycle × 100 (0-100) |
+| duty_cycle | uint8 | Reported duty/modulation × 100 (0–100); the FOC scalar updates on the slow tick. |
 | position | uint8 | Rotor position from Hall sensors |
 
-The currents are milliamps rather than floats because the buffer is 1024
-samples deep and the MCU has 32 KB of RAM in total. int16 milliamps spans
-±32.7 A, which covers the ±34 A the shunt/PGA chain can measure at all, so
-the packing loses nothing the hardware could have reported. Carrying the
-three FOC signals as floats would have taken the buffer from 12 KB to 24 KB;
-this way it stays at 12 KB.
+The default 1024-sample buffer occupies 12 KiB. Each current is encoded in
+milliamps and clipped to the signed 16-bit range (−32.768 to +32.767 A).
+This packing limit applies to the capture, not to the current regulator.
 
 ### Output Format
 
@@ -656,12 +644,12 @@ After the end-of-burst marker, oscilloscope continues capturing the next burst (
 **Example burst:**
 
 ```
-+OSC:0,1500,2000,35,3
-+OSC:1,1485,2000,35,3
-+OSC:2,1520,2000,35,3
-+OSC:3,1490,2000,35,4
++OSC:0,1500,2000,35,3,-12,1500,212
++OSC:1,1485,2000,35,3,-15,1485,212
++OSC:2,1520,2000,35,3,-9,1520,213
++OSC:3,1490,2000,35,3,-10,1490,213
 ...
-+OSC:1023,1510,2000,35,5
++OSC:1023,1510,2000,35,5,-8,1510,345
 +OSC:
 ```
 
@@ -702,7 +690,7 @@ Each line is a newline-terminated tuple (uses `\n` only, not `\r\n`):
 | angle_per_second | float | PLL-estimated rotor speed in steps/sec (6 steps = 1 electrical revolution) |
 | pll_integral | float | PI integrator term in steps/sec (clamped to ±max_electrical_speed) |
 | angle | float | PLL-estimated rotor angle in steps [0..6) (6 steps = 1 electrical revolution) |
-| hall_state_raw | int | Actual Hall sensor reading [0..5] (raw GPIO state before any filtering) |
+| hall_state_raw | int | Last valid decoded Hall sector [0..5] supplied to the PLL (not the three-bit GPIO pattern). |
 | is_sync | int | PLL synchronized with Hall sensor flag (1 = tracking, 0 = snapping angle to Hall) |
 
 **Example:**
@@ -713,7 +701,11 @@ Each line is a newline-terminated tuple (uses `\n` only, not `\r\n`):
 +PLL:288.712;219.502;5.028;2;0
 ```
 
-**Note:** The `angle` field mirrors `+TM:pll_angle` (same value, sampled at the same tick). Position fields `meas_pos` and `tgt_pos` remain `+TM:`-only. To compute the PLL tracking error, use `+TM:` fields: `error = measured_position - pll_angle` (wrapped to [-3, +3] per electrical period). The slip threshold is 3.0 steps.
+`angle` and `+TM:pll_angle` describe the same physical rotor, but the two
+reports take separate snapshots; a current tick can occur between them.
+Within one `+TM` line, `meas_pos - pll_angle` wrapped to [−3, +3] gives
+sector-to-estimate error in Hall steps. See [PLL lock detection](software.md#synchronization-and-reseeding)
+for the filtered error threshold.
 
 ## Hall Health Telemetry (AT+HSTATUS)
 
@@ -750,7 +742,7 @@ Unbuffered, like `+PLL`. Every field is a leaky accumulator or a running total r
 ```
 +HSTATUS:0;0.00;0.00;301.50;0;18422;3;0
 +HSTATUS:0;0.00;0.00;298.12;41;18512;5;50
-+HSTATUS:1;0.00;0.00;44.80;37;18544;2;312
++HSTATUS:1;0.00;0.00;44.80;37;18544;2;300
 ```
 
 ### Reading it
@@ -769,9 +761,14 @@ The two scores are the useful numbers, because each is directly comparable to it
 
 - **`invalid_score` is counting, and counting does not work here.** At 9 RPS the benign rate settles it near 1766, while a genuinely stuck line would settle it near 90 - the benign rate is twenty times the fault signature, so no threshold separates them. `invalid_threshold` therefore defaults to 0 (disabled). Enable it only on hardware where illegal codes are genuinely rare.
 - **`erratic_score` is the position-corruption margin, expressed as a fraction.** It is deliberately not a count: a count scales with the edge rate, so any absolute threshold is really a speed limit. A captured false positive showed this - at 6 RPS under 2 A of load, healthy running produced a surplus of 14-21 non-advancing edges against ~345 total, and the old absolute threshold of 20 tripped on it. As a fraction that is 0.06, against a threshold of 0.35. Unloaded running measures near 0.00; genuine chatter approaches 1.0 because the edges cancel completely.
-- **`edge_accum / 0.5` is the edge rate**, which should equal the electrical speed in steps/sec. A large mismatch against `+TM:cur_speed` means edges are being lost or manufactured.
+- **`edge_accum / 0.5` estimates edges per second.** At steady speed compare
+  it with `abs(+TM:cur_speed) × 6 × pole_pairs`; `cur_speed` alone is in
+  mechanical RPS. A large discrepancy can indicate missing or spurious edges.
 
-A latched fault forces `DriveMode::NEUTRAL`. It does *not* re-assert every cycle - it latches once, so a persistent condition reads as a fault rather than as commands being silently ignored.
+A latched Hall fault parks the bridge in Hall-controlled modes. Re-enabling
+those modes while the fault remains latched causes the next current tick to
+park the bridge again. The monitor also observes Hall in open loop, where the
+generated field does not use that feedback.
 
 ## Clear Hall Fault (AT+HCLEAR)
 
@@ -795,17 +792,18 @@ Set or read the PLL PI gains.
 | **Set response** | `OK\r\n` |
 | **Query response** | `+PLLID:100.000,5000.000\r\nOK\r\n` |
 
-**Default values:** `kp=100.0`, `ki=5000.0` (giving ω_n=70.7 rad/s, ζ=0.707).
+**Motor defaults:** JK42BLS01 uses `kp=100`, `ki=5000` (ω_n=70.7 rad/s,
+ζ=0.707); MOTOR_1 uses `kp=50`, `ki=1250`.
 
 Exactly two finite coefficients are required, as for the other PI controllers.
 
 **Examples:**
 
 ```
-> AT+PLLID=100,5000*XXXX\r\n
+> AT+PLLID=100,5000*728F\r\n
 < OK\r\n
 
-> AT+PLLID?*XXXX\r\n
+> AT+PLLID?*03A9\r\n
 < +PLLID:100.000,5000.000\r\n
 < OK\r\n
 ```
@@ -815,7 +813,7 @@ Exactly two finite coefficients are required, as for the other PI controllers.
 - `kp` determines damping: ζ = kp / (2·√ki). Target ζ ≈ 0.7–1.0 for well-damped response.
 - The steady-state tracking error during acceleration is: `e_ss = α / ki` (in steps), where α is the rotor acceleration in steps/s².
 - The commutation reversal threshold is 1.5 steps (90° field offset). If the PLL tracking error exceeds 1.5 steps, the effective stator field lead becomes negative, causing torque reversal and motor runaway.
-- With ki=5000 and max acceleration 100 RPS/s (4800 steps/s²): e_ss = 0.96 steps — safely below the 1.5-step threshold.
+- For example, 40 mechanical RPS/s on a 40-pole motor is 4800 electrical steps/s²; with `ki=5000`, the steady-state estimate is 0.96 steps.
 
 ## Error Responses
 
@@ -845,12 +843,8 @@ ERROR\r\n
 | `AT+CUR?` | Query | -- | `+CUR:2.50` |
 | `AT+ACC=<val>` | Set | 0.0 .. 1000.0 RPS/s | `OK` |
 | `AT+ACC?` | Query | -- | `+ACC:4.00` |
-| `AT+DUT=<val>` | Set | 0.0 .. 1.0 | `OK` |
-| `AT+DUT?` | Query | -- | `+DUT:0.30` |
 | `AT+MODE=<val>` | Set | 0, 1, 2 | `OK` |
 | `AT+MODE?` | Query | -- | `+MODE:1` |
-| `AT+EMODE=<val>` | Set | 0, 1 | `OK` |
-| `AT+EMODE?` | Query | -- | `+EMODE:1` |
 | `AT+DMODE=<val>` | Set | 0, 1, 2 | `OK` |
 | `AT+DMODE?` | Query | -- | `+DMODE:0` |
 | `AT+SPID=<kp>,<ki>` | Set | two finite floats | `OK` |
@@ -859,15 +853,15 @@ ERROR\r\n
 | `AT+CPID?` | Query | -- | `+CPID:0.050,1.000` |
 | `AT+ALGO=<val>` | Set | 0, 1 | `OK` |
 | `AT+ALGO?` | Query | -- | `+ALGO:0` |
-| `AT+FPID=<kp>,<ki>` | Set | any float | `OK` |
-| `AT+FPID?` | Query | -- | `+FPID:2.1991,2067.2000` |
+| `AT+FPID=<kp>,<ki>` | Set | two finite gains representable in the active profile | `OK` |
+| `AT+FPID?` | Query | -- | `+FPID:0.5498,516.7920` |
 | `AT+FANG=<deg>` | Set | -360.0 .. 360.0 | `OK` |
 | `AT+FANG?` | Query | -- | `+FANG:-60.00` |
-| `AT+PLLID=<kp>,<ki>` | Set | any float | `OK` |
+| `AT+PLLID=<kp>,<ki>` | Set | two finite gains representable in the active profile | `OK` |
 | `AT+PLLID?` | Query | -- | `+PLLID:100.000,5000.000` |
-| `AT+VER?` | Query | -- | `+VER:1.0.0` |
+| `AT+VER?` | Query | -- | `+VER:1.2.0-control-float` |
 | `AT+STATUS?` | Query | -- | `+STATUS:1,1,23.45,...` |
-| `AT+MAXVALS?` | Query | -- | `+MAXVALS:200.00,-6.00,6.00,36.00,0.95` |
+| `AT+MAXVALS?` | Query | -- | `+MAXVALS:200.00,-6.00,6.00,36.00,0.95,100.00` |
 | `AT+TM=<0|1>` | Set | 0, 1 | `OK` |
 | `AT+PLL=<0|1>` | Set/Query | 0, 1 | `OK` / `+PLL:1` |
 | `AT+HSTATUS=<0|1>` | Set/Query | 0, 1 | `OK` / `+HSTATUS:1` |

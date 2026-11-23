@@ -19,6 +19,7 @@
 
 #include "../../libecu/include/foc_algorithm.hpp"
 #include "../../libecu/include/foc_math.hpp"
+#include "../../libecu/include/six_step_algorithm.hpp"
 
 #include <cmath>
 #include <cstdio>
@@ -101,11 +102,17 @@ public:
     }
     void enable(bool) override {}
     void apply() override { com_events++; }
+    void writeCarrierDuty(NativeDuty u, NativeDuty v, NativeDuty w) override {
+        ++carrier_writes;
+        updateDutyCycle(numberCast<float>(u), numberCast<float>(v), numberCast<float>(w));
+    }
+    void applyCarrierStates() override { ++carrier_commits; apply(); }
 
     PwmState state[3] = {PwmState::OFF, PwmState::OFF, PwmState::OFF};
     float duty_u = 0.5f, duty_v = 0.5f, duty_w = 0.5f;
     int com_events = 0;
     int state_writes = 0;
+    int carrier_writes = 0, carrier_commits = 0;
 };
 
 // ---------------------------------------------------------------------------
@@ -407,10 +414,8 @@ static LoopResult runLoop(float iq_command, DriveMode drive_mode, float speed_hz
         in.angle_steps = theta / FOC_RAD_PER_STEP;
         in.speed_steps_s = omega_e / FOC_RAD_PER_STEP;
         in.target_current = iq_command;
-        in.duty_command = 0.0f;
         in.step = 0;
         in.drive_mode = drive_mode;
-        in.electric_mode = ElectricMode::CURRENT_MODE;
 
         const MotorAlgorithmOutput out = foc.update(in);
         result.reported_current = out.measured_current;
@@ -487,7 +492,6 @@ static void testCurrentSignConvention()
         in.speed_steps_s = 0.0f;
         in.target_current = 0.0f;
         in.drive_mode = DriveMode::FORWARD;
-        in.electric_mode = ElectricMode::CURRENT_MODE;
 
         const MotorAlgorithmOutput out = foc.update(in);
         checkNear(out.i_q, 4.0f, 0.02f, "a +q current reads back as +Iq");
@@ -633,10 +637,8 @@ static void testWindupRecovery()
         in.angle_steps = theta / FOC_RAD_PER_STEP;
         in.speed_steps_s = omega_e / FOC_RAD_PER_STEP;
         in.target_current = (n < phase1) ? 500.0f : 1.0f;
-        in.duty_command = 0.0f;
         in.step = 0;
         in.drive_mode = DriveMode::FORWARD;
-        in.electric_mode = ElectricMode::CURRENT_MODE;
 
         foc.update(in);
 
@@ -666,6 +668,82 @@ static void testWindupRecovery()
 
 // ---------------------------------------------------------------------------
 
+static void testCarrierHandover()
+{
+    using P = ActiveNumericProfile;
+    FakePwm pwm;
+    FocAlgorithm foc(pwm);
+    MotorInput in{};
+    MotorElectricalOutput out{};
+    in.drive_mode = DriveMode::FORWARD;
+    in.target_current = number<P::Current>(2);
+    out.bus_voltage = number<P::Voltage>(24);
+    out.i_u = number<P::Current>(-1);
+    out.i_v = out.i_w = number<P::Current>(1, 2);
+    check(foc.setAngleOffsetRad(0) && foc.setCurrentPiGains(1, 0), "carrier FOC tuning");
+    foc.onEnter();
+    foc.updateCarrier(in, out, number<P::Angle>(3), P::PllSpeed{}, pwm);
+    // At half an electrical turn, these shunts give Id=-1 and Iq=0.
+    checkNear(numberCast<float>(out.i_d), -1, 0.001f, "carrier uses the supplied field angle");
+    checkNear(numberCast<float>(out.v_q), 2, 0.001f, "carrier closes FOC on the torque command");
+    check(pwm.carrier_writes == 1 && !pwm.carrier_commits && pwm.duty_u == numberCast<float>(out.duty_u) &&
+          pwm.duty_v == numberCast<float>(out.duty_v) && pwm.duty_w == numberCast<float>(out.duty_w),
+          "FOC commits exactly the three reported duties without a commutation event");
+
+    SixStepAlgorithm six(pwm);
+    PiParameters tuning{};
+    tuning.kp = 0.25f;
+    tuning.max_output = 1.0f;
+    six.setParams({0.75f, 2});
+    check(six.setCurrentPi(tuning), "six-step carrier tuning");
+    six.onEnter();
+    in.target_current = number<P::Current>(4);
+    out.target_position = 0;  // UP U, DOWN V; there was no active six-step shunt yet.
+    six.updateCarrier(in, out, {});
+    check(out.measured_current == P::Current{} && out.duty_cycle == number_v<P::Duty, 3, 4> &&
+          out.current_pi_saturation == 1 && out.v_q == number_v<P::Voltage, 18> &&
+          out.i_d == P::Current{} && out.v_d == P::Voltage{} && pwm.carrier_commits == 1,
+          "six-step replaces the FOC result and reports the bridge duty clamp");
+    in.target_current = number<P::Current>(1);
+    out.i_v = number<P::Current>(2);
+    for (int blank = 0; blank < 2; ++blank) {
+        six.updateCarrier(in, out, {});
+        check(out.measured_current == out.i_v && pwm.duty_u == 0.75f && out.current_pi_saturation == 1,
+              "blanking reports this shunt but holds the previous actuator output and saturation");
+    }
+    six.updateCarrier(in, out, {});
+    check(pwm.duty_u == 0 && pwm.duty_v == 0 && pwm.duty_w == 0 && out.current_pi_saturation == -1 &&
+          pwm.carrier_writes == 5 && pwm.carrier_commits == 1,
+          "after blanking the PI rejects excess current without another commutation");
+    out.target_position = 1;  // DOWN changes from V to W.
+    out.i_w = number<P::Current>(1, 2);
+    six.updateCarrier(in, out, {});
+    check(out.measured_current == out.i_v && pwm.carrier_commits == 2, "commutation samples the previous DOWN phase");
+    six.updateCarrier(in, out, {});
+    check(out.measured_current == out.i_w && pwm.carrier_commits == 2, "next carrier observes the new DOWN phase");
+
+    foc.onEnter();
+    foc.updateCarrier(in, out, P::Angle{}, P::PllSpeed{}, pwm);
+    six.onEnter();
+    check(six.getPhaseState(PwmChannel::PHASE_W) == PwmState::OFF, "handover invalidates the old six-step row");
+    six.updateCarrier(in, out, {});
+    check(out.measured_current == P::Current{} && out.duty_cycle == number_v<P::Duty, 1, 4>,
+          "first sample after FOC cannot feed the last six-step shunt back to the PI");
+
+    FakePwm other;
+    SixStepAlgorithm standalone(other);
+    standalone.setParams({0.75f, 2});
+    check(standalone.setCurrentPi(tuning), "standalone six-step tuning");
+    MotorAlgorithmInput sample{};
+    sample.drive_mode = DriveMode::FORWARD;
+    sample.target_current = 4;
+    sample.bus_voltage = 24;
+    const auto value = standalone.update(sample);
+    check(value.duty == 0.75f && value.v_q == 18 && value.saturation == 1 &&
+          other.duty_u == value.duty && other.com_events == 1 && !other.carrier_writes && !other.carrier_commits,
+          "standalone six-step produces the same physical output using regular PWM calls");
+}
+
 int main()
 {
     std::printf("=== FOC tests ===\n\n");
@@ -681,6 +759,7 @@ int main()
     testClosedLoop();
     std::printf("\n");
     testWindupRecovery();
+    testCarrierHandover();
 
     std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

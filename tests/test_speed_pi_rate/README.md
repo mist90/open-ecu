@@ -72,10 +72,11 @@ equivalent to `0.656 + 0.0484 × |rev/s|` A. The heavier case adds `80 × r²`
 to inertia plus rolling resistance `0.008 × 80 × g × r` N·m,
 `r=0.760/(2π)` m; it assumes rigid no-slip rolling. Dry friction opposes
 motion, including breakaway. Torque uses the interval-average current of a
-250-Hz first-order actuator at 16 kHz. The controller gets only Hall sector
-changes from integrated angle, 120 sectors/rev; its own carrier preparation
-consumes the edges and ticks its PLL. The current plant replaces PWM/FOC
-completion, so external current-loop voltage saturation is zero.
+250-Hz first-order actuator at 16 kHz. The controller gets the Hall sector
+from integrated angle, 120 sectors/rev. Each carrier tick consumes the pending
+edge, advances the PLL and runs FOC with fixed ADC inputs. The mechanical
+plant follows the requested current through its own actuator; computed PWM
+duties do not drive the model.
 
 The summary samples **both arms at 100 Hz**, not once per PI call:
 

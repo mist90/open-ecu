@@ -23,11 +23,10 @@ sampling, PWM limits and loop rates enter through `BoardInfo`.
 The controller separates the mechanical command from electrical actuation:
 
 ```text
-Speed request -> acceleration limit -> speed PI -> current or duty request
-                                               |
-Hall sensors -> Hall monitor + PLL -> angle ----+
-                                               v
-PWM-synchronized ADC -> six-step or FOC -> PWM -> inverter -> motor
+Current demand (A): velocity -> ramp -> speed PI; torque / open loop -> AT+CUR
+Field position:     Hall / PLL in feedback modes; generated phase in open loop
+
+current demand + field position + sampled currents/Vbus -> six-step or FOC -> PWM
 ```
 
 The current loop and PLL run at **20 kHz** on STM32 (`Ts = 50 us`). The
@@ -36,23 +35,22 @@ outer speed PI runs at **1 kHz** by default. Speed measurement and its
 telemetry stay at **100 Hz**. On a coincident tick the new limits and feedback
 precede a single PI step; between measurements the PI integrates the held
 error and observes the latest saturation. `-DSPEED_PI_HZ=100` selects the
-original cadence. See the [matched rate experiment](../tests/test_speed_pi_rate/README.md).
+original PI cadence. The [matched rate experiment](../tests/test_speed_pi_rate/README.md)
+compares 100 and 500 Hz on the host with a 16-kHz MOTOR_1 current loop.
 
-Three independent selections must be distinguished:
-
-- The control mode selects velocity regulation, direct torque/current demand,
-  or an open-loop rotating field.
-- The electric mode selects current regulation or a direct voltage/duty
-  command.
-- The drive algorithm selects six-step commutation or FOC. Hybrid Iq is an
-  optional q-axis strategy inside FOC's existing current mode.
+The mechanical mode chooses the current source: in velocity mode the speed
+PI supplies the target; torque and open-loop modes take a signed ampere
+command. The electrical algorithm chooses how to meet it: six-step regulates
+the conducting shunt, while FOC regulates d/q currents. Hybrid Iq is an
+optional q-axis strategy within FOC.
 
 In open-loop operation, a PWM-clocked angle generator supplies the commanded
 field angle and speed. Hall tracking continues to describe the physical rotor.
 In feedback operation, the PLL supplies angle and speed.
 
 `U` and `V` both denote voltage in this document; source fields use `v_d/v_q`.
-Currents are amperes, voltage commands are volts, and PWM duty is a fraction.
+Currents are amperes, the regulator's voltage outputs are volts, and PWM duty
+is a fraction.
 Mechanical speed commands use revolutions per second (RPS). The PLL uses
 electrical **60-degree steps**:
 
@@ -73,9 +71,8 @@ Sources: [shared application](../libecu/src/main.cpp),
 ## Speed-loop tuning
 
 The velocity controller compares the acceleration-limited speed request with
-filtered mechanical speed obtained from the PLL integrator. In current mode
-its output is an ampere demand; in voltage mode it is a duty demand. These
-two PIs have different gains and output units.
+filtered mechanical speed obtained from the PLL integrator. Its output is a
+current demand in amperes for either electrical algorithm.
 
 The generic PI uses trapezoidal integration:
 
@@ -94,9 +91,9 @@ Tuning prepares `Ki*Ts/2`, `Kb*Ts` and the configured bounds outside the
 update loop. The fixed kernel compares in Q32 accumulator units; rolling
 integral and traction limits are local to each PI step.
 
-`BldcController::setSpeedPi(kp, ki)` retunes the active electrical mode
-without resetting its speed PI. A live Kp change adjusts the integral to
-preserve the last output at the last sampled error; a Ki-only edit keeps
+`BldcController::setSpeedPi(kp, ki)` retunes the speed PI without resetting it.
+A live Kp change adjusts the integral to preserve the last output at the last
+sampled error; a Ki-only edit keeps
 the integral and error history. Integration continues on the next tick.
 The setter rejects unrepresentable gains. While velocity control is active,
 it also rejects a changed tuning if either loop is saturated, the new
@@ -224,7 +221,7 @@ PLL synchronization and Hall-health fault status are separate signals.
 ### Continuous angle from discrete sectors
 
 The PLL compares its estimated angle with the latest Hall sector exactly once
-per prepared PWM frame. In `NEUTRAL` it tracks a coasting wheel while PWM
+per current tick. In `NEUTRAL` it tracks a coasting wheel while PWM
 and acquisition run. Without PWM it holds its last estimate; pending Hall
 edges, SysTick and telemetry do not create a rotor tick.
 
@@ -304,7 +301,7 @@ commutation alignment, while scalar duty remains nonnegative.
 
 ### Current regulation and blanking
 
-In current mode, one scalar PI compares the ampere request with the current
+One scalar PI compares the ampere request with the current
 of the **previously active DOWN phase**. Low-side ADC polarity is positive
 for current leaving the motor toward the bridge, so this reading is used
 directly. It is a phase-current controller, not a rotating-frame Iq controller.
@@ -315,10 +312,9 @@ blanking window holds the previous duty and saturation flag and leaves both
 PI terms untouched. The default six-cycle window corresponds to 300 us at
 20 kHz or 375 us at 16 kHz.
 
-The PI outputs duty, clamped to `[0, max_duty_cycle]`. Voltage mode bypasses
-the current PI and applies the bounded duty command directly. All three duty
-fields carry this scalar value; the switching states determine the active
-path. Saturation passed to the speed loop includes the final duty clamp.
+The PI outputs duty, clamped to `[0, max_duty_cycle]`. All three duty fields
+carry this scalar value; the switching states determine the active path.
+Saturation passed to the speed loop includes the final duty clamp.
 
 For a model of two phase windings in series:
 
@@ -356,8 +352,8 @@ or post-commutation blanking windows.
    The board must validate the sampling apertures of both retained phases.
 2. **Convert to stationary coordinates.** With zero phase-current sum,
    Clarke gives `Ialpha = Iu`, `Ibeta = (Iv-Iw)/sqrt(3)`.
-3. **Rotate into rotor coordinates.** Use PLL angle plus the motor's electrical
-   offset:
+3. **Rotate into field coordinates.** Use the PLL angle (or the generated
+   angle in open loop) plus the motor's electrical offset:
 
    ```text
    Id =  Ialpha*cos(theta) + Ibeta*sin(theta)
@@ -392,10 +388,6 @@ Optional decoupling adds `-omega_e*L*Iq` to Ud and
 `omega_e*(L*Id + flux)` to Uq. Shared startup defaults disable it.
 FOC PI gains come from `Kp = L*omega_c`, `Ki = R*omega_c`: outputs are volts,
 so these gains do not contain a bus-voltage divisor.
-
-In direct voltage mode, `Ud = 0` and `Uq = signed_duty_command*inradius`.
-Current-regulator histories are cleared; the same voltage limiter and PWM
-generation still apply.
 
 ### Space-vector PWM
 
@@ -479,7 +471,7 @@ The hybrid strategy combines **fast model-based voltage** with **slow measured
 current correction**. It targets noisy current feedback, where a fast
 proportional response can turn switching spikes into voltage disturbances.
 
-It remains current control: the outer speed PI supplies an ampere demand.
+It remains current control: the outer speed PI or `AT+CUR` supplies an ampere demand.
 `HybridIqParams::enabled` selects this strategy in a core that supports it;
 the scooter calibration uses the ordinary q PI.
 
@@ -515,7 +507,7 @@ the fast path supplies its steady resistive and back-EMF terms.
 There is no `L*dIq_target/dt` feed-forward: differentiating the outer
 loop's stepped request would create voltage kicks.
 
-Back-EMF feed-forward always operates in hybrid current mode, including when
+Back-EMF feed-forward operates with hybrid Iq, including when
 `use_decoupling` is false. If optional cross-coupling is enabled, it uses
 **reference currents** rather than raw ADC currents, so it does not bypass
 the slow feedback path. Shared startup defaults disable that coupling.
@@ -568,10 +560,9 @@ its delta would push Uq further into clipping, the correction is held and
 Instantaneous clipping is not back-calculated into this slow trim, because
 doing so could inject Id noise through the shared voltage limit.
 
-Id retains its ordinary PI with a zero target. Parking/reset, electric-mode
-changes and relevant configuration or coordinate-frame changes clear hybrid
-adaptation. Switching between ordinary PI and hybrid also clears the old q
-PI integral.
+Id retains its ordinary PI with a zero target. Parking/reset and changes to
+the gains, filter or electrical angle offset clear hybrid adaptation. Switching
+between ordinary PI and hybrid also clears the old q PI integral.
 
 The MOTOR_1 R estimate includes inverter effects and is an upper-bound estimate
 from a no-load fit. Model errors can affect the first electrical transient;
@@ -664,35 +655,30 @@ Continuous tuning is converted to per-sample gains outside the fast loop.
 The fixed path retains wide accumulators and bounded, explicitly rounded
 operations; sine/cosine use a table with interpolation.
 
-`BldcController` owns one reusable `MotorAlgorithmFrameT`:
+The board calls `BldcController::pwmInterruptHandler()` once per current
+period. The controller advances Hall/PLL tracking, selects rotor feedback
+or the generated field and reads the native current target from `MotorIo::in`.
+It reads shunt currents and cached bus voltage into `out.electrical`, then
+FOC or six-step writes the voltages, duties and saturation there directly.
+Six-step also commits the phase switching states on a commutation. In
+`NEUTRAL`, acquisition and physical rotor tracking can continue with the
+bridge parked.
 
-1. `preparePwmInterruptHandler()` observes Hall state, advances PLL once and
-   snapshots command/rotor data.
-2. The board publishes a coherent, qualified current frame.
-3. `completePwmInterruptHandler()` consumes the preparation once, fills current
-   and bus samples, runs the algorithm in place and publishes its output.
-
-Cancellation discards pending work without advancing the PLL again. Both
-algorithms overwrite the frame output; parking clears electrical output
-without running a current regulator. On this path, electrical results are
-published after the PWM write, so a PWM callback still sees the previous
-frame's results. The STM32 ports use the single-call `pwmInterruptHandler()`.
-
-The optional `prepareOwnedCarrier()` / `completeOwnedCarrier(adc, pwm)` pair
-writes results directly into status. Both calls must run in the same
-single-writer IRQ, and readers must take synchronized snapshots. See the
-[interrupt ownership contract](CURRENT_FRAME.md#direct-status-writes-in-a-single-pwm-interrupt).
+`io()` is live. Lower-priority readers copy the fields needed for one report
+under a short critical section; scope capture reads the completed tick in
+the current interrupt. FOC's three phase duties update every current tick,
+but its scalar modulation for telemetry is derived at 100 Hz when enabled.
 
 The optional interrupt-token interface lets each `CriticalSection` restore
 its entry mask. Nested token guards and legacy C pairs require reverse-order
 release; ports without the option retain their existing nesting implementation.
 
-Frame reuse, equivalent bounded LPF arithmetic and signed sine-table
+In-place updates, bounded LPF arithmetic and signed sine-table
 interpolation reduce work in the fast path without lowering the control rate.
 Target execution time still depends on the compiler, numeric profile and
 board's acquisition/interrupt implementation.
 
-Sources: [frame types](../libecu/include/motor_samples.hpp),
+Sources: [controller I/O and reader rules](CONTROL_IO.md),
 [critical-section interface](../libecu/include/critical_section.hpp),
 [frame ownership and optional IRQ hooks](CURRENT_FRAME.md).
 
@@ -718,7 +704,7 @@ bash tests/test_command_processor/run.sh
 bash tests/test_mtte/run.sh
 ```
 
-The suites cover Hall/PLL behavior, algorithm/frame transitions, delayed motor
+The suites cover Hall/PLL behavior, algorithm handover, delayed motor
 models, feedback filters, both torque signs, hybrid model error and saturation
 recovery, independent polygon geometry and reconstructed PWM voltages.
 The hybrid motor model uses an ideal rotor angle; it does not validate PLL

@@ -2,7 +2,11 @@
 
 Open-source BLDC motor control firmware with platform-independent architecture. Initially developed for the b-g431b-esc1 board (STM32G431CBU), but designed to support multiple hardware platforms.
 
-The firmware implements FOC and 6-step trapezoidal commutation with Hall sensor feedback, closed-loop PI speed control, and comprehensive safety monitoring.
+The firmware regulates motor current using FOC or six-step commutation. In
+velocity mode the speed PI supplies the current demand; in torque and open-loop
+modes the host supplies it in amperes. See the [AT commands and telemetry](docs/AT_COMMANDS.md)
+and the [controller I/O contract](docs/CONTROL_IO.md) for the commands, sampled results
+and interrupt that owns each current tick.
 
 ## Supported Platforms
 
@@ -29,9 +33,9 @@ The firmware implements FOC and 6-step trapezoidal commutation with Hall sensor 
 - PB8 - H3 (Z+)
 
 **Current Sensing (OPAMPs + ADC):**
-- PA1 - OPAMP1+ (Phase U shunt, 0.03Ω)
-- PA7 - OPAMP2+ (Phase V shunt, 0.03Ω)
-- PB0 - OPAMP3+ (Phase W shunt, 0.03Ω)
+- PA1 - OPAMP1+ (Phase U shunt, 3 mΩ)
+- PA7 - OPAMP2+ (Phase V shunt, 3 mΩ)
+- PB0 - OPAMP3+ (Phase W shunt, 3 mΩ)
 
 All shunts are low-side current sensors between ground and low-side MOSFETs.
 
@@ -44,15 +48,16 @@ The firmware uses a layered architecture separating platform-independent control
 Located in `libecu/src/` and `libecu/include/`:
 
 - **SixStepAlgorithm**: 6-step trapezoidal commutation with Hall sensor feedback and an inner current loop
-- **FocAlgorithm**: Field-oriented control with space-vector modulation (SVPWM)
+- **FocAlgorithm**: d/q current regulation with space-vector modulation (SVPWM)
 - **MotorAlgorithm**: Common interface selected at runtime with `AT+ALGO`; motor-specific startup algorithm
 - **PiController**: Fixed-frequency PI with trapezoidal integration and anti-windup
-- **SafetyMonitor**: Real-time fault detection (overcurrent, overtemperature, undervoltage)
+- **HallMonitor**: Detects persistent invalid Hall codes and erratic transitions
 - **BldcController**: High-level motor controller integrating all subsystems
 
 **Hardware Interfaces (abstract):**
 - **PwmInterface**: 3-phase PWM abstraction
 - **HallInterface**: Hall sensor reading interface
+- **AdcInterface**: Calibrated phase currents and cached auxiliary measurements
 
 ### HAL Layer (Platform-Specific)
 
@@ -60,7 +65,7 @@ Located in `libecu/hal/<platform>/`:
 
 **STM32G4 Implementation** (`libecu/hal/stm32g4/`):
 - **Stm32Pwm**: TIM1-based 3-phase PWM with complementary outputs, deadtime, center-aligned mode
-- **Stm32HallSensor**: GPIO-based Hall sensor reading (PB6/PB7/PB8)
+- **Stm32TimHallSensor**: TIM4 Hall capture and sector decoding on PB6/PB7/PB8
 
 ### Application Layer
 
@@ -86,18 +91,18 @@ without carrying the AT parser or its oscilloscope buffer; see the
 See [Software and control algorithms](docs/software.md) for the control pipeline,
 FOC, six-step, PLL, filtering, hybrid Iq and voltage-limiter implementation.
 
-- **FOC** with Hall sensor position feedback
+- **FOC** with Hall sensor position feedback; [modes, feedback and timing](docs/FOC_HANDOFF.md)
 - **Calibrated d/q current PIs** for the scooter motor: speed-dependent error
   weights and a separate [speed-PI integral limit](docs/software.md#motor_1-defaults)
 - **Experimental hybrid Iq**: opt-in model-led voltage with slow averaged-current
   trim; [algorithm and tuning](docs/software.md#hybrid-iq-control-through-uq)
-- **Reusable current frames**: in-place acquisition, control and PWM application;
-  [frame ownership and optional IRQ-state hooks](docs/CURRENT_FRAME.md)
+- **One current tick per PWM period**: acquisition, control and PWM application
+  use the controller's native I/O in place;
+  [STM32 interrupt paths and optional IRQ-state hooks](docs/CURRENT_FRAME.md)
 - **Root-free voltage limiting** with a d-priority circumscribed 32-gon and
   consistent anti-windup: [geometry and duty margins](docs/software.md#polygon-voltage-limiting)
 - **6-step trapezoidal control** with Hall sensor position feedback
 - **Closed-loop speed control** using PI algorithm
-- **Safety monitoring** with overcurrent, overtemperature, and undervoltage protection
 - **Modular architecture** allowing easy porting to other MCUs
 - **PWM-clocked open-loop field**: `AT+SPD` uses mechanical RPS in both directions;
   Hall speed/position telemetry remains physical feedback in open-loop mode
@@ -108,23 +113,25 @@ FOC, six-step, PLL, filtering, hybrid Iq and voltage-limiter implementation.
 **Speed PI:** 1 kHz on both STM32 ports, driven by SysTick. Every 10 ms a
 service tick first filters the PLL speed, advances the setpoint ramp and
 traction ceiling, and runs slow supervision. Between service ticks the PI
-uses the held reference, feedback and limits. Foreground telemetry stays at
-100 Hz. `-DSPEED_PI_HZ=100` selects the comparison rate without changing SysTick.
+uses the held reference, feedback and limits to update the current demand.
+Foreground telemetry stays at 100 Hz. `-DSPEED_PI_HZ=100` selects the
+comparison rate without changing SysTick.
 
-**Board-clocked current loop (normally 20 kHz on STM32):**
+**Board-clocked current loop (20 kHz on both STM32 ports):**
 1. Observes pending Hall changes and advances the PLL
 2. Consumes PWM-synchronized current samples
 3. Runs six-step or FOC and applies the resulting PWM duties
 
-The loop rates are configured through the board and shared sampling clocks;
-see the [control pipeline](docs/software.md#control-pipeline-and-units).
+F410 runs this loop on injected ADC completion (JEOC); G431 runs it from the
+down-counting TIM1 update. The [control pipeline](docs/software.md#control-pipeline-and-units)
+describes how the board's sampling clocks are used.
 
-### Safety Features
-- Overcurrent protection (120% of rated current)
-- Overtemperature protection (95% of max temperature)
-- Undervoltage protection (minimum bus voltage monitoring)
-- Emergency stop functionality
-- Fault counters and diagnostic information
+### Fault handling
+
+The controller parks the bridge on excessive bus voltage, overtemperature or
+a Hall fault during Hall-controlled drive. The port owns acquisition freshness
+and bridge protection. For the F410's hardware break, raw-current trip, undervoltage
+threshold and latched fault bits, see the [board guide](docs/NUCLEO_F410RB_IHM08M1.md#hardware-overcurrent-protection).
 
 ## Build Instructions
 
@@ -239,10 +246,13 @@ Additional host regressions:
 - `tests/test_foc/run.sh float|fixed` — closed-loop motor model and anti-windup recovery
 - `tests/test_hybrid_iq/run.sh` — float/fixed hybrid current control, delayed motor model, noise and recovery
 - `tests/test_current_filter/run.sh` — dq filters, delayed-loop stability and zero-current noise suppression
-- `tests/test_control/run.sh float|fixed|numeric-fixed|scooter-fixed` — commands, reusable frames, protection, speed PI and OSC
+- `tests/test_control/run.sh float|fixed|numeric-fixed|scooter-fixed` — current-only commands, frame ownership, protection, speed PI and OSC; `scooter-fixed` uses a 16-kHz MOTOR_1 host fixture
 - `tests/test_mtte/run.sh` — rolling-wheel torque observer and traction model, using synthetic data
 
-Host tests live under `tests/`; each directory has a standalone `run.sh`.
+The C++ host suites live under `tests/` and have standalone `run.sh`
+scripts. For the monitor's connection and waveform tests, run
+`QT_QPA_PLATFORM=offscreen python3 tests/test_monitor/test_monitor.py`
+with its PyQt6, pyqtgraph, pyserial and NumPy dependencies installed.
 
 Manual hardware testing required:
 - Test on b-g431b-esc1 board with BLDC motor
@@ -258,7 +268,8 @@ open-ecu/
 │   ├── include/
 │   │   ├── pi_controller.hpp  # Fixed-frequency, numerical-type-parametric PI
 │   │   ├── fixed_point.hpp    # Explicit binary fixed-point arithmetic
-│   │   └── *_interface.hpp   # Hardware abstraction interfaces (flat directory)
+│   │   ├── motor_io.hpp       # Commands, samples and electrical outputs
+│   │   └── *_interface.hpp    # Hardware abstraction interfaces (flat directory)
 │   ├── src/                   # Core algorithm implementations
 │   │   ├── bldc_controller.cpp
 │   │   ├── six_step_algorithm.cpp
@@ -299,13 +310,15 @@ To port libecu to a different microcontroller:
 1. **Create platform directory**: `mkdir NewPlatform/`
 
 2. **Implement HAL interfaces** in `libecu/hal/<your_mcu>/`:
-   - Implement `PwmInterface` for your PWM peripheral
-   - Implement `HallInterface` for Hall sensor inputs
+   - Implement `PwmInterface` for three-phase switching and duty updates
+   - Implement `HallInterface` for rotor position and `AdcInterface` for current and bus measurements
 
 3. **Add platform files**:
    - Copy `STM32G431/CMakeLists.txt` as template
    - Update toolchain, includes, and source paths
    - Add your platform's `Core/` and `Drivers/` directories
+   - Implement `Board`, including the command processor, one current callback per
+     carrier period and the speed/service clock; provide `libecu::createBoard()`
    - Create `build.sh` and `flash.sh` scripts
 
 4. **Build**: `./build.sh --platform NewPlatform`

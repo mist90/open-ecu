@@ -41,6 +41,7 @@ public:
     using Voltage = typename Profile::Voltage;
     using Request = typename Profile::VoltageRequest;
     using Angle = typename Profile::Angle;
+    using PllSpeed = typename Profile::PllSpeed;
     using Duty = typename Profile::Duty;
     using Unit = typename Profile::Fraction;
     using Gain = typename Profile::Gain;
@@ -52,7 +53,6 @@ public:
     using Params = FocParamsT<Profile>;
     using Input = MotorAlgorithmInputT<Profile>;
     using Output = MotorAlgorithmOutputT<Profile>;
-    using Frame = MotorAlgorithmFrameT<Profile>;
     inline static constexpr Angle RAD_PER_STEP = number<Angle>(10471975511966LL, 10000000000000LL);
 
     void setParams(const Params& params) noexcept {
@@ -122,8 +122,7 @@ public:
         hybrid_iq_.reset();
         zero_current_idle_ = false;
         next_reconstructed_phase_ = 3;
-        const Duty zero = params_.low_side_clamped_pwm ? Duty{} : number<Duty>(1, 2);
-        previous_ = {zero, zero, zero};
+        automatic_reconstructed_phase_ = 0; // All three reset duties tie.
     }
 
     /** @brief Override one update's discarded phase after the board qualifies the other two.
@@ -138,41 +137,43 @@ public:
 
     /** @brief Next discarded phase: one-frame override, otherwise highest previous duty (U/V/W ties). */
     unsigned reconstructedPhase() const noexcept {
-        if (next_reconstructed_phase_ < 3) return next_reconstructed_phase_;
-        if (previous_.u >= previous_.v && previous_.u >= previous_.w) return 0;
-        return previous_.v >= previous_.w ? 1u : 2u;
+        return next_reconstructed_phase_ < 3 ? next_reconstructed_phase_ : automatic_reconstructed_phase_;
     }
 
-    /** @brief Value-facing adapter; the PWM path uses caller-owned frame storage. */
-    Output update(const Input& in) noexcept {
-        Frame frame{in, {}};
-        update(frame);
-        return frame.output;
+    /** @brief Standalone value-facing interface (physical SI units). */
+    LIBECU_HOT_LOOP Output update(const Input& sample) noexcept {
+        Output out{};
+        updateKernel(sample, sample, out, sample.angle_steps, sample.speed_steps_s, out.saturation);
+        return out;
     }
 
-    /** @brief Run one sample in place. Voltages and currents are physical SI values. */
-    LIBECU_HOT_LOOP void update(Frame& frame) noexcept {
-        update(frame.input, frame.input, frame.output);
-        frame.output.duty = Duty{};
+    /** @brief Read this carrier's acquired phases/bus and write its electrical results in place. */
+    template<class Commands, class Signals>
+    [[gnu::always_inline]] void update(const Commands& in, Signals& out, Angle angle_steps,
+                                       PllSpeed speed_steps_s) noexcept {
+        updateKernel(in, out, out, angle_steps, speed_steps_s, out.current_pi_saturation);
     }
 
-    /** Write electrical results directly to the owner's storage. Command fields
-     * may reside in the same status object; they are distinct from every output. */
-    template<class Commands, class Result>
-#if defined(LIBECU_PWM_DEADLINE_ONLY) && LIBECU_PWM_DEADLINE_ONLY
-    [[gnu::always_inline]] inline
-#else
-    [[gnu::noinline]] LIBECU_HOT_LOOP
-#endif
-    void update(const Input& in, const Commands& commands, Result& out) noexcept {
-        const Angle angle = multiplyTo<Angle>(in.angle_steps, RAD_PER_STEP) + params_.angle_offset_rad;
+    /** @brief Scalar modulation depth for a slow telemetry snapshot. */
+    static Duty modulationMagnitude(Voltage d, Voltage q, Voltage bus) noexcept {
+        const Voltage limit = Transforms::voltageLimit(bus);
+        return limit > Voltage{} ? divideTo<Duty>(Math::voltageMagnitude(d, q), limit) : Duty{};
+    }
+
+private:
+    // The carrier uses one Signals object for both samples and results. The
+    // standalone interface supplies those separately; neither copies the samples.
+    template<class Commands, class Samples, class Result>
+    [[gnu::always_inline]] void updateKernel(const Commands& in, const Samples& sampled, Result& out,
+          Angle angle_steps, PllSpeed speed_steps_s, int8_t& saturation) noexcept {
+        const Angle angle = multiplyTo<Angle>(angle_steps, RAD_PER_STEP) + params_.angle_offset_rad;
         out.angle_e_rad = angle;
         const auto rotation = Transforms::rotation(angle);
         recordLoopStage(LoopStage::FocTrig);
 
         const unsigned reconstructed = reconstructedPhase();
         next_reconstructed_phase_ = 3;
-        const auto dq = Transforms::parkPhaseCurrents(in.i_u, in.i_v, in.i_w, reconstructed, rotation);
+        const auto dq = Transforms::parkPhaseCurrents(sampled.i_u, sampled.i_v, sampled.i_w, reconstructed, rotation);
         out.i_d = dq.d;
         out.i_q = dq.q;
         recordLoopStage(LoopStage::FocPark);
@@ -188,8 +189,8 @@ public:
         // Auxiliary ADC samples commonly span several current-loop ticks. Keep
         // their derived values exact, and recompute before using ANY changed
         // bus sample (including a collapse) or changed modulation parameters.
-        if (!bus_valid_ || in.bus_voltage != cached_bus_) {
-            cached_bus_ = in.bus_voltage;
+        if (!bus_valid_ || sampled.bus_voltage != cached_bus_) {
+            cached_bus_ = sampled.bus_voltage;
 #if defined(LIBECU_PWM_BUS_LOOKAHEAD) && LIBECU_PWM_BUS_LOOKAHEAD
             const auto& entry = prepared_bus_[published_];
             std::atomic_signal_fence(std::memory_order_acquire);
@@ -205,13 +206,12 @@ public:
             bus_valid_ = true;
         }
         const Voltage limit = voltage_limiter_.inradius();
-        const bool current_mode = commands.electric_mode == ElectricMode::CURRENT_MODE;
         // Only the zero-demand standstill state suppresses feedback. At speed,
         // even Iq*=0 needs voltage to reject back-EMF; small nonzero demands must
         // also retain a real feedback path instead of winding up into a dead band.
-        const bool idle_candidate = current_mode && params_.current_noise_floor > Current{} &&
-            commands.target_current == Current{} && params_.id_target == Current{} &&
-            numericAbs(in.speed_steps_s) <= number_v<typename Profile::PllSpeed, 1, 10>;
+        const bool idle_candidate = params_.current_noise_floor > Current{} &&
+            in.target_current == Current{} && params_.id_target == Current{} &&
+            numericAbs(speed_steps_s) <= number_v<PllSpeed, 1, 10>;
         if (idle_candidate) {
             const Current threshold = zero_current_idle_
                 ? multiplyTo<Current>(params_.current_noise_floor, number_v<Unit, 3, 2>)
@@ -227,33 +227,27 @@ public:
             hybrid_iq_.reset();
         }
         recordLoopStage(LoopStage::FocFilter);
-        Current error_d{}, error_q{};
-        Request requested_d{}, requested_q{};
-        if (current_mode) {
-            const Current target_q = reverse ? -commands.target_current : commands.target_current;
-            error_d = weightedCurrentError<Profile, Calibration, false>(params_.id_target - feedback_d, in.speed_steps_s);
-            requested_d = piRequest(error_d, integral_d_);
-            if (hybrid) {
-                requested_q = hybrid_iq_.request(target_q, zero_current_idle_ ? Current{} : dq.q, params_.hybrid_iq);
-                if (!zero_current_idle_) requested_q += multiplyTo<Request>(in.speed_steps_s, bemf_per_step_);
-            } else {
-                error_q = weightedCurrentError<Profile, Calibration, true>(target_q - feedback_q, in.speed_steps_s);
-                requested_q = piRequest(error_q, integral_q_);
-            }
-            if (!Calibration.pi_only && params_.use_decoupling && !zero_current_idle_) {
-                const auto omega = multiplyTo<typename Profile::PllSpeed>(in.speed_steps_s, RAD_PER_STEP);
-                const Gain omega_l = multiplyTo<Gain>(omega, params_.l_phase_h);
-                // Hybrid feed-forward must not bypass its slow error filter
-                // through a raw-current cross-coupling term.
-                requested_d -= multiplyTo<Request>(omega_l, hybrid ? target_q : dq.q);
-                const Request coupling_q = multiplyTo<Request>(omega_l, hybrid ? params_.id_target : dq.d);
-                requested_q += hybrid ? coupling_q : coupling_q + multiplyTo<Request>(omega, params_.flux_linkage_wb);
-            }
+        const Current target_q = reverse ? -in.target_current : in.target_current;
+        const Current error_d = weightedCurrentError<Profile, Calibration, false>(params_.id_target - feedback_d,
+                                                                                 speed_steps_s);
+        Request requested_d = piRequest(error_d, integral_d_);
+        Current error_q{};
+        Request requested_q{};
+        if (hybrid) {
+            requested_q = hybrid_iq_.request(target_q, zero_current_idle_ ? Current{} : dq.q, params_.hybrid_iq);
+            if (!zero_current_idle_) requested_q += multiplyTo<Request>(speed_steps_s, bemf_per_step_);
         } else {
-            requested_q = multiplyTo<Request>(in.duty_command, limit);
-            if (reverse) requested_q = -requested_q;
-            integral_d_ = integral_q_ = Integral{};
-            hybrid_iq_.reset();
+            error_q = weightedCurrentError<Profile, Calibration, true>(target_q - feedback_q, speed_steps_s);
+            requested_q = piRequest(error_q, integral_q_);
+        }
+        if (!Calibration.pi_only && params_.use_decoupling && !zero_current_idle_) {
+            const auto omega = multiplyTo<PllSpeed>(speed_steps_s, RAD_PER_STEP);
+            const Gain omega_l = multiplyTo<Gain>(omega, params_.l_phase_h);
+            // Hybrid feed-forward must not bypass its slow error filter
+            // through a raw-current cross-coupling term.
+            requested_d -= multiplyTo<Request>(omega_l, hybrid ? target_q : dq.q);
+            const Request coupling_q = multiplyTo<Request>(omega_l, hybrid ? params_.id_target : dq.d);
+            requested_q += hybrid ? coupling_q : coupling_q + multiplyTo<Request>(omega, params_.flux_linkage_wb);
         }
 
         recordLoopStage(LoopStage::FocPi);
@@ -262,48 +256,42 @@ public:
         const Voltage v_d = applied.d, v_q = applied.q;
         out.v_d = v_d;
         out.v_q = v_q;
-        out.setSaturation(limited ? ((reverse ? -requested_q : requested_q) > Request{} ? 1 : -1) : 0);
+        saturation = limited ? ((reverse ? -requested_q : requested_q) > Request{} ? 1 : -1) : 0;
         recordLoopStage(LoopStage::FocLimit);
-        if (current_mode) {
-            const Integral bound = numberCast<Integral>(limit);
-            // An unclipped axis is exactly the original Request promoted to Voltage;
-            // its back-calculation error is zero even if the other axis clipped.
-            const auto integrate = [&](Integral state, Current error, Voltage voltage, Request requested,
-                                       bool clipped) __attribute__((always_inline)) {
-                addIntegral(state, multiplyTo<Integral>(ki_step_, error));
-                if (clipped && params_.anti_windup_kb > Unit{})
-                    addIntegral(state, backCalculation(voltage, requested));
-                if constexpr (std::is_same<Profile, FixedProfile>::value) {
-                    return Integral::fromRaw(fixed_detail::clampWideState(state.raw(), bound.raw()));
-                } else {
-                    return numericClamp(state, -bound, bound);
-                }
-            };
-            integral_d_ = integrate(integral_d_, error_d, v_d, requested_d, applied.d_limited);
-            if (hybrid) {
-                hybrid_iq_.integrate(requested_q, v_q, params_.hybrid_iq);
+        const Integral bound = numberCast<Integral>(limit);
+        // An unclipped axis is exactly the original Request promoted to Voltage;
+        // its back-calculation error is zero even if the other axis clipped.
+        const auto integrate = [&](Integral state, Current error, Voltage voltage, Request requested,
+                                   bool clipped) __attribute__((always_inline)) {
+            addIntegral(state, multiplyTo<Integral>(ki_step_, error));
+            if (clipped && params_.anti_windup_kb > Unit{})
+                addIntegral(state, backCalculation(voltage, requested));
+            if constexpr (std::is_same<Profile, FixedProfile>::value) {
+                return Integral::fromRaw(fixed_detail::clampWideState(state.raw(), bound.raw()));
             } else {
-                integral_q_ = integrate(integral_q_, error_q, v_q, requested_q, applied.q_limited);
+                return numericClamp(state, -bound, bound);
             }
+        };
+        integral_d_ = integrate(integral_d_, error_d, v_d, requested_d, applied.d_limited);
+        if (hybrid) {
+            hybrid_iq_.integrate(requested_q, v_q, params_.hybrid_iq);
+        } else {
+            integral_q_ = integrate(integral_q_, error_q, v_q, requested_q, applied.q_limited);
         }
 
         recordLoopStage(LoopStage::FocIntegral);
         const auto duty = Transforms::limitedDuties({v_d, v_q}, rotation, limit, modulation_bus_,
                                                    params_.low_side_clamped_pwm, params_.max_duty_cycle);
         recordLoopStage(LoopStage::FocSvpwm);
-        previous_ = duty;
+        // Only the identity of the highest duty is needed on the next tick.
+        // Keep the old U, then V, then W tie order even at the duty clamps.
+        automatic_reconstructed_phase_ = duty.u >= duty.v && duty.u >= duty.w ? 0 : duty.v >= duty.w ? 1 : 2;
         recordLoopStage(LoopStage::FocOutput);
         out.duty_u = duty.u;
         out.duty_v = duty.v;
         out.duty_w = duty.w;
     }
 
-    /** @brief Scalar modulation depth for a slow telemetry snapshot. */
-    static Duty modulationMagnitude(Voltage d, Voltage q, Voltage bus) noexcept {
-        const Voltage limit = Transforms::voltageLimit(bus);
-        return limit > Voltage{} ? divideTo<Duty>(Math::voltageMagnitude(d, q), limit) : Duty{};
-    }
-private:
     Voltage modulatedLimit(Voltage base) const noexcept {
         if constexpr (std::is_same<Profile, FixedProfile>::value) {
             // Modulation in [0,1] cannot widen the base. Keep the saturating
@@ -382,7 +370,7 @@ private:
     bool zero_current_idle_ = false;
     bool narrow_gain_ = false;
     uint8_t next_reconstructed_phase_ = 3; // 3 selects the automatic duty-history rule.
-    PhaseDutiesT<Duty> previous_{number<Duty>(1, 2), number<Duty>(1, 2), number<Duty>(1, 2)};
+    uint8_t automatic_reconstructed_phase_ = 0;
 };
 
 } // namespace libecu

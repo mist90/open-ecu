@@ -1,4 +1,4 @@
-/** @file bldc_pwm_frame.hpp @brief Complete one prepared control frame with statically bound or erased I/O. */
+/** @file bldc_pwm_frame.hpp @brief One qualified acquisition, one rotor tick, one PWM result. */
 #ifndef LIBECU_BLDC_PWM_FRAME_HPP
 #define LIBECU_BLDC_PWM_FRAME_HPP
 
@@ -6,63 +6,53 @@
 
 namespace libecu {
 template<class Adc, class Pwm>
-LIBECU_HOT_LOOP void BldcController::completePwmFrom(Adc& adc, Pwm& pwm) noexcept {
-    if (!pwm_prepared_) return;
-    pwm_prepared_ = false;
-    auto& frame = prepared_pwm_frame_;
-    auto& in = frame.input;
-    adc.readNativeCurrents(in.i_u, in.i_v, in.i_w);
-    in.bus_voltage = adc.readNativeBusVoltage();
-    recordLoopStage(LoopStage::Currents);
+LIBECU_HOT_LOOP bool BldcController::pwmInterruptHandler(Adc& adc, Pwm& pwm, uint8_t hall) noexcept {
+    const auto& in = io_.in;
+    auto& out = io_.out;
+    auto& e = out.electrical;
+    // A BRK just before entry must still win. The board parks a latched bridge
+    // before its next qualified tick; parked acquisition can then resume tracking.
+    if (pwm_cancelled_) {
+        if (in.drive_mode != DriveMode::NEUTRAL) return false;
+        pwm_cancelled_ = false;
+    }
+    trackRotor(hall);
+    if (pwm_cancelled_) return false; // A hardware break won while Hall/PLL was running.
 
-    // Both live checks stay ahead of electrical control and all compare writes.
-    if (prepared_hall_controls_drive_ && hall_monitor_.isFaulted() && dmode_ != DriveMode::NEUTRAL)
-        setDriveMode(DriveMode::NEUTRAL);
-    if (in.bus_voltage > limits_.max_voltage) setDriveMode(DriveMode::NEUTRAL);
+    adc.readNativeCurrents(e.i_u, e.i_v, e.i_w);
+    e.bus_voltage = adc.readNativeBusVoltage();
+    recordLoopStage(LoopStage::Currents);
+    const bool open = in.control_mode == ControlMode::OPEN_LOOP;
+    if ((!open && out.hall.isFaulted() && in.drive_mode != DriveMode::NEUTRAL) ||
+        e.bus_voltage > limits_.max_voltage) {
+        parkFromCarrier();
+    }
     recordLoopStage(LoopStage::Dispatch);
-    if (dmode_ == DriveMode::NEUTRAL || in.drive_mode == DriveMode::NEUTRAL) {
-        frame.output = {};
-        frame.output.angle_e_rad = multiplyTo<Profile::Angle>(in.angle_steps, FocAlgorithm::Core::RAD_PER_STEP);
-    } else if (algorithm_ == DriveAlgorithm::FOC) {
-        foc_.updateNative(frame, pwm);
+    if (pwm_cancelled_) return false;
+    const auto angle = open ? out.field.angle() : out.pll.angle_steps;
+    if (in.drive_mode == DriveMode::NEUTRAL) {
+        e.duty_u = e.duty_v = e.duty_w = e.duty_cycle = Duty{};
+        e.measured_current = e.i_d = e.i_q = Current{};
+        e.v_d = e.v_q = Voltage{};
+        e.current_pi_saturation = 0;
+        e.angle_e_rad = multiplyTo<Profile::Angle>(angle, FocAlgorithm::Core::RAD_PER_STEP);
+    } else if (in.algorithm == DriveAlgorithm::FOC) {
+        const auto speed = !open ? out.pll.speed_steps_s :
+                           in.is_running ? in.field_rate.signedSpeed(in.drive_mode) : Profile::PllSpeed{};
+        foc_.updateCarrier(in, e, angle, speed, pwm);
     } else {
-        six_step_.updateNative(frame);
+        six_step_.updateCarrier(in, e, angle);
     }
     recordLoopStage(LoopStage::Algorithm);
-    publishPwmStatus();
-}
-
-template<class Adc, class Pwm>
-LIBECU_HOT_LOOP void BldcController::completeOwnedCarrier(Adc& adc, Pwm& pwm) noexcept {
-    if (!pwm_prepared_) return;
-    pwm_prepared_ = false;
-    auto& in = prepared_pwm_frame_.input;
-    adc.readNativeCurrents(in.i_u, in.i_v, in.i_w);
-    in.bus_voltage = adc.readNativeBusVoltage();
-    recordLoopStage(LoopStage::Currents);
-    if ((prepared_hall_controls_drive_ && hall_monitor_.isFaulted() && dmode_ != DriveMode::NEUTRAL)
-        || in.bus_voltage > limits_.max_voltage) parkFromCarrier();
-    recordLoopStage(LoopStage::Dispatch);
-
-    if (dmode_ == DriveMode::NEUTRAL || in.drive_mode == DriveMode::NEUTRAL) {
-        status_.duty_u = status_.duty_v = status_.duty_w = Duty{};
-        status_.measured_current = status_.i_d = status_.i_q = Current{};
-        status_.v_d = status_.v_q = Voltage{};
-        status_.current_pi_saturation = 0;
-        status_.angle_e_rad = multiplyTo<Profile::Angle>(in.angle_steps, FocAlgorithm::Core::RAD_PER_STEP);
-        if (algorithm_ != DriveAlgorithm::FOC || !LIBECU_FOC_DUTY_TELEMETRY) status_.duty_cycle = Duty{};
-    } else if (algorithm_ == DriveAlgorithm::FOC) {
-        // Commands are read from status_, dq/duties are written straight back.
-        // No temporary output or second publication. Only this IRQ produces them.
-        foc_.updateOwnedCarrier(in, status_, pwm);
-#if !LIBECU_FOC_DUTY_TELEMETRY
-        status_.duty_cycle = Duty{};
+#if !defined(LIBECU_RAW_CURRENT_TELEMETRY) || !LIBECU_RAW_CURRENT_TELEMETRY
+    if (pwm_cancelled_) return false;
+    const auto alpha = limits_.current_alpha;
+    out.measured_current_filtered = alpha > Fraction{} && alpha < number_v<Fraction, 1>
+        ? CurrentFeedbackFilter<Profile>::advance(out.measured_current_filtered, e.measured_current, alpha)
+        : e.measured_current;
 #endif
-    } else {
-        six_step_.updateOwnedCarrier(in, status_);
-    }
-    recordLoopStage(LoopStage::Algorithm);
-    finishOwnedStatus();
+    recordLoopStage(LoopStage::Status);
+    return !pwm_cancelled_; // Includes a break during preload writes, filtering or the last timing marker.
 }
 } // namespace libecu
 #endif

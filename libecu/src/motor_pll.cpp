@@ -7,16 +7,9 @@
 namespace libecu {
 
 MotorPLL::MotorPLL(float max_electrical_speed, bool inverse) noexcept
-    : core_(numberCast<Core::Speed>(max_electrical_speed), inverse) {}
+    : Core(numberCast<Core::Speed>(max_electrical_speed), inverse) {}
 
-void MotorPLL::updateHall(uint8_t hall) noexcept { core_.updateHall(hall); }
-LIBECU_HOT_LOOP LIBECU_RAM_CODE("pll") void MotorPLL::updateTick() noexcept { core_.updateTick(); }
-uint8_t MotorPLL::getNextHall(const volatile DriveMode& mode) noexcept { return core_.getNextHall(mode); }
-void MotorPLL::setUsePLL(bool use) noexcept { core_.setUsePLL(use); }
-bool MotorPLL::isUsingPLL() const noexcept { return core_.isUsingPLL(); }
-void MotorPLL::reset() noexcept { core_.reset(); }
-float MotorPLL::getAngle() const noexcept { return numberCast<float>(core_.getAngle()); }
-float MotorPLL::getSpeedStepsSec() const noexcept { return numberCast<float>(core_.getSpeedStepsSec()); }
+LIBECU_HOT_LOOP LIBECU_RAM_CODE("pll") void MotorPLL::updateTick() noexcept { Core::updateTick(); }
 
 MotorPLL::PllInfo MotorPLL::getInfo() const noexcept {
     return describe(nativeInfo());

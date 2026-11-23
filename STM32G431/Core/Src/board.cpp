@@ -213,9 +213,8 @@ extern "C" void motor_controller_pwm_interrupt_handler(void)
         if (!adc_driver.regularFresh(time_us())) pwm_driver.trip();
         if (pwm_driver.faulted() && motor_controller->getDriveMode() != libecu::DriveMode::NEUTRAL)
             motor_controller->setDriveMode(libecu::DriveMode::NEUTRAL);
-        motor_controller->pwmInterruptHandler();
-        if (command_processor->wantsCurrentSample()) {
-            command_processor->captureCurrentSample(motor_controller->getNativeStatus());
+        if (motor_controller->pwmInterruptHandler() && command_processor->wantsCurrentSample()) {
+            command_processor->captureCurrentSample(motor_controller->io());
         }
     }
 #ifdef BENCH_PROFILING

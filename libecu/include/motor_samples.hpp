@@ -14,10 +14,20 @@ struct MotorAlgorithmInputT {
     typename P::Angle angle_steps{};
     typename P::PllSpeed speed_steps_s{};
     typename P::Current target_current{};
-    typename P::Duty duty_command{};
     uint8_t step = 0;
     DriveMode drive_mode = DriveMode::NEUTRAL;
-    ElectricMode electric_mode = ElectricMode::VOLTAGE_MODE;
+
+    /** @brief Supply a standalone sample to the same kernel as the PWM owner. */
+    template<class Commands, class Signals>
+    void unpack(Commands& in, Signals& out) const noexcept {
+        in.drive_mode = drive_mode;
+        in.target_current = target_current;
+        out.i_u = i_u;
+        out.i_v = i_v;
+        out.i_w = i_w;
+        out.bus_voltage = bus_voltage;
+        out.target_position = step;
+    }
 };
 template<class P>
 struct MotorAlgorithmOutputT {
@@ -26,19 +36,13 @@ struct MotorAlgorithmOutputT {
     typename P::Voltage v_d{}, v_q{};
     typename P::Angle angle_e_rad{};
     int8_t saturation = 0;
-    void setScalarDuty(typename P::Duty value) noexcept { duty = value; }
-    void setSaturation(int8_t value) noexcept { saturation = value; }
-};
 
-/** @brief Caller-owned storage shared by acquisition, control and PWM application.
- *
- * The serialized current ISR fills input in place. An algorithm overwrites
- * every output field before the caller publishes the completed sample.
- */
-template<class P>
-struct MotorAlgorithmFrameT {
-    MotorAlgorithmInputT<P> input{};
-    MotorAlgorithmOutputT<P> output{};
+    /** @brief Extract the value-facing result outside the in-place carrier path. */
+    template<class Signals>
+    static MotorAlgorithmOutputT fromCarrier(const Signals& out) noexcept {
+        return {out.duty_u, out.duty_v, out.duty_w, out.duty_cycle, out.measured_current,
+                out.i_d, out.i_q, out.v_d, out.v_q, out.angle_e_rad, out.current_pi_saturation};
+    }
 };
 
 /** @brief Explicit adaptation between a native sample and a compatibility interface. */
@@ -52,10 +56,8 @@ Out motorInputCast(const In& input) noexcept {
     out.angle_steps = numberCast<decltype(out.angle_steps)>(input.angle_steps);
     out.speed_steps_s = numberCast<decltype(out.speed_steps_s)>(input.speed_steps_s);
     out.target_current = numberCast<decltype(out.target_current)>(input.target_current);
-    out.duty_command = numberCast<decltype(out.duty_command)>(input.duty_command);
     out.step = input.step;
     out.drive_mode = input.drive_mode;
-    out.electric_mode = input.electric_mode;
     return out;
 }
 

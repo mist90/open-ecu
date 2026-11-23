@@ -65,7 +65,9 @@ public:
 class Hall final : public HallInterface {
 public:
     bool initialize() override { return true; }
-    uint8_t getPosition() override { ++reads; return position; }
+    uint8_t getPosition() override { ++reads; if (on_read) on_read(context); return position; }
+    void (*on_read)(void*) = nullptr;
+    void* context = nullptr;
     uint8_t position = 0;
     unsigned reads = 0;
 };
@@ -145,10 +147,9 @@ static MotorControlParams makeParams() {
     params.max_duty_cycle = 0.95f;
     params.max_temperature_c = 100.0f;
     params.algorithm = DriveAlgorithm::SIX_STEP;
-    params.pi_current_mode.ki = 1.0f;
-    params.pi_current_mode.integral_min = -4.0f;
-    params.pi_current_mode.integral_max = 12.0f;
-    params.pi_voltage_mode.integral_max = 1.0f;
+    params.speed_pi.ki = 1.0f;
+    params.speed_pi.integral_min = -4.0f;
+    params.speed_pi.integral_max = 12.0f;
     params.pi_current_regulator.integral_max = 1.0f;
     return params;
 }
@@ -175,7 +176,7 @@ static void testSpeedClock() {
     }
     const float expected = 0.5f - 0.5f / ActiveTiming::SPEED_PI_HZ;
     // Float integrates up to 500 rounded increments in this window at 1 kHz.
-    check(std::abs(controller.getStatus().target_current - expected) < 5e-6f,
+    check(std::abs(numberCast<float>(controller.io().in.target_current) - expected) < 5e-6f,
           "outer PI uses the speed clock rather than PWM or wall-clock intervals");
 
     controller.setDriveMode(DriveMode::NEUTRAL);
@@ -184,7 +185,7 @@ static void testSpeedClock() {
     controller.setDriveMode(DriveMode::FORWARD);
     controller.setTargetSpeed(1.0f);
     controller.update();
-    check(std::abs(controller.getStatus().target_current - 0.5f / ActiveTiming::SPEED_PI_HZ) < 1e-6f,
+    check(std::abs(numberCast<float>(controller.io().in.target_current) - 0.5f / ActiveTiming::SPEED_PI_HZ) < 1e-6f,
           "re-engagement does not integrate the parked interval");
 }
 
@@ -198,8 +199,8 @@ static void testSlewClock() {
     Pwm pwm;
     Hall hall;
     auto params = makeParams();
-    params.pi_current_mode.kp = 1.0f;
-    params.pi_current_mode.ki = 0.0f;
+    params.speed_pi.kp = 1.0f;
+    params.speed_pi.ki = 0.0f;
     params.acceleration_rate = 2.0f;
     BldcController controller(pwm, hall, params);
     controller.initialize();
@@ -207,11 +208,11 @@ static void testSlewClock() {
     controller.setDriveMode(DriveMode::FORWARD);
     controller.setTargetSpeed(10.0f);
     for (int tick = 0; tick < 10; ++tick) controller.update();
-    check(std::abs(controller.getStatus().target_current - 20.0f / ActiveTiming::SPEED_HZ) < tolerance,
+    check(std::abs(numberCast<float>(controller.io().in.target_current) - 20.0f / ActiveTiming::SPEED_HZ) < tolerance,
           "acceleration limit advances by rate/frequency per sample");
     controller.setAccelerationRate(4.0f);
     controller.update();
-    check(std::abs(controller.getStatus().target_current - 24.0f / ActiveTiming::SPEED_HZ) < tolerance,
+    check(std::abs(numberCast<float>(controller.io().in.target_current) - 24.0f / ActiveTiming::SPEED_HZ) < tolerance,
           "changing acceleration refreshes the cached increment");
 }
 
@@ -222,23 +223,24 @@ static void testIntermediatePi() {
     Adc adc;
     auto params = makeParams();
     params.acceleration_rate = 2.0f;
-    params.pi_current_mode.kp = 0;
-    params.pi_current_mode.ki = 24;
+    params.speed_pi.kp = 0;
+    params.speed_pi.ki = 24;
     BldcController motor(pwm, hall, params, &adc);
     check(motor.initialize(), "multirate controller initialized");
     motor.start();
     motor.setDriveMode(DriveMode::FORWARD);
     motor.setTargetSpeed(3);
     motor.updateSpeedPi();
-    check(motor.getNativeStatus().target_current == BldcController::Current{}, "no PI before first reference sample");
+    check(motor.io().in.target_current == BldcController::Current{}, "no PI before first reference sample");
     motor.update();
-    const auto first = motor.getStatus();
+    const auto first_current = motor.io().in.target_current;
+    const auto first_speed = motor.io().in.current_speed_rps;
     const auto reads = adc.reads(), writes = pwm.calls;
     motor.setTargetSpeed(4); // New positive command waits for next slow ramp; the PI still uses the old sample.
     motor.updateSpeedPi();
-    const auto next = motor.getStatus();
-    check(std::abs((next.target_current - first.target_current) - 24.f * .02f / ActiveTiming::SPEED_PI_HZ) < 2e-6f &&
-          next.current_speed_rps == first.current_speed_rps && reads == adc.reads() && writes == pwm.calls,
+    const auto& next = motor.io().in;
+    check(std::abs(numberCast<float>(next.target_current - first_current) - 24.f * .02f / ActiveTiming::SPEED_PI_HZ) < 2e-6f &&
+          next.current_speed_rps == first_speed && reads == adc.reads() && writes == pwm.calls,
           "intermediate PI integrates the held ramp once, without auxiliary acquisition or PWM writes");
     // A higher-priority carrier parks after PI computation, immediately before committing the request.
     static BldcController* interrupted;
@@ -246,17 +248,17 @@ static void testIntermediatePi() {
     before_mask_hook = [] { interrupted->parkFromCarrier(); };
     motor.updateSpeedPi();
     check(!before_mask_hook && motor.getDriveMode() == DriveMode::NEUTRAL &&
-          motor.getNativeStatus().target_current == BldcController::Current{} && !pwm.enabled,
+          motor.io().in.target_current == BldcController::Current{} && !pwm.enabled,
           "PI publication cannot reinstate a demand calculated across a carrier park");
     motor.setDriveMode(DriveMode::FORWARD);
     motor.setTargetSpeed(3);
     motor.updateSpeedPi();
-    check(motor.getNativeStatus().target_current == BldcController::Current{},
+    check(motor.io().in.target_current == BldcController::Current{},
           "park and re-arm between service ticks cannot replay an old current demand");
     motor.setControlMode(ControlMode::CLOSED_LOOP_TORQUE);
     motor.setCurrent(-3);
     motor.updateSpeedPi();
-    check(motor.getStatus().target_current == -3, "intermediate speed PI never takes ownership of torque mode");
+    check(numberCast<float>(motor.io().in.target_current) == -3, "intermediate speed PI never takes ownership of torque mode");
 }
 
 static void testTractionAcceleration() {
@@ -320,32 +322,32 @@ static void testTractionAcceleration() {
     Hall hall;
     auto params = makeParams();
     params.traction_acceleration_rps2 = 2.0f;
-    params.pi_current_mode.kp = 6.0f;
-    params.pi_current_mode.ki = 24.0f;
-    params.pi_current_mode.kb = 2.0f;
+    params.speed_pi.kp = 6.0f;
+    params.speed_pi.ki = 24.0f;
+    params.speed_pi.kb = 2.0f;
     BldcController drive(pwm, hall, params);
     check(drive.initialize(), "scooter controller accepts the fixture's measured-acceleration rate");
     drive.start();
     drive.setDriveMode(DriveMode::FORWARD);
     drive.setTargetSpeed(4.0f);
     drive.update();
-    check(std::abs(drive.getStatus().target_current - 0.04f) < 0.001f,
+    check(std::abs(numberCast<float>(drive.io().in.target_current) - 0.04f) < 0.001f,
           "unramped speed step is bounded at the speed PI output");
     for (unsigned i = 0; i < 25; ++i) serviceInterval(drive);
-    check(std::abs(drive.getStatus().target_current - 1.04f) < 0.002f,
+    check(std::abs(numberCast<float>(drive.io().in.target_current) - 1.04f) < 0.002f,
           "a loaded stationary rotor recovers more torque without bypassing the ceiling");
     drive.setControlMode(ControlMode::CLOSED_LOOP_TORQUE);
     drive.setCurrent(-3.0f);
     drive.update();
-    check(drive.getStatus().target_current == -3.0f, "torque mode still accepts the commanded braking current");
+    check(numberCast<float>(drive.io().in.target_current) == -3.0f, "torque mode still accepts the commanded braking current");
     drive.setDriveMode(DriveMode::NEUTRAL);
     drive.update();
-    check(!pwm.enabled && drive.getStatus().target_current == 0, "park immediately removes torque");
+    check(!pwm.enabled && numberCast<float>(drive.io().in.target_current) == 0, "park immediately removes torque");
     drive.setControlMode(ControlMode::CLOSED_LOOP_VELOCITY);
     drive.setDriveMode(DriveMode::REVERSE);
     drive.setTargetSpeed(4.0f);
     drive.update();
-    check(std::abs(drive.getStatus().target_current - 0.04f) < 0.001f, "reverse launch starts without stored torque");
+    check(std::abs(numberCast<float>(drive.io().in.target_current) - 0.04f) < 0.001f, "reverse launch starts without stored torque");
 #endif
 }
 
@@ -353,9 +355,9 @@ static void testLiveSpeedPiGains() {
     Pwm pwm, reference_pwm;
     Hall hall;
     auto params = makeParams();
-    params.pi_current_mode.kp = 6.0f;
-    params.pi_current_mode.ki = 24.0f;
-    params.pi_current_mode.integral_max = 18.0f;
+    params.speed_pi.kp = 6.0f;
+    params.speed_pi.ki = 24.0f;
+    params.speed_pi.integral_max = 18.0f;
     BldcController motor(pwm, hall, params), reference(reference_pwm, hall, params);
     for (auto* drive : {&motor, &reference}) {
         check(drive->initialize(), "speed retune fixture initializes");
@@ -364,32 +366,32 @@ static void testLiveSpeedPiGains() {
         drive->setTargetSpeed(1.0f);
         for (unsigned i = 0; i < 25; ++i) serviceInterval(*drive);
     }
-    const float before = motor.getStatus().target_current;
+    const float before = numberCast<float>(motor.io().in.target_current);
     check(std::abs(before - (12.0f - 12.0f / ActiveTiming::SPEED_PI_HZ)) < 0.00006f,
           "250 ms at the selected PI frequency accumulates the expected trapezoidal integral");
     check(motor.setSpeedPi(6, 24), "repeating speed gains succeeds under load");
     motor.update();
     reference.update();
-    const auto held = motor.getNativeStatus().target_current;
-    check(held == reference.getNativeStatus().target_current, "identical gains preserve the untouched PI trajectory");
+    const auto held = motor.io().in.target_current;
+    check(held == reference.io().in.target_current, "identical gains preserve the untouched PI trajectory");
     check(motor.setSpeedPi(4, 0), "changed speed gains have a feasible integral rebase");
     motor.update();
-    check(motor.getNativeStatus().target_current == held, "changing Kp with zero Ki holds the exact last command");
+    check(motor.io().in.target_current == held, "changing Kp with zero Ki holds the exact last command");
     motor.setTargetSpeed(1.5f);
     motor.update();
-    check(std::abs(motor.getStatus().target_current - (numberCast<float>(held) + 2.0f)) < 0.000003f,
+    check(std::abs(numberCast<float>(motor.io().in.target_current) - (numberCast<float>(held) + 2.0f)) < 0.000003f,
           "subsequent speed error uses the new proportional gain");
     check(motor.setSpeedPi(4, 10), "Ki-only speed edit succeeds");
     motor.setTargetSpeed(1.0f);
     motor.update();
-    check(std::abs(motor.getStatus().target_current - (numberCast<float>(held) + 12.5f / ActiveTiming::SPEED_PI_HZ)) < 0.000003f,
+    check(std::abs(numberCast<float>(motor.io().in.target_current) - (numberCast<float>(held) + 12.5f / ActiveTiming::SPEED_PI_HZ)) < 0.000003f,
           "Ki-only edit retains I and both trapezoidal error endpoints");
 
-    const auto command = motor.getNativeStatus().target_current;
+    const auto command = motor.io().in.target_current;
     check(!motor.setSpeedPi(100, 5), "unreachable compensated integral is rejected");
     float kp, ki;
     motor.getSpeedPiGains(kp, ki);
-    check(kp == 4 && ki == 10 && motor.getNativeStatus().target_current == command,
+    check(kp == 4 && ki == 10 && motor.io().in.target_current == command,
           "rejected transfer preserves gains and the active command");
 #ifdef MOTOR_1
     check(!motor.setSpeedPi(0, 0), "stationary scooter rejects a rebase above 12 A but below the static limit");
@@ -397,7 +399,7 @@ static void testLiveSpeedPiGains() {
     static BldcController* interrupted;
     interrupted = &motor;
     unmasked_hook = [] { interrupted->setDriveMode(DriveMode::NEUTRAL); };
-    check(!motor.setSpeedPi(5, 10) && !pwm.enabled && motor.getNativeStatus().target_current == BldcController::Current{},
+    check(!motor.setSpeedPi(5, 10) && !pwm.enabled && motor.io().in.target_current == BldcController::Current{},
           "parking between snapshot and publish cancels a retune and keeps zero torque");
     motor.getSpeedPiGains(kp, ki);
     check(kp == 4 && ki == 10, "a cancelled retune cannot change stored gains");
@@ -405,14 +407,10 @@ static void testLiveSpeedPiGains() {
     motor.setDriveMode(DriveMode::FORWARD);
     motor.setTargetSpeed(10.0f);
     motor.update();
-    check(motor.getStatus().target_current == params.max_current && !motor.setSpeedPi(2, 5) &&
+    check(numberCast<float>(motor.io().in.target_current) == params.max_current && !motor.setSpeedPi(2, 5) &&
           motor.setSpeedPi(4, 10), "active output rail refuses changed gains but accepts an identical write");
-    check(motor.setElectricMode(ElectricMode::VOLTAGE_MODE), "voltage mode is available after a rejected edit");
-    motor.getSpeedPiGains(kp, ki);
-    check(kp == params.pi_voltage_mode.kp && ki == params.pi_voltage_mode.ki,
-          "current-mode retune does not change voltage-mode gains");
     std::printf("Speed PI 6/24: %.5f -> %.5f A (unchanged twin); live Kp retune held %.5f A\n",
-                before, reference.getStatus().target_current, numberCast<float>(held));
+                before, numberCast<float>(reference.io().in.target_current), numberCast<float>(held));
 }
 
 static void testCommands() {
@@ -437,11 +435,13 @@ static void testCommands() {
         check(console.command(text) == response, "rejected command does not change gains");
     }
     controller.setSpeedPi(0.75f, 3.0f);
-    controller.setElectricMode(ElectricMode::VOLTAGE_MODE);
-    controller.setElectricMode(ElectricMode::CURRENT_MODE);
+    for (const char* command : {"AT+EMODE?", "AT+EMODE=0", "AT+EMODE=1", "AT+DUT?", "AT+DUT=0.5"})
+        check(console.command(command) == "ERROR\r\n", "retired electrical commands are rejected");
+    check(console.command("AT+STATUS?").find("+STATUS:1,1,") == 0,
+          "legacy status retains current-regulation wire position");
     float kp, ki;
     controller.getSpeedPiGains(kp, ki);
-    check(kp == 0.75f && ki == 3.0f, "speed tuning survives a mode round-trip");
+    check(kp == 0.75f && ki == 3.0f, "obsolete requests do not alter speed tuning");
 #if defined(ECU_FIXED_PI) || defined(ECU_FIXED_NUMERIC)
     check(console.command("AT+SPID=1000,3") == "ERROR\r\n", "speed-gain format overflow is rejected");
     check(console.command("AT+CPID=0.15,40000") == "ERROR\r\n", "current-gain format overflow is rejected");
@@ -531,7 +531,7 @@ static void testAtLifecycle() {
     console.clearOutput();
     console.startOscilloscope();
     check(processor.wantsCurrentSample(), "OSC start requests native ISR samples");
-    NativeMotorStatus sample{};
+    MotorIo sample{};
     for (std::size_t i = 0; i < Console::OSC_BUFFER_SIZE; ++i) processor.captureCurrentSample(sample);
     check(console.output().empty(), "ISR capture never transmits");
     check(!processor.wantsCurrentSample(), "full OSC buffer stops requesting snapshots");
@@ -576,7 +576,7 @@ static void testHallDuration() {
 }
 
 static void testInvalidHallRetry() {
-    for (bool split : {false, true}) {
+    for (bool direct : {false, true}) {
         for (bool persistent : {false, true}) {
             Pwm pwm;
             Hall hall;
@@ -593,12 +593,8 @@ static void testInvalidHallRetry() {
             controller.start();
             controller.setDriveMode(DriveMode::FORWARD);
             const auto tick = [&] {
-                if (split) {
-                    controller.preparePwmInterruptHandler();
-                    controller.completePwmInterruptHandler();
-                } else {
-                    controller.pwmInterruptHandler();
-                }
+                if (direct) controller.pwmInterruptHandler(adc, pwm);
+                else controller.pwmInterruptHandler();
             };
             tick(); // Consume the healthy Hall sample requested by drive entry.
             hall.position = HALL_POSITION_INVALID;
@@ -611,7 +607,7 @@ static void testInvalidHallRetry() {
             if (!persistent) {
                 hall.position = 1; // GPIO settles without another filtered Hall edge/interrupt.
                 tick();
-                check(hall.reads == reads + 1 && controller.getNativeStatus().measured_position == 1 &&
+                check(hall.reads == reads + 1 && controller.io().out.measured_position == 1 &&
                       controller.getHallInfo().invalid_time_us == 0,
                       "next control tick re-reads the illegal GPIO and observes recovery without a new edge");
                 for (uint32_t sample = 0; sample < limit + 2; ++sample) tick();
@@ -650,9 +646,8 @@ static void testCapturedCurrentFrames() {
             check(next->initialize(), "captured-frame controller initializes");
             next->start();
             next->setControlMode(ControlMode::CLOSED_LOOP_TORQUE);
-            next->setElectricMode(ElectricMode::VOLTAGE_MODE);
             next->setDriveMode(DriveMode::FORWARD);
-            next->setDutyCycle(0.1f);
+            next->setCurrent(1.5f);
         }
         // The common loop sees normalized frames, whether from injected x1/x2,
         // hardware oversampling or DMA. Actual scan count stays below this API.
@@ -672,8 +667,8 @@ static void testCapturedCurrentFrames() {
                   "one controller tick uses the coherent native override and a separate cached bus read");
             check(captured_pwm.native_writes == writes + 1,
                   "one completed current frame produces one PWM update regardless of scan count");
-            const auto& expected = reference.getNativeStatus();
-            const auto& actual = controller.getNativeStatus();
+            const auto& expected = reference.io().out.electrical;
+            const auto& actual = controller.io().out.electrical;
             check(actual.measured_current == expected.measured_current &&
                   actual.i_d == expected.i_d && actual.i_q == expected.i_q &&
                   actual.v_d == expected.v_d && actual.v_q == expected.v_q &&
@@ -688,270 +683,98 @@ static void testCapturedCurrentFrames() {
     }
 }
 
-static void testSplitCurrentLoop() {
-    for (auto algorithm : {DriveAlgorithm::SIX_STEP, DriveAlgorithm::FOC}) {
-        for (auto mode : {ControlMode::CLOSED_LOOP_TORQUE, ControlMode::OPEN_LOOP}) {
-            for (auto electric : {ElectricMode::VOLTAGE_MODE, ElectricMode::CURRENT_MODE}) {
-                Pwm wrapped_pwm, split_pwm, owned_pwm;
-                Hall wrapped_hall, split_hall, owned_hall;
-                CapturedAdc wrapped_adc, split_adc, owned_adc;
-                auto params = makeParams();
-                params.algorithm = algorithm;
-                params.pi_current_regulator.kp = 0.1f;
-                params.foc_current_regulator.kp = 0.5f;
-                params.foc_current_regulator.ki = 20.0f;
-                BldcController wrapped(wrapped_pwm, wrapped_hall, params, &wrapped_adc);
-                BldcController split(split_pwm, split_hall, params, &split_adc);
-                BldcController owned(owned_pwm, owned_hall, params, &owned_adc);
-                for (auto* next : {&wrapped, &split, &owned}) {
-                    check(next->initialize(), "split/wrapper controller initializes");
-                    next->start();
-                    next->setControlMode(mode);
-                    check(next->setElectricMode(electric), "split electrical mode configures");
-                    next->setDriveMode(DriveMode::FORWARD);
-                }
-                for (unsigned tick = 0; tick < 32; ++tick) {
-                    for (auto* next : {&wrapped, &split, &owned}) {
-                        next->setDutyCycle(.25f);
-                        next->setCurrent(1.0f);
-                        next->setTargetSpeed(1.0f);
-                        next->hallSensorInterruptHandler();
-                    }
-                    wrapped_hall.position = split_hall.position = owned_hall.position = (tick / 4) % 6;
-                    fake_time_us += 1000000 / ActiveTiming::CURRENT_HZ;
-                    // Acquisition has not published this carrier's physical values yet.
-                    split_adc.currents[0] = 8000;
-                    const unsigned reads = split_adc.reads(), frames = split_adc.frame_reads;
-                    const unsigned writes = split_pwm.calls, halls = split_hall.reads;
-                    check(!split.hasPreparedPwmFrame() && !wrapped.hasPreparedPwmFrame(),
-                          "completed wrapper/split frame leaves no pending preparation");
-                    const unsigned masks = mask_entries;
-                    split.preparePwmInterruptHandler();
-                    owned.prepareOwnedCarrier();
-                    check(mask_entries == masks, "neither current-IRQ entry masks IRQs around Hall or PLL");
-                    check(split.hasPreparedPwmFrame() && owned.hasPreparedPwmFrame() &&
-                          split_adc.reads() == reads && split_adc.frame_reads == frames &&
-                          split_pwm.calls == writes && split_hall.reads == halls + 1,
-                          "prepare consumes one deferred Hall read with no ADC/algorithm/PWM work");
-                    const auto pll = split.getPllInfo();
-                    const auto health = split.getHallInfo();
-                    split.preparePwmInterruptHandler();
-                    check(split.hasPreparedPwmFrame() && split.getPllInfo().angle == pll.angle &&
-                          split.getPllInfo().pll_integral == pll.pll_integral &&
-                          split.getHallInfo().edge_accum == health.edge_accum && split_hall.reads == halls + 1 &&
-                          split_adc.frame_reads == frames && split_pwm.calls == writes,
-                          "duplicate prepare retains the first snapshot without another Hall/PLL tick");
-                    for (unsigned phase = 0; phase < 3; ++phase) {
-                        const uint32_t value = 4000 + phase * 60 + tick;
-                        wrapped_adc.currents[phase] = split_adc.currents[phase] = owned_adc.currents[phase] = value;
-                    }
-                    wrapped_adc.bus = split_adc.bus = owned_adc.bus = 4800 + 2 * tick;
-                    // Late target updates belong to the next preparation. The
-                    // wrapper provides the same old targets with newly ready ADC data.
-                    wrapped.pwmInterruptHandler();
-                    owned.completeOwnedCarrier(owned_adc, owned_pwm);
-                    split.setDutyCycle(.75f);
-                    split.setCurrent(3.0f);
-                    split.setTargetSpeed(2.0f);
-                    split.completePwmInterruptHandler();
-                    check(!split.hasPreparedPwmFrame() && !wrapped.hasPreparedPwmFrame() &&
-                          split_adc.frame_reads == frames + 1 && split_adc.bus_reads == wrapped_adc.bus_reads &&
-                          split_hall.reads == halls + 1 && split.getPllInfo().angle == pll.angle &&
-                          split.getPllInfo().pll_integral == pll.pll_integral,
-                          "complete reads one newly ready coherent frame without a second Hall/PLL tick");
-                    const auto& expected = wrapped.getNativeStatus();
-                    const auto& actual = split.getNativeStatus();
-                    const auto& direct = owned.getNativeStatus();
-                    check(direct.measured_current == expected.measured_current &&
-                          direct.measured_current_filtered == expected.measured_current_filtered &&
-                          direct.current_pi_saturation == expected.current_pi_saturation &&
-                          direct.duty_cycle == expected.duty_cycle && direct.duty_u == expected.duty_u &&
-                          direct.duty_v == expected.duty_v && direct.duty_w == expected.duty_w &&
-                          direct.i_d == expected.i_d && direct.i_q == expected.i_q &&
-                          direct.v_d == expected.v_d && direct.v_q == expected.v_q &&
-                          direct.angle_e_rad == expected.angle_e_rad && direct.pll_angle == expected.pll_angle &&
-                          direct.target_position == expected.target_position && direct.bus_voltage == expected.bus_voltage &&
-                          owned_pwm.native_writes == wrapped_pwm.native_writes && owned_adc.frame_reads == tick + 1,
-                          "direct IRQ publication agrees with portable frame across motor/electrical modes");
-                    check(actual.measured_current == expected.measured_current && actual.i_d == expected.i_d &&
-                          actual.i_q == expected.i_q && actual.v_d == expected.v_d && actual.v_q == expected.v_q &&
-                          actual.duty_u == expected.duty_u && actual.duty_v == expected.duty_v &&
-                          actual.duty_w == expected.duty_w && actual.angle_e_rad == expected.angle_e_rad &&
-                          actual.pll_angle == expected.pll_angle &&
-                          actual.target_position == expected.target_position &&
-                          actual.bus_voltage == expected.bus_voltage,
-                          "split FOC/six-step preserves wrapper outputs and preparation-time commands/rotor state");
-                    const unsigned completed_writes = split_pwm.calls;
-                    split.completePwmInterruptHandler();
-                    check(!split.hasPreparedPwmFrame() && split_adc.frame_reads == frames + 1 &&
-                          split_pwm.calls == completed_writes &&
-                          split.getPllInfo().angle == pll.angle,
-                          "duplicate complete cannot read ADC, write PWM or advance the rotor");
-                }
+// A standalone PLL is the oracle for ownership: one update per qualified ADC tick,
+// no updates from Hall EXTI, command publication, or the slow loop.
+static void testCurrentTick() {
+    for (auto algorithm : {DriveAlgorithm::FOC, DriveAlgorithm::SIX_STEP}) {
+        for (auto mode : {ControlMode::OPEN_LOOP, ControlMode::CLOSED_LOOP_TORQUE}) {
+            Pwm pwm;
+            Hall hall;
+            CapturedAdc adc;
+            auto params = makeParams();
+            params.algorithm = algorithm;
+            params.pi_current_regulator.kp = .1f;
+            params.foc_current_regulator.kp = 1;
+            BldcController motor(pwm, hall, params, &adc);
+            check(motor.initialize(), "ADC owner fixture initializes");
+            motor.start();
+            motor.setControlMode(mode);
+            motor.setDriveMode(DriveMode::FORWARD);
+            motor.setTargetSpeed(2);
+            MotorPLL reference(params.max_speed_rps * params.num_poles * 3, params.useInverseCommTable);
+            reference.setUsePLL(true);
+            reference.updateHall(hall.position);
+            reference.reset();
+            auto& io = motor.io();
+            for (unsigned n = 0; n < 100; ++n) {
+                const uint8_t sector = (n / 8) % 6;
+                const auto angle = io.out.pll.angle_steps;
+                const auto applied = io.out.electrical.duty_u;
+                motor.hallSensorInterruptHandler();
+                motor.setCurrent(n % 2 ? 2 : 1);
+                check(io.out.pll.angle_steps == angle && io.out.electrical.duty_u == applied,
+                      "Hall notification and demand publication do not change the previous result");
+                const unsigned masks = mask_entries, writes = pwm.native_writes, reads = hall.reads;
+                check(motor.pwmInterruptHandler(adc, pwm, sector), "one qualified tick completes");
+                reference.updateHall(sector);
+                reference.updateTick();
+                check(mask_entries == masks && hall.reads == reads && io.out.measured_position == sector,
+                      "predecoded Hall is consumed without reread or masking the carrier");
+                check(io.out.pll.angle_steps == reference.angle_steps &&
+                      io.out.pll.speed_steps_s == reference.speed_steps_s,
+                      "coalesced EXTI advances the real rotor exactly once per current tick");
+                check(adc.frame_reads == n + 1 && adc.bus_reads == n + 1 && pwm.native_writes == writes + 1,
+                      "one current triple drives exactly one electrical update");
             }
+            motor.setDriveMode(DriveMode::NEUTRAL);
+            const auto writes = pwm.native_writes;
+            check(motor.pwmInterruptHandler(adc, pwm, 5) && !pwm.enabled && pwm.native_writes == writes,
+                  "parked acquisition continues without applying duty");
+            const auto& e = io.out.electrical;
+            check(e.i_d == BldcController::Current{} && e.i_q == BldcController::Current{} &&
+                  e.v_q == BldcController::Voltage{} && e.v_d == BldcController::Voltage{} &&
+                  e.duty_u == BldcController::Duty{} && e.duty_v == BldcController::Duty{} &&
+                  e.duty_w == BldcController::Duty{}, "parked output contains no stale drive results");
         }
     }
 }
 
-static void testReusableCurrentFrame() {
+static void testBreakCancellation() {
     Pwm pwm;
     Hall hall;
     CapturedAdc adc;
     auto params = makeParams();
     params.algorithm = DriveAlgorithm::FOC;
-    params.foc_current_regulator.kp = 0.5f;
-    params.foc_current_regulator.ki = 20.0f;
-    BldcController controller(pwm, hall, params, &adc);
-    check(controller.initialize(), "reusable current-frame controller initializes");
-    controller.start();
-    controller.setDriveMode(DriveMode::FORWARD);
-    controller.setControlMode(ControlMode::CLOSED_LOOP_TORQUE);
-    controller.setCurrent(2);
-    adc.currents[0] = 4000; adc.currents[1] = 4200; adc.currents[2] = 4300;
-    controller.pwmInterruptHandler();
-    struct Observer {
-        BldcController* controller;
-        NativeMotorStatus previous;
-        unsigned calls = 0;
-    } observer{&controller, controller.getNativeStatus()};
-    check(observer.previous.i_q != BldcController::Current{} &&
-          observer.previous.v_q != BldcController::Voltage{}, "prior frame has real dq state");
-    pwm.context = &observer;
-    pwm.on_native_write = [](void* context) {
-        auto& observer = *static_cast<Observer*>(context);
-        const auto& actual = observer.controller->getNativeStatus();
-        const auto& old = observer.previous;
-        check(actual.i_d == old.i_d && actual.i_q == old.i_q &&
-              actual.v_d == old.v_d && actual.v_q == old.v_q &&
-              actual.measured_current == old.measured_current &&
-              actual.duty_u == old.duty_u && actual.duty_v == old.duty_v && actual.duty_w == old.duty_w,
-              "PWM callback sees the complete previous status, never a half-written frame");
-        ++observer.calls;
+    BldcController motor(pwm, hall, params, &adc);
+    check(motor.initialize(), "cancellation fixture initializes");
+    motor.start();
+    motor.setDriveMode(DriveMode::FORWARD);
+    struct Break {
+        Pwm& pwm;
+        BldcController& motor;
+    } source{pwm, motor};
+    const auto interrupt = [](void* ptr) {
+        auto& b = *static_cast<Break*>(ptr);
+        check(!mask_depth, "BRK can preempt the current tick");
+        b.pwm.enabled = false; // Hardware latch clears the gate before the ISR.
+        b.motor.cancelPwmTick();
     };
-    adc.currents[0] = 4300; adc.currents[1] = 4000; adc.currents[2] = 4200;
-    controller.pwmInterruptHandler();
-    check(observer.calls == 1 && controller.getNativeStatus().i_q != observer.previous.i_q,
-          "completed new frame is published after PWM application");
-    pwm.on_native_write = nullptr;
-
-    controller.setAlgorithm(DriveAlgorithm::SIX_STEP);
-    controller.pwmInterruptHandler();
-    const auto& six = controller.getNativeStatus();
-    check(six.i_d == BldcController::Current{} && six.i_q == BldcController::Current{} &&
-          six.v_d == BldcController::Voltage{},
-          "reusing the FOC frame for six-step clears dq fields the new algorithm does not produce");
-    controller.setAlgorithm(DriveAlgorithm::FOC);
-    controller.pwmInterruptHandler();
-    check(controller.getNativeStatus().i_q != BldcController::Current{},
-          "return to FOC overwrites the reused six-step output");
-    controller.setDriveMode(DriveMode::NEUTRAL);
+    hall.context = &source;
+    hall.on_read = interrupt;
     const auto writes = pwm.native_writes;
-    controller.pwmInterruptHandler();
-    const auto& parked = controller.getNativeStatus();
-    check(pwm.native_writes == writes && parked.i_d == BldcController::Current{} &&
-          parked.i_q == BldcController::Current{} && parked.v_d == BldcController::Voltage{} &&
-          parked.v_q == BldcController::Voltage{} && parked.duty_u == BldcController::Duty{} &&
-          parked.duty_v == BldcController::Duty{} && parked.duty_w == BldcController::Duty{},
-          "parked reused frame clears every electrical output without applying PWM");
-}
-
-static void testSplitCancellationAndGuards() {
-    Pwm pwm;
-    Hall hall;
-    CapturedAdc adc;
-    auto params = makeParams();
-    params.algorithm = DriveAlgorithm::FOC;
-    params.max_voltage = 24.0f;
-    BldcController controller(pwm, hall, params, &adc);
-    check(controller.initialize(), "split ownership controller initializes");
-    controller.start();
-    controller.setDriveMode(DriveMode::FORWARD);
-    controller.setControlMode(ControlMode::CLOSED_LOOP_TORQUE);
-    const unsigned initial_reads = adc.reads(), initial_frames = adc.frame_reads, initial_writes = pwm.calls;
-    controller.completePwmInterruptHandler();
-    controller.cancelPwmInterruptHandler();
-    check(!controller.hasPreparedPwmFrame() && adc.reads() == initial_reads &&
-          adc.frame_reads == initial_frames && pwm.calls == initial_writes,
-          "complete/cancel before prepare are inert");
-    hall.position = HALL_POSITION_INVALID;
-    controller.hallSensorInterruptHandler();
-    controller.preparePwmInterruptHandler();
-    check(controller.hasPreparedPwmFrame(), "getter exposes prepared ownership before cancellation");
-    const auto pll = controller.getPllInfo();
-    const auto age = controller.getHallInfo().invalid_time_us;
-    controller.cancelPwmInterruptHandler();
-    controller.cancelPwmInterruptHandler();
-    controller.completePwmInterruptHandler();
-    check(!controller.hasPreparedPwmFrame() && adc.frame_reads == initial_frames && pwm.calls == initial_writes &&
-          controller.getPllInfo().angle == pll.angle && controller.getHallInfo().invalid_time_us == age,
-          "cancel discards prepared work without completing, rewinding or adding a rotor tick");
-    controller.preparePwmInterruptHandler();
-    check(controller.hasPreparedPwmFrame() &&
-          controller.getHallInfo().invalid_time_us == age + ActiveTiming::CurrentClock::ticksToUs(1),
-          "next preparation after cancellation advances Hall health exactly once");
-    controller.cancelPwmInterruptHandler();
-
-    hall.position = 0; controller.hallSensorInterruptHandler();
-    controller.preparePwmInterruptHandler();
-    controller.setDriveMode(DriveMode::NEUTRAL);
-    check(controller.hasPreparedPwmFrame(),
-          "live parking retains the prepared frame for parked measurement publication");
-    const unsigned parked_writes = pwm.calls, parked_frames = adc.frame_reads;
-    controller.completePwmInterruptHandler();
-    check(!controller.hasPreparedPwmFrame() && !pwm.enabled && pwm.calls == parked_writes &&
-          adc.frame_reads == parked_frames + 1 &&
-          controller.getNativeStatus().i_q == BldcController::Current{} &&
-          controller.getNativeStatus().v_q == BldcController::Voltage{},
-          "live parking after prepare consumes measurements but cannot run the electrical algorithm");
-    controller.setDriveMode(DriveMode::FORWARD);
-    controller.preparePwmInterruptHandler();
-    adc.bus = 8190;
-    controller.completePwmInterruptHandler();
-    check(!pwm.enabled && controller.getDriveMode() == DriveMode::NEUTRAL,
-          "completion guards the newly acquired bus rather than a preparation-time voltage");
-    adc.bus = 5000;
-    controller.setDriveMode(DriveMode::FORWARD);
-    HallMonitor defaults;
-    auto monitor = defaults.getParameters();
-    monitor.invalid_threshold = .5f;
-    monitor.invalid_debounce = 1;
-    check(controller.setHallMonitorParams(monitor), "configure an immediate invalid-Hall event for split guard");
-    hall.position = HALL_POSITION_INVALID; controller.hallSensorInterruptHandler();
-    const unsigned before_fault = pwm.calls;
-    controller.preparePwmInterruptHandler();
-    check(controller.getHallFault() != HallFault::NONE && pwm.calls == before_fault && pwm.enabled,
-          "prepare latches Hall health without writing PWM or running a drive guard");
-    controller.completePwmInterruptHandler();
-    check(controller.getDriveMode() == DriveMode::NEUTRAL && !pwm.enabled,
-          "complete applies a Hall fault latched by preparation");
-
-    for (unsigned transition = 0; transition < 5; ++transition) {
-        Pwm local_pwm;
-        Hall local_hall;
-        CapturedAdc local_adc;
-        BldcController local(local_pwm, local_hall, params, &local_adc);
-        check(local.initialize(), "pending lifecycle fixture initializes");
-        local.start(); local.setDriveMode(DriveMode::FORWARD); local.preparePwmInterruptHandler();
-        check(local.hasPreparedPwmFrame(), "lifecycle transition begins with a visibly prepared frame");
-        if (transition == 0) local.stop();
-        if (transition == 1) local.setAlgorithm(DriveAlgorithm::SIX_STEP);
-        if (transition == 2) local.setElectricMode(ElectricMode::VOLTAGE_MODE);
-        if (transition == 3) local.setControlMode(ControlMode::OPEN_LOOP);
-        if (transition == 4) local.setDriveMode(DriveMode::REVERSE);
-        check(!local.hasPreparedPwmFrame(),
-              "board can distinguish intentional mode cancellation from missing PWM work");
-        const unsigned calls = local_pwm.calls;
-        local.completePwmInterruptHandler();
-        check(local_adc.frame_reads == 0 && local_pwm.calls == calls,
-              "lifecycle/mode reconfiguration cannot complete an obsolete prepared command");
-    }
-    Pwm no_adc_pwm;
-    Hall no_adc_hall;
-    BldcController no_adc(no_adc_pwm, no_adc_hall, makeParams());
-    const unsigned no_adc_writes = no_adc_pwm.calls, no_adc_reads = no_adc_hall.reads;
-    no_adc.preparePwmInterruptHandler(); no_adc.completePwmInterruptHandler(); no_adc.pwmInterruptHandler();
-    check(!no_adc.hasPreparedPwmFrame() && no_adc_pwm.calls == no_adc_writes && no_adc_hall.reads == no_adc_reads,
-          "ADC-less split/wrapper calls preserve the original no-work behavior");
+    check(!motor.pwmInterruptHandler() && !pwm.enabled && pwm.native_writes == writes && !adc.frame_reads,
+          "break in unmasked Hall work cancels the tick before acquisition/PWM");
+    hall.on_read = nullptr;
+    check(!motor.pwmInterruptHandler() && pwm.native_writes == writes,
+          "unparked software cannot clear a break on the next IRQ entry");
+    motor.parkFromCarrier();
+    check(motor.pwmInterruptHandler() && !pwm.enabled, "qualified neutral acquisition can resume tracking");
+    motor.setDriveMode(DriveMode::FORWARD);
+    pwm.context = &source;
+    pwm.on_native_write = interrupt;
+    const auto enables = pwm.enables;
+    check(!motor.pwmInterruptHandler() && !pwm.enabled && pwm.enables == enables,
+          "break during duty writes cannot re-enable the bridge or publish a scope sample");
 }
 
 static void testBorrowedTargetGuard() {
@@ -980,7 +803,7 @@ static void testBorrowedTargetGuard() {
         check(!controller.commitNativeTargetSpeed(foreign, guard) &&
               !controller.commitNativeTargetSpeed(invalid, guard),
               "borrowed guard rejects foreign and invalid commands without replacing the target");
-        check(controller.getNativeStatus().target_speed_rps == number_v<BldcController::Speed, 3, 2>,
+        check(controller.io().in.target_speed_rps == number_v<BldcController::Speed, 3, 2>,
               "failed commits preserve the accepted target");
         check(mask_depth == 1 && mask_entries == entries, "accepted commit does not nest the safety mask");
     }
@@ -996,53 +819,57 @@ static void testNativePath() {
     Adc adc;
     auto params = makeParams();
     params.max_voltage = 24.0f;
+    params.foc_current_regulator.kp = 16; // Nontrivial modulation even with the scooter's 1/16 standstill weight.
     BldcController controller(pwm, hall, params, &adc);
     check(controller.initialize(), "native controller initializes");
     controller.start();
     controller.setControlMode(ControlMode::CLOSED_LOOP_TORQUE);
-    controller.setElectricMode(ElectricMode::VOLTAGE_MODE);
     controller.setDriveMode(DriveMode::FORWARD);
-    controller.setDutyCycle(0.1f);
+    controller.setCurrent(2);
     const unsigned initial_writes = pwm.native_writes;
     controller.pwmInterruptHandler();
     controller.pwmInterruptHandler();
     check(pwm.native_writes == initial_writes + 2, "both PWM samples use the native interface");
-    check(std::abs(controller.getStatus().measured_current - 0.1007326f) < 0.0001f,
+    check(std::abs(numberCast<float>(controller.io().out.electrical.measured_current) - 0.1007326f) < 0.0001f,
           "integer ADC sum reaches six-step current telemetry with the right physical scale");
     controller.setAlgorithm(DriveAlgorithm::FOC);
     controller.pwmInterruptHandler();
-    const auto fast = controller.getStatus();
-    const float expected_modulation = std::sqrt(fast.v_d * fast.v_d + fast.v_q * fast.v_q) *
-                                      FOC_SQRT3 / fast.bus_voltage;
+    const auto& fast = controller.io().out.electrical;
+    const float vd = numberCast<float>(fast.v_d), vq = numberCast<float>(fast.v_q);
+    [[maybe_unused]] const auto duty_u = fast.duty_u;
+    const float expected_modulation = std::hypot(vd, vq) *
+                                      FOC_SQRT3 / numberCast<float>(fast.bus_voltage);
     controller.update();
 #if LIBECU_FOC_DUTY_TELEMETRY
     check(expected_modulation > 0.08f &&
-          std::abs(controller.getStatus().duty_cycle - expected_modulation) < 0.00003f,
+          std::abs(numberCast<float>(controller.io().reportedDuty()) - expected_modulation) < 0.00003f,
           "FOC modulation telemetry is computed from a slow coherent native snapshot");
 #else
-    check(expected_modulation > 0.08f && controller.getStatus().duty_cycle == 0.0f &&
-          controller.getStatus().v_q == fast.v_q && controller.getStatus().duty_u == fast.duty_u,
+    check(expected_modulation > 0.08f && numberCast<float>(controller.io().reportedDuty()) == 0.0f &&
+          numberCast<float>(fast.v_q) == vq && fast.duty_u == duty_u,
           "host-math telemetry omits only scalar FOC duty; voltage and PWM control are preserved");
 #endif
     adc.bus = 8190;
     controller.pwmInterruptHandler();
     check(!pwm.enabled && controller.getDriveMode() == DriveMode::NEUTRAL,
           "native bus measurement still trips overvoltage protection");
-    check(controller.getStatus().duty_cycle == 0.0f && controller.getStatus().target_current == 0.0f,
+    check(numberCast<float>(controller.io().reportedDuty()) == 0.0f && numberCast<float>(controller.io().in.target_current) == 0.0f,
           "protection parks command and telemetry together");
 
     Console console(controller);
-    NativeMotorStatus sample{};
+    MotorIo sample{};
     using P = ActiveNumericProfile;
-    sample.target_current = number_v<P::Current, 50>;
-    sample.measured_current = number_v<P::Current, -50>;
-    sample.i_d = number_v<P::Current, -1, 8>;
-    sample.i_q = number_v<P::Current, 1, 8>;
-    sample.angle_e_rad = -number_v<P::Angle, 1570796326795LL, 1000000000000LL>;
-    sample.duty_cycle = number_v<P::Duty, 95, 100>;
-    sample.measured_position = 4;
+    sample.in.is_running = true;
+    sample.in.drive_mode = DriveMode::FORWARD;
+    sample.in.target_current = number_v<P::Current, 50>;
+    sample.out.electrical.measured_current = number_v<P::Current, -50>;
+    sample.out.electrical.i_d = number_v<P::Current, -1, 8>;
+    sample.out.electrical.i_q = number_v<P::Current, 1, 8>;
+    sample.out.electrical.angle_e_rad = -number_v<P::Angle, 1570796326795LL, 1000000000000LL>;
+    sample.out.electrical.duty_cycle = number_v<P::Duty, 95, 100>;
+    sample.out.measured_position = 4;
     console.startOscilloscope();
-    for (unsigned i = 0; i < Console::OSC_BUFFER_SIZE; ++i) console.captureNativeOscSample(sample);
+    for (unsigned i = 0; i < Console::OSC_BUFFER_SIZE; ++i) console.captureCurrentSample(sample);
     check(console.drainOsc().find("+OSC:0,-32768,32767,95,4,-125,125,270\r\n") == 0,
           "native OSC preserves signs, saturates milliamps and wraps negative angles");
 #ifdef ECU_FIXED_NUMERIC
@@ -1052,9 +879,9 @@ static void testNativePath() {
     std::string expected;
     for (unsigned i = 0; i < Console::OSC_BUFFER_SIZE; ++i) {
         random ^= random << 13; random ^= random >> 17; random ^= random << 5;
-        sample.angle_e_rad = P::Angle::fromRaw(static_cast<int32_t>(random));
-        console.captureNativeOscSample(sample);
-        int32_t wrapped = sample.angle_e_rad.raw() % period.raw();
+        sample.out.electrical.angle_e_rad = P::Angle::fromRaw(static_cast<int32_t>(random));
+        console.captureCurrentSample(sample);
+        int32_t wrapped = sample.out.electrical.angle_e_rad.raw() % period.raw();
         if (wrapped < 0) wrapped += period.raw();
         const uint32_t turn = (uint64_t(wrapped) << 16) / uint32_t(period.raw());
         char line[96];
@@ -1115,10 +942,10 @@ static void checkCoastTelemetry(Console& console, BldcController& controller, fl
     check(std::sscanf(console.output().c_str(), "+PLL:%f;%f;%f;%u;%d",
                       &instantaneous, &integral, &angle, &hall, &sync) == 5,
           "UART PLL telemetry remains available with the bridge disabled");
-    const auto status = controller.getStatus();
+    const auto& out = controller.io().out;
     check(std::abs(integral / (controller.getParams().num_poles * 3) - physical_rps) < tolerance,
            "UART PLL integrator follows the changing physical coast speed");
-    check(hall == status.measured_position && std::abs(angle - status.pll_angle) < 0.001f,
+    check(hall == out.measured_position && std::abs(angle - numberCast<float>(out.pll.angle_steps)) < 0.001f,
           "observer publishes native angle and Hall position used by UART telemetry");
     if (physical_rps == 0.0f)
         check(std::abs(instantaneous) < 0.1f, "PLL angle advance also settles at standstill");
@@ -1134,25 +961,24 @@ static void testParkedPwmTracking(int direction, DriveAlgorithm algorithm) {
     check(controller.initialize(), "coast controller initializes");
     controller.start();
     controller.setControlMode(ControlMode::CLOSED_LOOP_TORQUE);
-    controller.setElectricMode(ElectricMode::VOLTAGE_MODE);
     controller.setDriveMode(direction > 0 ? DriveMode::FORWARD : DriveMode::REVERSE);
-    controller.setDutyCycle(0.25f);
+    controller.setCurrent(4);
     RotorTrace trace(controller, hall);
     trace.advance(direction * 8.08f, direction * 8.08f, 2 * ActiveTiming::CURRENT_HZ);
-    const float running_speed = controller.getStatus().current_speed_rps;
+    const float running_speed = numberCast<float>(controller.io().in.current_speed_rps);
     check(pwm.enabled && std::abs(running_speed - 8.08f) < 0.15f && controller.getPllInfo().is_sync,
            "PWM tracks a real Hall sequence in either drive direction");
 
     // Disable torque, but keep the physical PWM time base and acquisition running.
     controller.setDriveMode(DriveMode::NEUTRAL);
     controller.update();
-    check(!pwm.enabled && std::abs(controller.getStatus().current_speed_rps - direction * running_speed) < 0.0001f,
+    check(!pwm.enabled && std::abs(numberCast<float>(controller.io().in.current_speed_rps) - direction * running_speed) < 0.0001f,
           "entering NEUTRAL retains physical signed rotor speed instead of faking zero");
     const unsigned enables = pwm.enables;
     const auto hall_before = controller.getHallInfo();
     trace.advance(direction * 8.08f, direction * 8.08f, 1);
     controller.update();
-    check(std::abs(controller.getStatus().current_speed_rps) > 7.5f,
+    check(std::abs(numberCast<float>(controller.io().in.current_speed_rps)) > 7.5f,
           "first parked PWM tick preserves the already-moving rotor estimate");
 
     Console console(controller);
@@ -1160,20 +986,20 @@ static void testParkedPwmTracking(int direction, DriveAlgorithm algorithm) {
     check(console.command("AT+PLL=1") == "OK\r\n", "PLL telemetry enables in NEUTRAL");
     trace.advance(direction * 8.08f, direction * 6.0f, 3 * ActiveTiming::CURRENT_HZ / 5);
     checkCoastTelemetry(console, controller, direction * 6.0f);
-    const float coast_fast = controller.getStatus().current_speed_rps;
+    const float coast_fast = numberCast<float>(controller.io().in.current_speed_rps);
     check(controller.getHallInfo().edges > hall_before.edges &&
           controller.getHallInfo().edge_accum < hall_before.edge_accum &&
-          controller.getStatus().measured_position == hall.position,
+          controller.io().out.measured_position == hall.position,
           "parked PWM ticks consume real Hall edges and age Hall health");
 
     for (int repeat = 0; repeat < 3; ++repeat) {
         const auto before = controller.getPllInfo();
-        for (const char* command : {"AT+DMODE=2", "AT+SPD=12", "AT+CUR=6", "AT+DUT=0.9", "AT+MODE=1"})
+        for (const char* command : {"AT+DMODE=2", "AT+SPD=12", "AT+CUR=6", "AT+MODE=1"})
             check(console.command(command) == "OK\r\n", "parked demand command remains protocol-compatible");
         controller.update();
-        const auto parked = controller.getStatus();
-        check(!pwm.enabled && pwm.enables == enables && parked.target_current == 0.0f &&
-              parked.target_speed_rps == 0.0f && parked.duty_cycle == 0.0f,
+        const auto& parked = controller.io();
+        check(!pwm.enabled && pwm.enables == enables && parked.in.target_current == BldcController::Current{} &&
+              parked.in.target_speed_rps == BldcController::Speed{} && parked.reportedDuty() == BldcController::Duty{},
               "repeated neutral and AT demands cannot energize the parked bridge or wind up its speed loop");
         check(controller.getPllInfo().pll_integral == before.pll_integral &&
               controller.getPllInfo().angle == before.angle,
@@ -1183,35 +1009,27 @@ static void testParkedPwmTracking(int direction, DriveAlgorithm algorithm) {
     const unsigned duty_writes = pwm.native_writes;
     trace.advance(direction * 6.0f, direction * 2.0f, ActiveTiming::CURRENT_HZ);
     checkCoastTelemetry(console, controller, direction * 2.0f);
-    const float coast_slow = controller.getStatus().current_speed_rps;
+    const float coast_slow = numberCast<float>(controller.io().in.current_speed_rps);
     trace.advance(direction * 2.0f, 0.0f, ActiveTiming::CURRENT_HZ);
     trace.advance(0.0f, 0.0f, 2 * ActiveTiming::CURRENT_HZ);
     checkCoastTelemetry(console, controller, 0.0f);
-    check(std::abs(controller.getStatus().current_speed_rps) < 0.005f,
+    check(std::abs(numberCast<float>(controller.io().in.current_speed_rps)) < 0.005f,
           "speed reaches telemetry zero from stationary Hall feedback on PWM ticks");
     check(pwm.native_writes == duty_writes, "parked PWM frames do not apply new electrical outputs");
     check(!pwm.enabled && pwm.enables == enables && controller.getHallFault() == HallFault::NONE,
           "coast observation leaves the bridge disabled and preserves healthy Hall diagnostics");
     std::printf("Parked PWM %s %s: drive %.3f, coast %.3f -> %.3f -> %.6f RPS\n",
                 algorithm == DriveAlgorithm::FOC ? "FOC" : "six-step", direction > 0 ? "forward" : "reverse",
-                running_speed, coast_fast, coast_slow, controller.getStatus().current_speed_rps);
+                running_speed, coast_fast, coast_slow, numberCast<float>(controller.io().in.current_speed_rps));
 }
 
-// Exercise externally visible demand, including the voltage command's trip
-// through the PWM handler (it is not exposed directly by getStatus()).
-static float velocityOutput(BldcController& controller, ElectricMode mode) {
-    if (mode == ElectricMode::VOLTAGE_MODE) controller.pwmInterruptHandler();
-    const auto status = controller.getStatus();
-    return mode == ElectricMode::CURRENT_MODE ? status.target_current : status.duty_cycle;
-}
-
-static void testVelocityStandstillRelease(ElectricMode mode, bool filtered) {
+static void testVelocityStandstillRelease(bool filtered) {
     Pwm pwm, fresh_pwm;
     Hall hall, fresh_hall;
     Adc adc, fresh_adc;
     auto params = makeParams();
-    params.pi_current_mode.kp = params.pi_voltage_mode.kp = 0.25f;
-    params.pi_current_mode.ki = params.pi_voltage_mode.ki = 0.5f;
+    params.speed_pi.kp = 0.25f;
+    params.speed_pi.ki = 0.5f;
     params.target_speed_lpf_alpha = params.measured_speed_lpf_alpha = filtered ? 0.2f : 0.0f;
     params.acceleration_rate = filtered ? 2.0f : 0.0f;
     const auto direction = filtered ? DriveMode::REVERSE : DriveMode::FORWARD;
@@ -1221,20 +1039,19 @@ static void testVelocityStandstillRelease(ElectricMode mode, bool filtered) {
         check(drive->initialize(), "standstill release controller initializes");
         drive->start();
         drive->setDriveMode(direction);
-        check(drive->setElectricMode(mode), "standstill release selects output units");
     }
     controller.setTargetSpeed(1.0f);
     for (unsigned i = 0; i < ActiveTiming::SPEED_HZ; ++i) controller.update();
-    check(velocityOutput(controller, mode) > 0.1f,
+    check(numberCast<float>(controller.io().in.target_current) > 0.1f,
           "nonzero stationary speed demand builds real PI output before release");
     controller.setTargetSpeed(0.0f);
     controller.update();
-    check(velocityOutput(controller, mode) == 0.0f,
+    check(numberCast<float>(controller.io().in.target_current) == 0.0f,
           "zero command at standstill releases PI immediately, including an unfinished filtered ramp");
     bool stays_zero = true;
     for (unsigned i = 0; i < ActiveTiming::SPEED_HZ; ++i) {
         controller.update();
-        stays_zero &= velocityOutput(controller, mode) == 0.0f;
+        stays_zero &= numberCast<float>(controller.io().in.target_current) == 0.0f;
     }
     check(stays_zero, "active velocity idle remains exactly zero rather than retaining PI history");
 
@@ -1245,18 +1062,17 @@ static void testVelocityStandstillRelease(ElectricMode mode, bool filtered) {
     for (unsigned i = 0; i < 20; ++i) {
         controller.update();
         fresh.update();
-        same_restart &= std::abs(velocityOutput(controller, mode) - velocityOutput(fresh, mode)) < 2e-6f;
+        same_restart &= std::abs(numberCast<float>(controller.io().in.target_current) - numberCast<float>(fresh.io().in.target_current)) < 2e-6f;
     }
-    check(velocityOutput(controller, mode) > 0.0f,
+    check(numberCast<float>(controller.io().in.target_current) > 0.0f,
           "tiny nonzero stationary command is not swallowed by idle release");
     check(same_restart, "restart after release matches a fresh controller without stale integral or ramp");
 
     controller.setTargetSpeed(0.0f);
     controller.setControlMode(ControlMode::CLOSED_LOOP_TORQUE);
-    if (mode == ElectricMode::CURRENT_MODE) controller.setCurrent(0.125f);
-    else controller.setDutyCycle(0.125f);
+    controller.setCurrent(0.125f);
     controller.update();
-    check(std::abs(velocityOutput(controller, mode) - 0.125f) < 2e-6f,
+    check(std::abs(numberCast<float>(controller.io().in.target_current) - 0.125f) < 2e-6f,
           "zero speed command does not cancel an explicit standstill torque demand");
 }
 
@@ -1265,8 +1081,8 @@ static void testVelocityBrakingRelease(int direction) {
     Hall hall;
     Adc adc;
     auto params = makeParams();
-    params.pi_current_mode.kp = 0.25f;
-    params.pi_current_mode.ki = 0.5f;
+    params.speed_pi.kp = 0.25f;
+    params.speed_pi.ki = 0.5f;
     params.measured_speed_lpf_alpha = 0.2f;
     BldcController controller(pwm, hall, params, &adc);
     check(controller.initialize(), "braking release controller initializes");
@@ -1274,16 +1090,16 @@ static void testVelocityBrakingRelease(int direction) {
     controller.setDriveMode(direction > 0 ? DriveMode::FORWARD : DriveMode::REVERSE);
     RotorTrace trace(controller, hall);
     trace.advance(direction * 2.0f, direction * 2.0f, ActiveTiming::CURRENT_HZ);
-    check(controller.getStatus().current_speed_rps > 1.8f && controller.getStatus().target_current < -0.1f,
+    check(numberCast<float>(controller.io().in.current_speed_rps) > 1.8f && numberCast<float>(controller.io().in.target_current) < -0.1f,
           "zero speed command retains braking current while the rotor moves in the selected direction");
     trace.advance(direction * 2.0f, 0.0f, ActiveTiming::CURRENT_HZ);
     trace.advance(0.0f, 0.0f, 3 * ActiveTiming::CURRENT_HZ);
     check(std::abs(controller.getPllInfo().pll_integral) < 0.1f,
           "decelerated Hall trace settles the real PLL into standstill");
-    check(controller.getStatus().target_current == 0.0f,
+    check(numberCast<float>(controller.io().in.target_current) == 0.0f,
           "braking integral releases to exact zero after real Hall deceleration");
     trace.advance(-direction * 2.0f, -direction * 2.0f, ActiveTiming::CURRENT_HZ);
-    check(controller.getStatus().current_speed_rps < -1.8f && controller.getStatus().target_current > 0.1f,
+    check(numberCast<float>(controller.io().in.current_speed_rps) < -1.8f && numberCast<float>(controller.io().in.target_current) > 0.1f,
           "zero command still applies opposite corrective current when the rotor moves against drive direction");
 }
 
@@ -1300,9 +1116,9 @@ static void testOneFrameReconstruction() {
             core.reset();
             Core::Input in{};
             in.bus_voltage = number_v<Core::Voltage, 24>;
-            in.duty_command = number_v<Core::Duty, 1, 4>;
+            core.setCurrentPiGains(number_v<Core::Gain, 1>, Core::Gain{});
+            in.target_current = number_v<Current, 16>;
             in.drive_mode = DriveMode::FORWARD;
-            in.electric_mode = ElectricMode::VOLTAGE_MODE;
             // A positive q voltage at 0 degrees gives V the highest duty;
             // rotating it by 120 degrees gives W the highest. Force a DIFFERENT
             // phase, reproducing the sampled-window vs latest-duty mismatch.
@@ -1372,7 +1188,9 @@ static void testControllerReconstruction() {
     Pwm pwm;
     Hall hall;
     Adc adc;
-    BldcController controller(pwm, hall, makeParams(), &adc);
+    auto params = makeParams();
+    params.foc_current_regulator.kp = 1;
+    BldcController controller(pwm, hall, params, &adc);
     check(controller.initialize(), "reconstruction controller initializes");
     controller.start();
     controller.setDriveMode(DriveMode::FORWARD);
@@ -1382,14 +1200,13 @@ static void testControllerReconstruction() {
     check(adc.reads() == reads && pwm.calls == writes, "rejected reconstruction makes no hardware calls");
     controller.setAlgorithm(DriveAlgorithm::FOC);
     controller.setControlMode(ControlMode::CLOSED_LOOP_TORQUE);
-    controller.setElectricMode(ElectricMode::VOLTAGE_MODE);
-    controller.setDutyCycle(0.25f);
+    controller.setCurrent(4);
     adc.currents[0] = 3895; adc.currents[1] = 4145; adc.currents[2] = 4245;
     controller.pwmInterruptHandler();
-    const auto healthy = controller.getStatus();
+    const auto& e = controller.io().out.electrical;
+    const auto healthy_d = e.i_d, healthy_q = e.i_q;
     check(controller.currentReconstructedPhase() == 1, "controller's current frame requests highest-duty V");
     adc.currents[0] = 6000; // U aperture was invalid even though V is the latest duty maximum.
-    controller.preparePwmInterruptHandler();
     reads = adc.reads(); writes = pwm.calls;
     check(controller.setCurrentReconstructedPhase(0) && controller.currentReconstructedPhase() == 0,
           "board can select sampled-invalid U instead of latest-highest V for active FOC");
@@ -1397,9 +1214,8 @@ static void testControllerReconstruction() {
           "controller rejects invalid phase without replacing qualified U");
     check(adc.reads() == reads && pwm.calls == writes, "successful reconstruction setter is also hardware-free");
     const unsigned current_reads = adc.current_reads;
-    controller.completePwmInterruptHandler();
-    const auto recovered = controller.getStatus();
-    check(std::abs(recovered.i_d - healthy.i_d) < 0.002f && std::abs(recovered.i_q - healthy.i_q) < 0.002f,
+    controller.pwmInterruptHandler();
+    check(std::abs(numberCast<float>(e.i_d - healthy_d)) < 0.002f && std::abs(numberCast<float>(e.i_q - healthy_q)) < 0.002f,
           "board-to-controller-to-FOC path rejects poisoned U using qualified V/W");
     check(adc.currents[0] == 6000 && adc.currents[1] == 4145 && adc.currents[2] == 4245 &&
           adc.current_reads == current_reads + 3,
@@ -1439,7 +1255,7 @@ static void testFrozenRotorClock() {
     controller.setDriveMode(DriveMode::FORWARD);
     RotorTrace trace(controller, hall);
     trace.advance(8.08f, 8.08f, 2 * ActiveTiming::CURRENT_HZ);
-    const float before = controller.getStatus().current_speed_rps;
+    const float before = numberCast<float>(controller.io().in.current_speed_rps);
     controller.setDriveMode(DriveMode::NEUTRAL);
     const auto pll = controller.getPllInfo();
     const auto health = controller.getHallInfo();
@@ -1447,7 +1263,7 @@ static void testFrozenRotorClock() {
     trace.advance(8.08f, 0.0f, 2 * ActiveTiming::CURRENT_HZ, RotorClock::STOPPED);
     trace.advance(0.0f, 0.0f, ActiveTiming::CURRENT_HZ, RotorClock::STOPPED);
     const auto after = controller.getPllInfo();
-    check(before > 7.5f && controller.getStatus().current_speed_rps == before &&
+    check(before > 7.5f && numberCast<float>(controller.io().in.current_speed_rps) == before &&
           after.angle == pll.angle && after.pll_integral == pll.pll_integral &&
           after.hall_state_raw == pll.hall_state_raw &&
           hall.reads == reads && controller.getHallInfo().edges == health.edges,
@@ -1457,29 +1273,13 @@ static void testFrozenRotorClock() {
           "first real PWM frame consumes the pending Hall sector once");
 }
 
-#if defined(ECU_FIXED_PI) || defined(ECU_FIXED_NUMERIC)
-static void testRejectedModeTuning() {
-    Pwm pwm;
-    Hall hall;
-    auto params = makeParams();
-    params.pi_voltage_mode.kp = 200.0f; // Outside the speed gain format's range.
-    BldcController controller(pwm, hall, params);
-    check(controller.initialize(), "valid initial current mode initializes");
-    check(!controller.setElectricMode(ElectricMode::VOLTAGE_MODE), "unrepresentable alternate tuning is rejected");
-    check(controller.getStatus().electric_mode == ElectricMode::CURRENT_MODE,
-          "failed retuning keeps the original output units and mode");
-}
-#endif
-
 int main() {
-    testReusableCurrentFrame();
     testSpeedClock();
     testIntermediatePi();
     testLiveSpeedPiGains();
     testSlewClock();
     testTractionAcceleration();
-    for (auto mode : {ElectricMode::CURRENT_MODE, ElectricMode::VOLTAGE_MODE})
-        for (bool filtered : {false, true}) testVelocityStandstillRelease(mode, filtered);
+    for (bool filtered : {false, true}) testVelocityStandstillRelease(filtered);
     for (int direction : {1, -1}) testVelocityBrakingRelease(direction);
     testCommands();
     testFragmentedCommands();
@@ -1489,17 +1289,14 @@ int main() {
     testNativePath();
     testBorrowedTargetGuard();
     testCapturedCurrentFrames();
-    testSplitCurrentLoop();
-    testSplitCancellationAndGuards();
+    testCurrentTick();
+    testBreakCancellation();
     testFrozenRotorClock();
     testParkedPwmTracking(1, DriveAlgorithm::FOC);
     testParkedPwmTracking(-1, DriveAlgorithm::FOC);
     testParkedPwmTracking(1, DriveAlgorithm::SIX_STEP);
     testOneFrameReconstruction();
     testControllerReconstruction();
-#if defined(ECU_FIXED_PI) || defined(ECU_FIXED_NUMERIC)
-    testRejectedModeTuning();
-#endif
     std::printf("Control integration: %d checks, %d failures\n", checks, failures);
     return failures != 0;
 }

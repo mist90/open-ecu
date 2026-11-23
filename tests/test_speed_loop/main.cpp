@@ -221,7 +221,7 @@ Result simulate(const PlantCase& plant, float kp, float ki) {
     for (unsigned tick = 0; tick < 2 * PHASE_TICKS; ++tick) {
         const unsigned phase = tick / PHASE_TICKS;
         const float target = phase != 0 && plant.mass_kg == 0.0f ? plant.following_target : plant.initial_target;
-        const Speed speed = divideByInteger<Speed>(pll.getSpeedStepsSec(), STEPS_PER_REV);
+        const Speed speed = divideByInteger<Speed>(pll.speed_steps_s, STEPS_PER_REV);
         filtered_speed += multiplyTo<Speed>(number_v<Fraction, 1, 2>, speed - filtered_speed);
         // The original rig used no target LPF (alpha=0).
         const Accumulator difference = numberCast<Accumulator>(target) - limited_target;

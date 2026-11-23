@@ -4,6 +4,7 @@
 #include "profile_math.hpp"
 #include "foc_control_core.hpp"
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <initializer_list>
@@ -236,9 +237,7 @@ static void testBusCache() {
         in.i_u = number<C>(int(tick % 17) - 8, 4);
         in.i_v = number<C>(int(tick % 11) - 5, 4);
         in.i_w = -in.i_u - in.i_v;
-        in.duty_command = number<D>(int(tick % 9) - 4, 5);
         in.drive_mode = tick % 3 ? DriveMode::FORWARD : DriveMode::REVERSE;
-        in.electric_mode = tick % 5 ? ElectricMode::CURRENT_MODE : ElectricMode::VOLTAGE_MODE;
 #if LIBECU_PWM_BUS_LOOKAHEAD
         // Mix exact prefetches, deliberately stale voltages and no prefetch.
         if (tick % 3) cached.prepareBus(tick % 3 == 1 ? in.bus_voltage : number<V>(31));
@@ -264,20 +263,25 @@ static void testReconstructionIdentity() {
         typename Core::Params params;
         params.low_side_clamped_pwm = clamped;
         core.setParams(params);
+        core.setCurrentPiGains(number<typename P::Gain>(1), {});
         core.reset();
         check(core.reconstructedPhase() == 0, "reset history uses the exact U-first tie rule");
         typename Core::Input in;
         in.bus_voltage = number<typename P::Voltage>(48);
-        in.duty_command = number<typename P::Duty>(3, 10);
+        in.target_current = number<C>(6);
         in.drive_mode = DriveMode::FORWARD;
-        in.electric_mode = ElectricMode::VOLTAGE_MODE;
         in.i_u = number<C>(9, 10); in.i_v = number<C>(-4, 10); in.i_w = number<C>(-5, 10);
         for (unsigned tick = 0; tick < 240; ++tick) {
             in.angle_steps = number<typename P::Angle>(tick, 40);
-            core.update(in);
-            if (tick % 37 == 0) core.reset(); // Reset need not match live hardware CCR history.
+            const auto applied = core.update(in);
+            const std::array<typename P::Duty, 3> duties{applied.duty_u, applied.duty_v, applied.duty_w};
+            unsigned expected = std::max_element(duties.begin(), duties.end()) - duties.begin();
+            if (tick % 37 == 0) {
+                core.reset(); // Reset need not match live hardware CCR history.
+                expected = 0;
+            }
             const unsigned ignored = core.reconstructedPhase();
-            check(ignored < 3, "reported reconstruction identity is a physical phase");
+            check(ignored == expected, "next reconstruction uses the actual highest duty (first on ties)");
             seen |= 1u << ignored;
             auto reference = core, changed = core, retained = core;
             auto altered = in, other = in;

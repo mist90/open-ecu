@@ -137,7 +137,6 @@ static void delayedLoop(const char* profile, float plant_r = 0.658f, float plant
             core.reset();
             typename C::Input in;
             in.drive_mode = DriveMode::FORWARD;
-            in.electric_mode = ElectricMode::CURRENT_MODE;
             in.bus_voltage = numberCast<typename C::Voltage>(40.8f);
             float id = 0.0f, iq = 0.0f, delayed_d = 0.0f, delayed_q = 0.0f, peak = 0.0f;
             const float decay = std::exp(-plant_r / (FrequencyHz * plant_l));
@@ -193,7 +192,6 @@ static void noiseFloor() {
         core.reset();
         typename C::Input in;
         in.drive_mode = DriveMode::FORWARD;
-        in.electric_mode = ElectricMode::CURRENT_MODE;
         in.bus_voltage = number<typename C::Voltage>(40);
         auto sample = [&](float d, float q, float target = 0.0f, float speed = 0.0f) {
             in.i_u = numberCast<I>(-d);
@@ -242,11 +240,9 @@ static void noiseFloor() {
         check(out.v_d>typename C::Voltage{}, "nonzero d-axis reference bypasses idle suppression");
         p.id_target=I{};
         core.setParams(p);core.reset();
-        in.electric_mode=ElectricMode::VOLTAGE_MODE;
-        in.duty_command=number<typename C::Duty>(1,10);
-        out=sample(0,0);
-        check(out.v_q>typename C::Voltage{}, "voltage mode retains its direct command");
-        in.electric_mode=ElectricMode::CURRENT_MODE;
+        out=sample(0,-0.02f,-0.04f);
+        check(out.v_q<typename C::Voltage{} && core.filteredCurrents().q<I{},
+              "braking below the idle noise floor still closes the current loop");
         p.current_noise_floor=I{};
         core.setParams(p);core.reset();
         out=sample(0,0.02f);

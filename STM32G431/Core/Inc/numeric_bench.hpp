@@ -71,12 +71,11 @@ inline void benchmarkNumericCores() {
     MotorAlgorithmInputT<P> input{};
     input.bus_voltage = number_v<P::Voltage, 20>;
     input.drive_mode = DriveMode::FORWARD;
-    input.electric_mode = ElectricMode::CURRENT_MODE;
     input.target_current = number_v<P::Current, 1>;
     measureNumericCore(0, [&](unsigned n) {
         pll.updateHall((n / 40) % 6);
         pll.updateTick();
-        return numericBenchBits(pll.getAngle());
+        return numericBenchBits(pll.angle_steps);
     });
     measureNumericCore(1, [&](unsigned n) {
         hall.tick(true);

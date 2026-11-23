@@ -102,7 +102,6 @@ void activeFoc() {
                 const float speed = direction * s;
                 Core::Input in{};
                 in.drive_mode = mode;
-                in.electric_mode = ElectricMode::CURRENT_MODE;
                 in.bus_voltage = number<Core::Voltage>(40);
                 in.speed_steps_s = numberCast<P::PllSpeed>(speed);
                 in.i_u = number<Core::Current>(sign);
@@ -141,7 +140,6 @@ void genericFoc() {
     foc.setParams(p);
     foc.setCurrentPiGains(number<P::Gain>(1), {});
     Generic::Input in{};
-    in.electric_mode = ElectricMode::CURRENT_MODE;
     in.drive_mode = DriveMode::FORWARD;
     in.bus_voltage = number<P::Voltage>(40);
     in.target_current = number<P::Current>(1);

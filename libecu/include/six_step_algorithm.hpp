@@ -21,9 +21,9 @@
 #include "pi_float_interface.hpp"
 #include "ecu_config.hpp"
 #include "motor_samples.hpp"
+#include "motor_io.hpp"
 
 namespace libecu {
-template<class P> struct MotorStatusT;
 
 /**
  * @brief One row of the six-step commutation table
@@ -71,12 +71,9 @@ public:
     using Duty = Profile::Duty;
     using Input = MotorAlgorithmInputT<Profile>;
     using Output = MotorAlgorithmOutputT<Profile>;
-    using Frame = MotorAlgorithmFrameT<Profile>;
     Output updateNative(const Input& input) noexcept;
-    /** @brief PWM path: overwrite and apply one caller-owned current frame. */
-    void updateNative(Frame& frame) noexcept;
-    /** Serialized carrier path: read commands and publish results in the motor status. */
-    void updateOwnedCarrier(const Input& in, MotorStatusT<Profile>& status) noexcept;
+    /** @brief Read commands and the acquired shunts; write and apply the carrier's electrical result. */
+    void updateCarrier(const MotorInput& in, MotorElectricalOutput& out, Profile::Angle angle_steps) noexcept;
     /**
      * @brief Constructor
      * @param pwm_interface PWM interface this algorithm drives
@@ -110,27 +107,26 @@ public:
     MotorAlgorithmOutput update(const MotorAlgorithmInput& in) noexcept;
 
     /**
-     * @brief Switching state currently applied to a phase
+     * @brief Last six-step switching state for a phase
      * @param channel PWM channel
-     * @return Cached phase state, OFF before the first commutation
+     * @return State of the current table row, OFF after reset and before the first commutation
      */
     PwmState getPhaseState(PwmChannel channel) const noexcept;
 
 private:
     /**
-     * @brief Apply one commutation step to the bridge
+     * @brief Queue all phase states before the caller writes the duty and commits the new row
      *
      * Switching states and duty travel on separate paths - states are
-     * preloaded against the COM event raised at the end of this function, duty
+     * preloaded against the COM event raised after the duty write, duty
      * is preloaded against the timer's update event - and neither has to wait
      * for the other, because no phase state is encoded in a compare register.
      * See the preload note in Stm32Pwm::initialize(); getting this wrong cost
      * two measured regressions.
      */
-    template<bool Owned> void applyCommutationStep(const CommutationStep& step, Duty duty_cycle) noexcept;
-    template<bool Owned> void writeDuty(Duty duty) noexcept;
-    template<bool Owned, class Commands, class Result>
-    void updateInto(const Input& in, const Commands& commands, Result& out) noexcept;
+    void queueCommutationStep(const CommutationStep& step) noexcept;
+    /** @return Whether a new row is queued and must be committed after the duty write. */
+    bool updateElectrical(const MotorInput& in, MotorElectricalOutput& out, Profile::Angle angle_steps) noexcept;
 
     /**
      * @brief Phase current from the shunt that is actually carrying it
@@ -140,23 +136,19 @@ private:
      * current at the sampling instant; the UP phase only conducts through its
      * shunt while its low side is on, and the OFF phase carries nothing.
      *
-     * The cached states are the ones that were in force *during* the period
-     * that was just sampled, not the ones about to be applied - which is why
-     * the cache is read before this cycle's commutation, never after.
+     * Consult the row that was in force during the preceding PWM period,
+     * before selecting this cycle's row. Reset invalidates the previous row.
      */
-    Current currentFromActivePhase(const Input& in) const noexcept;
+    Current currentFromActivePhase(const MotorElectricalOutput& sampled) const noexcept;
 
     static const CommutationStep COMMUTATION_TABLE[6];
 
     PwmInterface& pwm_interface_;
     CurrentPi current_pi_;
-    SixStepParams params_;
     Duty max_duty_ = number_v<Duty, 95, 100>;
+    uint8_t blanking_cycles_ = 6;
 
     uint8_t current_step_;          ///< Step currently applied, 0xFF if none
-    PwmState cached_phase_u_state_;
-    PwmState cached_phase_v_state_;
-    PwmState cached_phase_w_state_;
 
     /// PWM cycles since the last commutation; gates the blanking window.
     /// Saturates rather than wrapping, so a long sector cannot re-enter blanking.

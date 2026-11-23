@@ -367,16 +367,17 @@ outputs. These settings are supplied by the board through `BoardInfo`.
 
 Vbus, NTC and potentiometer use a separate three-rank DMA regular sequence with
 144-cycle sampling. SysTick collects the previous complete scan and starts the
-next at1 kHz; the injected group preempts it. Readers return coherent cached
-values without waiting. Launch-time freshness is bounded at2500 µs, and a
-missing DMA completion faults at the next tick. The HAL tick stays at1 ms.
+next at 1 kHz; the injected group preempts it. Readers return coherent cached
+values without waiting. Launch-time freshness is bounded at 2500 µs, and a
+missing DMA completion faults at the next tick. The HAL tick stays at 1 ms.
 See [the regular-acquisition contract](../STM32F410/ADC_REGULAR.md).
 
-`AT+SPD` specifies mechanical RPS for VELOCITY or the OPEN_LOOP field;
-TORQUE uses the `AT+CUR` current demand. The open-loop field phase is a
-DDS accumulator advanced on every
-PWM tick (`libecu/include/open_loop_phase.hpp`); the six-step sector is its
-rounded value with the usual commutation offset. Physical Hall tracking
+`AT+SPD` specifies mechanical RPS for VELOCITY or the OPEN_LOOP field.
+TORQUE and OPEN_LOOP take the `AT+CUR` demand in amperes; in VELOCITY the
+speed PI supplies that demand. The open-loop field phase is a
+[DDS accumulator](../libecu/include/open_loop_phase.hpp) advanced on every
+current tick; the six-step sector is its rounded value with the usual
+commutation offset. Physical Hall tracking
 and the speed/position telemetry keep reporting the real rotor in open
 loop; the virtual field never overwrites them.
 
@@ -433,8 +434,6 @@ while parked; collect/read after neutral. Validate DWT before interpreting cycle
 
 At the end of that 2026-11-08 trial, the verified fixed×2 image was left on the
 MCU, with neutral/zero demand and capture disabled, as requested.
-Original Flash backup and complete evidence:
-`/home/ropewalker/ecu-bench/f410-systick-hardware-20261108/`.
 
 ## 5. Code, build and first bring-up
 
@@ -493,5 +492,6 @@ Leave the drive parked after every bench session:
 
 ```
 AT+SPD=0
+AT+CUR=0
 AT+DMODE=2
 ```

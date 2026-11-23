@@ -182,7 +182,7 @@ Result simulate(Scene scene, Policy policy, FILE* trace, FILE* summary) {
         const bool coast = scene==CoastBrake && tick>=int(SWITCH) && tick<180;
         const bool brake = scene==CoastBrake && tick>=180;
         const bool dropout = scene==Stale && tick>=int(SWITCH) && tick<185;
-        const P::Speed hall = divideByInteger<P::Speed>(pll.getSpeedStepsSec(),HALL);
+        const P::Speed hall = divideByInteger<P::Speed>(pll.speed_steps_s,HALL);
         feedback += multiplyTo<P::Speed>(number_v<P::Fraction,1,2>,hall-feedback);
         auto frame = sample(k,hall.toFloat(),previous.mean_iq,coast ? DriveMode::NEUTRAL : DriveMode::FORWARD);
         frame.hall_valid = previous.hall_contiguous && plant.edge_age < FAST_HZ/50 &&

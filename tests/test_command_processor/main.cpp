@@ -47,7 +47,7 @@ void testDefaults(BldcController& controller) {
     processor.onControlTick();
     processor.process();
     processor.processOutput();
-    processor.captureCurrentSample(controller.getNativeStatus());
+    processor.captureCurrentSample(controller.io());
     check(!processor.wantsCurrentSample(), "capture is disabled by default");
     check(silent.writes == 0, "default lifecycle hooks emit no bytes");
     check(silent.process_calls == 1, "process dispatches through the protocol-neutral base");
@@ -80,7 +80,7 @@ void testMotorDefaults(BldcController& controller, const BoardInfo& board) {
     check(params.traction_acceleration_rps2 == 1.f && motor_config::traction_gain_a_per_rps == 2.f,
           "both scooter PI selections keep the same measured-acceleration calibration");
     const float positive_limit = std::min(45.f, board.max_drive_current_a);
-    check(params.pi_current_mode.integral_max == positive_limit, "rolling I headroom cannot exceed the drive rail");
+    check(params.speed_pi.integral_max == positive_limit, "rolling I headroom cannot exceed the drive rail");
     using FocGain = ActiveNumericProfile::Gain;
     check(foc_kp == numberCast<float>(constant<FocGain>(0.549775f)) &&
           foc_ki == numberCast<float>(constant<FocGain>(516.792f)),
@@ -101,8 +101,8 @@ void testMotorDefaults(BldcController& controller, const BoardInfo& board) {
     check(params.traction_acceleration_rps2 == 0.f, "JK42 boots without measured acceleration feedback");
     const float positive_limit = std::min(6.f, board.max_drive_current_a);
 #endif
-    check(params.max_current == positive_limit && params.pi_current_mode.max_output == positive_limit &&
-          params.min_current == -6.f && params.pi_current_mode.min_output == -6.f,
+    check(params.max_current == positive_limit && params.speed_pi.max_output == positive_limit &&
+          params.min_current == -6.f && params.speed_pi.min_output == -6.f,
           "positive PI rail respects both board and motor; the braking rail is independent");
 }
 
@@ -189,10 +189,10 @@ public:
         controller_->setControlMode(ControlMode::CLOSED_LOOP_TORQUE);
         controller_->setDriveMode(DriveMode::FORWARD);
         controller_->setCurrent(100.f);
-        check(controller_->getStatus().target_current == std::min(BLDC_MAX_CURRENT, info_.max_drive_current_a),
+        check(numberCast<float>(controller_->io().in.target_current) == std::min(BLDC_MAX_CURRENT, info_.max_drive_current_a),
               "a torque command cannot exceed the installed board/motor pair");
         controller_->setCurrent(-100.f);
-        check(controller_->getStatus().target_current == -6.f, "board drive rating does not change the braking floor");
+        check(numberCast<float>(controller_->io().in.target_current) == -6.f, "board drive rating does not change the braking floor");
         controller_->setDriveMode(DriveMode::NEUTRAL);
         std::printf("Command processor lifecycle: %u checks, %u failures\n", checks, failures);
         std::exit(failures == 0 ? 0 : 1);

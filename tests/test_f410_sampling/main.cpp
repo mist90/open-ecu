@@ -28,10 +28,13 @@ static void checkSampling() {
     params.max_duty_cycle = numberCast<typename P::Duty>(ihm08::MAX_DUTY);
     params.low_side_clamped_pwm = ihm08::LOW_SIDE_CLAMPED_PWM;
     params.angle_offset_rad = typename P::Angle{};
+    // An unsatisfied q-current step sweeps the actual regulator's voltage ceiling
+    // at each electrical angle. Disable back-calculation to keep the P error fixed.
+    params.anti_windup_kb = {};
+    core.setCurrentPiGains(number<typename P::Gain>(1), {});
     typename Core::Input input;
-    input.electric_mode = ElectricMode::VOLTAGE_MODE;
     input.drive_mode = DriveMode::FORWARD;
-    input.duty_command = number<typename P::Duty>(1);
+    input.target_current = number<typename P::Current>(40);
     input.bus_voltage = number<typename P::Voltage>(31);
 
     for (float modulation : {0.0f, 0.2f, 0.6f, 0.8f, 0.9f, ihm08::MAX_MODULATION}) {
@@ -41,6 +44,7 @@ static void checkSampling() {
         for (int step = 0; step < 3600; ++step) {
             input.angle_steps = number<typename P::Angle>(step, 600);
             const auto out = core.update(input);
+            if (out.saturation != 1 || out.v_d != typename P::Voltage{}) ++failures;
             const typename P::Duty duties[] = {out.duty_u, out.duty_v, out.duty_w};
             // The same tie rule as current reconstruction, before timer quantization.
             const int discard = duties[0] >= duties[1] && duties[0] >= duties[2] ? 0 :

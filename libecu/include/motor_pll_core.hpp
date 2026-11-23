@@ -115,14 +115,16 @@ public:
             // format. Rounding back to that same format cannot saturate.
             constexpr unsigned shift = Integral::FRACTION_BITS - Speed::FRACTION_BITS;
             static_assert(shift > 0 && shift < 31);
-            reported_speed_ = Speed::fromRaw(int32_t(fixed_detail::roundedLowWord<shift>(integral_.raw())));
-            speed_ = proportional + reported_speed_;
+            speed_steps_s = Speed::fromRaw(int32_t(fixed_detail::roundedLowWord<shift>(integral_.raw())));
+            speed_ = proportional + speed_steps_s;
         } else {
-            speed_ = multiplyTo<Speed>(error, kp_) + numberCast<Speed>(integral_);
+            speed_steps_s = numberCast<Speed>(integral_);
+            speed_ = multiplyTo<Speed>(error, kp_) + speed_steps_s;
         }
         if (reset_angle) {
             integral_ = numberCast<Integral>(speed_);
-            if constexpr (std::is_same<Profile, FixedProfile>::value) reported_speed_ = speed_;
+            if constexpr (std::is_same<Profile, FixedProfile>::value) speed_steps_s = speed_;
+            else speed_steps_s = numberCast<Speed>(integral_);
             phase_ = number<Phase>(hall_);
         } else {
             const Phase advance = multiplyTo<Phase>(speed_, number_v<Fraction, 1, FrequencyHz>);
@@ -153,17 +155,18 @@ public:
                 phase_ = wrapValue(phase_, number_v<Phase, 6>);
             }
         }
+        angle_steps = sampleAngle();
     }
 
     /** @brief Commutation step with the motor-specific torque alignment. */
     uint8_t getNextHall(DriveMode mode) const noexcept {
-        return getNextHall(mode, getAngle());
+        return getNextHall(mode, angle_steps);
     }
     /** @brief Reuse the same just-sampled angle for telemetry and commutation. */
     uint8_t getNextHall(DriveMode mode, Angle angle) const noexcept {
         const int offset = commutationOffset(mode, inverse_);
         if constexpr (std::is_same<Profile, FixedProfile>::value) {
-            // getAngle() is in [0,6), offset is -2,0,1: the exact raw sum
+            // The sampled angle is in [0,6), offset is -2,0,1: the exact raw sum
             // fits int32, and its rounded sector is in [-2,7]. Keep rounding
             // AFTER adding the offset (negative half-ties round away from zero).
             const int next = use_pll_ ? roundInteger(Angle::fromRaw(
@@ -193,15 +196,23 @@ public:
     /** @brief Re-seed tracking from the most recent real/virtual Hall sector. */
     void reset() noexcept {
         phase_ = number<Phase>(hall_);
+        angle_steps = sampleAngle();
         speed_ = Speed{};
-        reported_speed_ = Speed{};
+        speed_steps_s = Speed{};
         integral_ = Integral{};
         lock_error_ = Angle{};
         synchronized_ = false;
     }
     void setUsePLL(bool enabled) noexcept { use_pll_ = enabled; if (!enabled) reset(); }
     bool isUsingPLL() const noexcept { return use_pll_; }
-    LIBECU_DEADLINE_INLINE Angle getAngle() const noexcept {
+    uint8_t hallState() const noexcept { return hall_; }
+    void getGains(Gain& kp, Gain& ki) const noexcept { kp = kp_; ki = ki_; }
+    Info getInfo() const noexcept {
+        return {use_pll_, hall_, angle_steps, speed_, speed_steps_s, kp_, ki_, synchronized_};
+    }
+
+private:
+    LIBECU_RAM_INLINE Angle sampleAngle() const noexcept {
         // Narrowing may round a phase just below six up to the endpoint.
         if constexpr (std::is_same<Profile, FixedProfile>::value) {
             // phase_ is always wrapped into [0,6), so conversion neither
@@ -216,17 +227,6 @@ public:
             return angle >= ANGLE_MAX ? angle - ANGLE_MAX : angle;
         }
     }
-    Speed getSpeedStepsSec() const noexcept {
-        if constexpr (std::is_same<Profile, FixedProfile>::value) return reported_speed_;
-        else return numberCast<Speed>(integral_);
-    }
-    uint8_t hallState() const noexcept { return hall_; }
-    void getGains(Gain& kp, Gain& ki) const noexcept { kp = kp_; ki = ki_; }
-    Info getInfo() const noexcept {
-        return {use_pll_, hall_, getAngle(), speed_, getSpeedStepsSec(), kp_, ki_, synchronized_};
-    }
-
-private:
     Fraction lockFilterAlpha() const noexcept {
         constexpr auto low = number_v<Fraction, 1, 10000>, high = number_v<Fraction, 1, 20>;
         constexpr auto scale = number_v<Fraction, 1, 6u * FrequencyHz>;
@@ -250,28 +250,34 @@ private:
     Angle phaseError() const noexcept {
         if constexpr (std::is_same<Profile, FixedProfile>::value) {
             static_assert(Angle::FRACTION_BITS + 3 <= 31, "One electrical turn must fit int32");
-            // Only valid sectors enter hall_, and getAngle() is in [0,6).
+            // Only valid sectors enter hall_, and angle_steps is in [0,6).
             // Native subtraction/wrapping is therefore exact over [-6,6].
-            int32_t raw = int32_t(hall_) * int32_t(Angle::SCALE) - getAngle().raw();
+            int32_t raw = int32_t(hall_) * int32_t(Angle::SCALE) - angle_steps.raw();
             if (raw > number_v<Angle, 3>.raw()) raw -= ANGLE_MAX.raw();
             else if (raw < -number_v<Angle, 3>.raw()) raw += ANGLE_MAX.raw();
             return Angle::fromRaw(numericClamp(raw, -LIMIT_ANGLE_ERROR.raw(), LIMIT_ANGLE_ERROR.raw()));
         } else {
-            Angle error = number<Angle>(hall_) - getAngle();
+            Angle error = number<Angle>(hall_) - angle_steps;
             if (error > number_v<Angle, 3>) error -= ANGLE_MAX;
             else if (error < -number_v<Angle, 3>) error += ANGLE_MAX;
             return numericClamp(error, -LIMIT_ANGLE_ERROR, LIMIT_ANGLE_ERROR);
         }
     }
 
+public:
+    // The standalone kernel and the board adapter share these two results.
+    // Keep the registers in one access section for standard-layout telemetry;
+    // MotorPLL inherits privately and only exposes the two sampled fields.
+    Angle angle_steps{};  ///< Wrapped angle in [0,6), rounded from the full phase accumulator.
+    Speed speed_steps_s{};  ///< Smoothed electrical speed: the integral, without the proportional term.
+
     uint8_t hall_ = 0;
     bool inverse_ = false;
     bool synchronized_ = false;
     bool use_pll_ = false;
+    Speed speed_{};  ///< Full PI output used for phase advance and lock detection.
     Integral integral_limit_{};
     Phase phase_{};
-    Speed speed_{};
-    Speed reported_speed_{};
     Integral integral_{};
     Angle lock_error_{};
     Gain kp_{};

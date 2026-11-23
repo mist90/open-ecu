@@ -2,27 +2,11 @@
  * @file motor_algorithm.hpp
  * @brief Common interface for the electrical control algorithms
  *
- * Everything between "here are the measurements" and "here are the PWM duties"
- * lives behind this interface. `BldcController` gathers the inputs once per
- * PWM interrupt - phase currents, bus voltage, rotor angle, commands - hands
- * them to whichever algorithm is selected, and does nothing else with the
- * bridge. The algorithms own the PWM interface outright: six-step needs
- * per-phase switching states and a COM event, FOC needs three independent
- * duties and no COM event at all, and pushing that difference up into the
- * controller was what made the old handler hard to follow.
- *
- * The two axes of mode are deliberately orthogonal:
- *
- * | DriveAlgorithm | ElectricMode  | what runs                                   |
- * |----------------|---------------|---------------------------------------------|
- * | SIX_STEP       | VOLTAGE_MODE  | trapezoidal, duty commanded directly         |
- * | SIX_STEP       | CURRENT_MODE  | trapezoidal, inner current PI on the shunt   |
- * | FOC            | VOLTAGE_MODE  | SVPWM, Vq commanded directly, no current loop|
- * | FOC            | CURRENT_MODE  | SVPWM, d/q current PI - full field-oriented  |
- *
- * The two voltage-mode rows exist for bring-up: they exercise the modulator
- * and the angle without a current loop in the way, which is the only sane way
- * to find a wrong angle offset.
+ * Both algorithms regulate a signed torque-current demand. Six-step uses the
+ * conducting shunt and commits a new set of phase states on commutation. FOC
+ * regulates d/q current and writes three independent PWM duties. On the
+ * carrier they work directly on the controller's electrical storage; the
+ * value types below serve standalone callers.
  */
 
 #ifndef LIBECU_MOTOR_ALGORITHM_HPP
@@ -35,11 +19,7 @@
 namespace libecu {
 
 /**
- * @brief Everything an algorithm is allowed to know, gathered once per ISR
- *
- * Sampled by BldcController at the top of the PWM interrupt so that both
- * algorithms see exactly the same snapshot and neither one reaches into
- * hardware behind the other's back.
+ * @brief One standalone sample and its torque-current command.
  */
 struct MotorAlgorithmInput {
     /**
@@ -49,8 +29,7 @@ struct MotorAlgorithmInput {
      * current flowing OUT of the phase**, down through the low-side switch and
      * its shunt to ground. That is the opposite of the usual motor convention
      * (positive into the phase) that the Clarke transform expects, so anything
-     * doing vector maths on these has to negate them first - see
-     * FocAlgorithm::reconstructCurrents().
+     * doing vector maths on these has to negate them first.
      *
      * Measured, not assumed: six-step driving forward at 3.0 RPS against a
      * +0.525 A target reads +0.538 A on the DOWN phase, 99.1 % of samples
@@ -69,11 +48,9 @@ struct MotorAlgorithmInput {
     float bus_voltage;      ///< Measured DC bus voltage (V)
     float angle_steps;      ///< Rotor electrical angle from the PLL, [0, 6) steps
     float speed_steps_s;    ///< Rotor electrical speed (steps/s), signed
-    float target_current;   ///< Torque command (A); magnitude, sign from drive_mode
-    float duty_command;     ///< Voltage-mode command, 0.0 to 1.0
+    float target_current;   ///< Torque-current command (A) relative to drive_mode
     uint8_t step;           ///< Six-step target commutation step, 0-5
     DriveMode drive_mode;   ///< FORWARD / REVERSE / NEUTRAL
-    ElectricMode electric_mode; ///< Voltage or current control
 };
 
 /**
@@ -92,7 +69,7 @@ struct MotorAlgorithmOutput {
     float i_d;              ///< Measured d-axis current (A), FOC only
     float i_q;              ///< Measured q-axis current (A), FOC only
     float v_d;              ///< Applied d-axis voltage (V), FOC only
-    float v_q;              ///< Applied q-axis voltage (V), FOC only
+    float v_q;              ///< Applied q-axis voltage (V); six-step reports duty × bus voltage
     float angle_e_rad;      ///< Electrical angle the algorithm used (rad)
     int8_t saturation;      ///< +1/-1 if the actuator is clamped high/low, else 0
 };
@@ -131,8 +108,7 @@ public:
     /** Value-facing compatibility path on ports using erased algorithms. */
     virtual MotorAlgorithmOutput update(const MotorAlgorithmInput& in) noexcept = 0;
 #endif
-    // Native-only ports dispatch by concrete type; a vtable reference here
-    // would retain a second, unused numerical kernel in the resident OTA slot.
+    // Native-only ports do not need to retain a value adapter in the vtable.
 };
 
 } // namespace libecu

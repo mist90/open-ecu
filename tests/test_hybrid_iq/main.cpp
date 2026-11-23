@@ -52,7 +52,6 @@ struct Rig {
                                numberCast<typename Core::Gain>(516.792f));
         core.reset();
         in.drive_mode = DriveMode::FORWARD;
-        in.electric_mode = ElectricMode::CURRENT_MODE;
     }
 
     typename Core::Output step(float target, float noise_q = 0, float noise_d = 0) {
@@ -152,7 +151,7 @@ static void transients() {
     for (unsigned n=0; n<Hz; ++n) saturated.step(0.0f);
     check(std::fabs(saturated.iq) < 0.05f, "recovers after prolonged negative saturation");
 
-    // Id-priority clipping, voltage-mode bypass and state re-entry.
+    // Id-priority clipping and current-regulator re-entry after parking.
     Rig<Hz> modes;
     modes.params.id_target = number<typename P::Current>(50);
     modes.core.setParams(modes.params);
@@ -162,14 +161,13 @@ static void transients() {
     for (unsigned n=0; n<Hz; ++n) modes.step(1);
     check(std::fabs(modes.iq-1) < 0.05f && std::fabs(modes.id) < 0.01f,
           "Id-priority saturation and reconfiguration recover");
-    modes.in.electric_mode = ElectricMode::VOLTAGE_MODE;
-    modes.in.duty_command = number<typename P::Duty>(1,10);
-    const auto voltage = modes.step(20,10);
-    check(std::fabs(numberCast<float>(voltage.v_q)-2.193f) < 0.02f,
-          "voltage mode bypasses both hybrid model and measured current");
-    modes.in.electric_mode = ElectricMode::CURRENT_MODE;
-    check(std::fabs(numberCast<float>(modes.step(1).v_q)-R) < 0.001f,
-          "voltage mode clears adaptation before re-entry");
+    modes.r = 2 * R;
+    for (unsigned n=0; n<Hz*3; ++n) modes.step(1);
+    check(numberCast<float>(modes.step(1).v_q) > R + 0.3f,
+          "hybrid current feedback compensates for increased phase resistance");
+    modes.core.reset();
+    check(std::fabs(numberCast<float>(modes.step(1, 10).v_q)-R) < 0.001f,
+          "after a reset, neither old trim nor first-frame measurement noise alters the model voltage");
 
     Rig<Hz> bus_recovery;
     bus_recovery.params.id_target = number<typename P::Current>(20);

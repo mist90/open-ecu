@@ -136,7 +136,6 @@ static void testCore() {
     core.setCurrentPiGains(number<typename P::Gain>(1), {});
     MotorAlgorithmInputT<P> in;
     in.bus_voltage = number<V>(40);
-    in.electric_mode = ElectricMode::CURRENT_MODE;
     in.drive_mode = DriveMode::FORWARD;
     // Large over-demand at all orientations, both PWM modes and all duty spans.
     for (bool low : {false, true}) for (float max_duty : {0.5f, 0.6f, 0.95f, 1.0f}) {

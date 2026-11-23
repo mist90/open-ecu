@@ -196,12 +196,11 @@ class Bench:
         mode = self.command("AT+DMODE?", "+DMODE:")
         speed = self.command("AT+SPD?", "+SPD:")
         current = self.command("AT+CUR?", "+CUR:")
-        duty = self.command("AT+DUT?", "+DUT:")
         # SPD? reports measured speed: a disconnected bridge may still be coasting.
-        if mode != "2" or float(current) != 0.0 or float(duty) != 0.0:
-            raise RuntimeError(f"Unexpected parked state: DMODE={mode}, CUR={current}, DUT={duty}")
+        if mode != "2" or float(current) != 0.0:
+            raise RuntimeError(f"Unexpected parked state: DMODE={mode}, CUR={current}")
         return {"dmode": mode, "speed_command": 0, "speed_measured": speed,
-                "current_command": current, "duty": duty}
+                "current_command": current}
 
 
 def summarize(records, tag, since, poles):
@@ -257,23 +256,24 @@ def summarize(records, tag, since, poles):
 
 
 def main():
+    control_modes = {"open-current": 0, "speed": 1, "current": 2}
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", default="/dev/ttyACM0")
     parser.add_argument("--platform", choices=("STM32G431", "STM32F410"), default="STM32G431")
     parser.add_argument("--baud", type=int, default=BAUD, help="UART baud rate (default: 2000000)")
     parser.add_argument("--poles", type=int, required=True)
     parser.add_argument("--algo", type=int, choices=(0, 1), default=0)
-    parser.add_argument("--mode", choices=("voltage", "current", "speed", "speed-voltage",
-                                           "open-voltage", "open-current"), default="speed")
+    parser.add_argument("--mode", choices=control_modes, default="speed")
     parser.add_argument("--open-speed", type=float, default=0.25,
                         help="Mechanical RPS of the open-loop field (default: 0.25)")
     parser.add_argument("--align-seconds", type=float, default=0.0,
-                        help="Hold the initial open-loop field at the first duty/current value")
+                        help="Hold the initial open-loop field at the first current value")
     parser.add_argument("--open-ramp-seconds", type=float, default=0.0,
                         help="Ramp the open-loop SPD command to --open-speed in five steps")
     parser.add_argument("--osc", action="store_true", help="Record the raw 20 kHz OSC bursts as well")
     parser.add_argument("--direction", type=int, choices=(0, 1), default=0)
-    parser.add_argument("--values", type=float, nargs="+", required=True)
+    parser.add_argument("--values", type=float, nargs="+", required=True,
+                        help="Mechanical RPS in speed mode; amperes in current and open-current")
     parser.add_argument("--seconds", type=float, default=3.0)
     parser.add_argument("--settle", type=float, default=1.0)
     parser.add_argument("--max-current", type=float, default=2.0)
@@ -295,17 +295,14 @@ def main():
         parser.error("Require an even positive pole count and positive measurement duration")
     if not all(math.isfinite(value) and value >= 0 for value in (args.align_seconds, args.open_ramp_seconds)):
         parser.error("Alignment/ramp durations must be finite and non-negative")
-    if (args.align_seconds or args.open_ramp_seconds) and not args.mode.startswith("open"):
-        parser.error("Alignment and open-loop ramp require an open-loop mode")
+    if (args.align_seconds or args.open_ramp_seconds) and args.mode != "open-current":
+        parser.error("Alignment and open-loop ramp require --mode open-current")
     bench = Bench(args)
     report = {"date": datetime.datetime.now(datetime.timezone.utc).isoformat(),
               "config": vars(args), "results": []}
     try:
         for command in ("AT+DMODE=2", "AT+SPD=0", "AT+OSC=0", "AT+TM=0", "AT+PLL=0", "AT+HSTATUS=0",
-                        "AT+HCLEAR", f"AT+ALGO={args.algo}",
-                        f"AT+EMODE={0 if args.mode in ('voltage', 'speed-voltage', 'open-voltage') else 1}",
-                        f"AT+MODE={0 if args.mode.startswith('open') else 1 if args.mode.startswith('speed') else 2}",
-                        "AT+ACC=5"):
+                        "AT+HCLEAR", f"AT+ALGO={args.algo}", f"AT+MODE={control_modes[args.mode]}", "AT+ACC=5"):
             bench.command(command)
         report["firmware"] = bench.command("AT+VER?", "+VER:")
         for setting in args.set:
@@ -319,13 +316,12 @@ def main():
         for command in streams:
             bench.command(command)
         bench.collect(0.1)
-        setting = ("SPD" if args.mode.startswith("speed") else
-                   "DUT" if args.mode in ("voltage", "open-voltage") else "CUR")
+        setting = "SPD" if args.mode == "speed" else "CUR"
         bench.armed = True
         bench.command(f"AT+DMODE={args.direction}")
         if bench.command("AT+DMODE?", "+DMODE:") != str(args.direction):
             raise RuntimeError("Drive did not enter the requested direction")
-        if args.mode.startswith("open"):
+        if args.mode == "open-current":
             if args.align_seconds or args.open_ramp_seconds:
                 bench.tag = "alignment"
                 bench.command("AT+SPD=0")

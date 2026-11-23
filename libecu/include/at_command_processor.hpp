@@ -19,7 +19,6 @@
 
 namespace libecu {
 
-using MotorStatus = MotorStatusT<FloatProfile>;
 
 /**
  * @brief AT command processor for serial communication with motor controller
@@ -66,16 +65,8 @@ public:
     /// @brief Request ISR snapshots only while an OSC buffer is being filled
     bool wantsCurrentSample() const noexcept override;
 
-    /// @brief Pack a native ISR snapshot into the AT-owned OSC buffer
-    void captureCurrentSample(const NativeMotorStatus& status) noexcept override {
-        captureNativeOscSample(status);
-    }
-
-    /**
-     * @brief Send telemetry data
-     * @param status Motor status information
-     */
-    void sendTelemetry(const MotorStatus& status) noexcept;
+    /// @brief Pack the completed tick into the AT-owned OSC buffer
+    void captureCurrentSample(const MotorIo& io) noexcept override;
 
     /**
      * @brief Enable or disable telemetry output
@@ -98,18 +89,6 @@ public:
      * @brief Stop oscilloscope streaming
      */
     void stopOscilloscope() noexcept;
-
-    /**
-     * @brief Capture an oscilloscope sample
-     *
-     * Called from the PWM ISR, so it must stay cheap: the conversion to the
-     * packed representation happens here rather than at output time, but it is
-     * only a handful of multiplies.
-     *
-     * @param status Motor status snapshot for this PWM cycle
-     */
-    void captureOscSample(const MotorStatus& status) noexcept;
-    void captureNativeOscSample(const NativeMotorStatus& status) noexcept;
 
     /**
      * @brief Process oscilloscope output (send one sample per call)
@@ -165,6 +144,7 @@ public:
     static_assert(LIBECU_OSC_BUFFER_SIZE > 0, "OSC capture needs at least one sample");
 
 private:
+    void sendTelemetry() noexcept;
     /**
      * @brief Process a complete command
      */

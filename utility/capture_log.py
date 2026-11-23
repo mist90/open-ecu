@@ -3,7 +3,7 @@
 
 Spins the motor up, waits for the speed to settle (the firmware slew-limits
 acceleration, so this is not instant), captures for a fixed window, then always
-ramps down and restores the drive mode it found - including on Ctrl-C or error.
+ramps down, parks in neutral and restores the previous control mode.
 
     ./capture_log.py 8            -> 8RPS.log
     ./capture_log.py 8 --seconds 8 --out /tmp/eight.log
@@ -93,9 +93,9 @@ def main() -> int:
     out = args.out or f"{args.rps:g}RPS.log"
     ecu = Ecu(args.port)
 
-    print(f"ver={ecu.query('AT+VER?', '+VER:')}  mode={ecu.query('AT+MODE?', '+MODE:')}"
-          f"  emode={ecu.query('AT+EMODE?', '+EMODE:')}  dmode={ecu.query('AT+DMODE?', '+DMODE:')}")
-    dmode_was = ecu.query("AT+DMODE?", "+DMODE:") or "2"
+    mode_was = ecu.query("AT+MODE?", "+MODE:") or "1"
+    print(f"ver={ecu.query('AT+VER?', '+VER:')}  mode={mode_was}"
+          f"  algo={ecu.query('AT+ALGO?', '+ALGO:')}")
 
     try:
         # Send all commands with telemetry OFF. A saturated 2 Mbaud TX stream
@@ -104,6 +104,11 @@ def main() -> int:
         # re-plugging the USB), so keep the link quiet while commanding.
         ecu.cmd("AT+OSC=0")
         ecu.cmd("AT+TM=0")
+        ecu.cmd("AT+DMODE=2")
+        ecu.cmd("AT+MODE=1")
+        if ecu.query("AT+MODE?", "+MODE:") != "1":
+            print("!! could not enter velocity mode")
+            return 1
         # NEUTRAL disables the bridge and makes setTargetSpeed() a no-op, so
         # drive mode has to be confirmed before the speed command is sent.
         for attempt in range(3):
@@ -182,9 +187,10 @@ def main() -> int:
         ecu.cmd("AT+SPD=0")
         print("ramping down ...")
         time.sleep(args.rps / 5.0 + 2.0)
-        ecu.cmd(f"AT+DMODE={dmode_was}")
+        ecu.cmd("AT+DMODE=2")
+        ecu.cmd(f"AT+MODE={mode_was}")
         ecu.cmd("AT+TM=0")
-        print(f"restored dmode={dmode_was}")
+        print(f"parked in NEUTRAL, restored mode={mode_was}")
         ecu.close()
     return 0
 

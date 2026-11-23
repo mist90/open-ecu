@@ -9,6 +9,7 @@ import statistics
 import time
 
 from bench_motor import Bench
+from ecu import BAUD
 
 
 def analyze(records, low, high, frequency):
@@ -76,20 +77,18 @@ def main():
     parser.add_argument("--high", type=float, default=0.4)
     parser.add_argument("--steps", type=int, default=10)
     parser.add_argument("--out", required=True)
+    parser.set_defaults(platform="STM32G431", baud=BAUD, hall_swd=None, profile_address=None,
+                        min_bus_voltage=10.0, max_bus_voltage=30.0, max_current=1.5, max_speed=30)
     args = parser.parse_args()
     if not (math.isfinite(args.low) and math.isfinite(args.high) and 0 <= args.low < args.high and args.steps > 0):
         parser.error("Require finite 0 <= low < high currents and a positive step count")
-    args.hall_swd = None
-    args.profile_address = None
-    args.max_current = 1.5
-    args.max_speed = 30
     reports = []
     for gains in args.gains:
         bench = Bench(args)
         report = {"gains": gains}
         try:
             for command in ("AT+DMODE=2", "AT+SPD=0", "AT+TM=0", "AT+OSC=0", "AT+PLL=0",
-                            "AT+HSTATUS=0", "AT+HCLEAR", "AT+ALGO=0", "AT+MODE=0", "AT+EMODE=1",
+                            "AT+HSTATUS=0", "AT+HCLEAR", "AT+ALGO=0", "AT+MODE=0",
                             "AT+CPID=" + gains, "AT+TM=1", "AT+HSTATUS=1"):
                 bench.command(command)
             report["firmware"] = bench.command("AT+VER?", "+VER:")

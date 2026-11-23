@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
 """Find the FOC electrical angle offset (AT+FANG) by sweeping it on the bench.
 
-The offset between the PLL's Hall-derived step angle and the rotor d axis is
-*derived* in the firmware (-60 electrical degrees, from the six-step table
-geometry) but has never been measured.  If it is wrong it is wrong by a whole
-multiple of 60 degrees, and the symptom is little or no torque.
+This MOTOR_1 sweep is centred on the -60 electrical degrees derived from its
+six-step table. A motor with a different Hall/phase mapping needs its own offset.
 
-Method: current-mode FOC (AT+ALGO=1, AT+EMODE=1) held at a fixed speed by the
+Method: FOC (AT+ALGO=1) held at a fixed speed by the
 velocity loop, measuring the **current it takes** to sustain that speed.  The
 mechanical load is the motor's own friction and windage, which at a fixed speed
 is fixed, so the current required is inversely proportional to torque per amp
@@ -22,21 +20,12 @@ leave the loop headroom turns the same experiment into a sharp minimum.
     ./fang_sweep.py                           # +-90 deg around the derived value
     ./fang_sweep.py --range -110 -50 --step 5 # refine around the coarse winner
 
-SAFETY - why current mode rather than voltage mode:
-
-Voltage-mode FOC has no current limit at all.  At duty d the applied q-axis
-voltage is d * 0.95 * Vbus/sqrt(3), and if the angle is wrong enough that the
-rotor stalls or hunts there is nothing to stop the current; this was measured,
-not guessed - a first attempt at this sweep in voltage mode hit -10.5 A at duty
-0.08 on the very first point and had to abort.
-
-In current mode the d/q regulators drive the measured (Id, Iq) to (0, Iq*), so
-the current magnitude is the command regardless of how wrong the angle is.  The
-one exception is an error near 180 degrees, where the feedback sign inverts and
-the loop becomes positive feedback - which is why --coarse spans +-90 degrees
-around the derived value rather than the whole circle, and why the offsets are
-visited outward from the derived value rather than in numerical order.  A
-current guard is still in place as a backstop.
+On an older firmware, a probe that applied 0.08 duty directly reached -10.5 A
+at the first offset and was aborted. That measurement was not made with the
+current-regulated sweep. Here the speed PI supplies Iq* and FOC regulates the
+measured d/q currents. A wrong offset can still reverse torque: the default
+sweep stays within +-90 degrees, visits the nearest offsets first and checks
+measured current after each point.
 """
 
 import argparse
@@ -47,7 +36,6 @@ import time
 from ecu import Ecu
 
 STEPS_PER_REV = 120.0    # MOTOR_1: 20 pole pairs * 6 steps
-CURRENT_CAP = 4.0        # the sweep never commands more than this
 DERIVED_FANG = -60.0     # what the firmware derives; the sweep centres on it
 ABORT_CURRENT_A = 6.0    # bail out if the drive pulls more than this
 
@@ -130,7 +118,7 @@ def main():
     ap.add_argument("--step", type=float, default=10.0)
     ap.add_argument("--seconds", type=float, default=3.0, help="measurement window")
     ap.add_argument("--settle", type=float, default=2.5)
-    ap.add_argument("--dmode", type=int, default=0, help="0=FORWARD, 1=REVERSE")
+    ap.add_argument("--dmode", type=int, choices=(0, 1), default=0, help="0=FORWARD, 1=REVERSE")
     ap.add_argument("--out", default=None, help="write results as JSON")
     args = ap.parse_args()
 
@@ -159,10 +147,10 @@ def main():
     try:
         ecu.cmd("AT+OSC=0"); ecu.cmd("AT+TM=0")
         ecu.cmd("AT+PLL=0"); ecu.cmd("AT+HSTATUS=0")
+        ecu.cmd("AT+DMODE=2")
         ecu.cmd("AT+HCLEAR")
         ecu.cmd("AT+MODE=1")     # CLOSED_LOOP_VELOCITY: hold the speed, watch the current
         ecu.cmd("AT+ALGO=1")     # FOC
-        ecu.cmd("AT+EMODE=1")    # current mode: bounds the current at any angle
         if (ecu.query("AT+ALGO?", "+ALGO:") or "").strip() != "1":
             print("!! could not select FOC")
             return 1
@@ -197,8 +185,6 @@ def main():
                       f"{ABORT_CURRENT_A} A - aborting sweep")
                 break
     finally:
-        ecu.cmd("AT+CUR=0")
-        ecu.cmd("AT+DUT=0")
         ecu.cmd("AT+SPD=0")
         time.sleep(1.5)
         ecu.cmd("AT+DMODE=2")

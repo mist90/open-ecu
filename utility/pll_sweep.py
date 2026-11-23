@@ -116,11 +116,10 @@ def main():
     ap.add_argument("--gains", default=None, metavar="KP,KI",
                     help="apply AT+PLLID=KP,KI before the sweep")
     ap.add_argument("--out", default=None, help="write results as JSON")
-    ap.add_argument("--dmode", type=int, default=0, help="0=FORWARD, 1=REVERSE")
+    ap.add_argument("--dmode", type=int, choices=(0, 1), default=0, help="0=FORWARD, 1=REVERSE")
     args = ap.parse_args()
 
     ecu = Ecu(args.port)
-    dmode_was = ecu.query("AT+DMODE?", "+DMODE:") or "2"
     results = []
 
     try:
@@ -128,6 +127,7 @@ def main():
         ecu.cmd("AT+TM=0")
         ecu.cmd("AT+PLL=0")
         ecu.cmd("AT+HSTATUS=0")
+        ecu.cmd("AT+DMODE=2")
         ecu.cmd("AT+HCLEAR")
         if args.gains:
             ecu.cmd(f"AT+PLLID={args.gains}")
@@ -174,7 +174,7 @@ def main():
         ecu.cmd("AT+HSTATUS=0")
         ecu.cmd("AT+SPD=0")
         time.sleep(max(args.speeds) / ACCEL_RPS2 + 1.5)
-        ecu.cmd(f"AT+DMODE={dmode_was}")
+        ecu.cmd("AT+DMODE=2")
         ecu.cmd("AT+TM=0")
         ecu.close()
 

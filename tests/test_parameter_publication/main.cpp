@@ -51,7 +51,7 @@ template<class Core> static auto hallLive(const Core& c) {
 template<class Core> static auto pllConfig(const Core& c) { return std::make_tuple(c.kp_, c.ki_, c.ki_step_); }
 template<class Core> static auto pllLive(const Core& c) {
     return std::make_tuple(c.hall_, c.inverse_, c.synchronized_, c.use_pll_, c.integral_limit_,
-                          c.phase_, c.speed_, c.integral_, c.lock_error_);
+                          c.phase_, c.speed_, c.integral_, c.lock_error_, c.angle_steps, c.speed_steps_s);
 }
 
 template<class Profile, uint32_t Hz> static void hallCore() {
@@ -205,15 +205,15 @@ static void wrappers() {
     MotorPLL::PreparedGains gains;
     check(MotorPLL::prepareGains(-13.25f, 5000.125f, gains), "wrapper prepares continuous PLL gains");
     pll.setUsePLL(true); pll.updateHall(3); pll.updateTick();
-    const auto pll_before = pllLive(pll.core_);
+    const auto pll_before = pllLive(pll);
     pll.applyPrepared(gains);
-    check(pllLive(pll.core_) == pll_before, "PLL wrapper does not reset tracking when installing gains");
-    const auto gains_before = pllConfig(pll.core_);
+    check(pllLive(pll) == pll_before, "PLL wrapper does not reset tracking when installing gains");
+    const auto gains_before = pllConfig(pll);
     const auto prepared_before = std::make_tuple(gains.kp, gains.ki, gains.ki_step);
     for (float invalid : {std::numeric_limits<float>::infinity(), std::numeric_limits<float>::quiet_NaN()}) {
         check(!MotorPLL::prepareGains(invalid, 1000.0f, gains) && !pll.setGains(1.0f, invalid),
               "non-finite PLL gains rejected");
-        check(pllLive(pll.core_) == pll_before && pllConfig(pll.core_) == gains_before &&
+        check(pllLive(pll) == pll_before && pllConfig(pll) == gains_before &&
               std::make_tuple(gains.kp, gains.ki, gains.ki_step) == prepared_before,
               "invalid PLL transaction leaves gain output, active gains and tracking unchanged");
     }
@@ -275,10 +275,10 @@ static void currentPiPublication() {
 static BldcController* boundary_controller = nullptr;
 static void advanceAtBoundary() {
     check(lock_depth == 0, "ISR runs before the setter masks interrupts");
-    auto& hall = boundary_controller->hall_monitor_;
-    auto& pll = boundary_controller->motor_pll_;
+    auto& hall = boundary_controller->io_.out.hall;
+    auto& pll = boundary_controller->io_.out.pll;
     check(hall.getParameters().decay_time_us == 500000, "Hall preparation has not prematurely published");
-    check(pll.core_.kp_ == number<MotorPLL::Core::Gain>(100), "PLL preparation has not prematurely published");
+    check(pll.kp_ == number<MotorPLL::Core::Gain>(100), "PLL preparation has not prematurely published");
     hall.onPosition(4, true); hall.onPosition(3, true); hall.onPosition(255, true); hall.tick(true);
     pll.updateHall(3); pll.updateTick();
 }
@@ -291,30 +291,30 @@ static void controllerBoundary() {
     BldcController controller(pwm, hall, params);
     boundary_controller = &controller;
     before_lock = advanceAtBoundary;
-    auto tuning = controller.hall_monitor_.getParameters();
+    auto tuning = controller.io_.out.hall.getParameters();
     tuning.decay_time_us = 123457;
     const unsigned locks_before = lock_count;
     check(controller.setHallMonitorParams(tuning), "controller Hall setter accepts prepared tuning");
     before_lock = nullptr;
     check(lock_count == locks_before + 1 && lock_depth == 0, "Hall controller masks only one commit");
-    check(controller.hall_monitor_.core_.last_position_ == 3 && controller.hall_monitor_.core_.invalid_ticks_ == 1 &&
-          controller.hall_monitor_.core_.invalid_events_ == 1, "Hall controller retains the ISR at the commit boundary");
+    check(controller.io_.out.hall.core_.last_position_ == 3 && controller.io_.out.hall.core_.invalid_ticks_ == 1 &&
+          controller.io_.out.hall.core_.invalid_events_ == 1, "Hall controller retains the ISR at the commit boundary");
 
-    controller.hall_monitor_.setParameters(HallMonitorParams{500000, 0.0f, 1, 300, 0.35f, 10.0f, true});
+    controller.io_.out.hall.setParameters(HallMonitorParams{500000, 0.0f, 1, 300, 0.35f, 10.0f, true});
     before_lock = advanceAtBoundary;
-    const auto pll_before = pllLive(controller.motor_pll_.core_);
+    const auto pll_before = pllLive(controller.io_.out.pll);
     check(controller.setPllGains(123.0f, 4567.0f), "controller PLL setter accepts prepared gains");
     before_lock = nullptr;
     check(lock_count == locks_before + 2 && lock_depth == 0, "PLL controller masks only one commit");
-    check(pllLive(controller.motor_pll_.core_) != pll_before && controller.motor_pll_.getHallStateRaw() == 3,
+    check(pllLive(controller.io_.out.pll) != pll_before && controller.io_.out.pll.getHallStateRaw() == 3,
           "PLL controller retains tracking advanced at the commit boundary");
-    const auto hall_state = hallLive(controller.hall_monitor_.core_);
-    const auto pll_state = pllLive(controller.motor_pll_.core_);
+    const auto hall_state = hallLive(controller.io_.out.hall.core_);
+    const auto pll_state = pllLive(controller.io_.out.pll);
     tuning.invalid_threshold = std::numeric_limits<float>::quiet_NaN();
     check(!controller.setHallMonitorParams(tuning) &&
           !controller.setPllGains(std::numeric_limits<float>::infinity(), 1.0f), "controller rejects invalid transactions");
-    check(lock_count == locks_before + 2 && hallLive(controller.hall_monitor_.core_) == hall_state &&
-          pllLive(controller.motor_pll_.core_) == pll_state, "invalid controller parameters never enter a critical section");
+    check(lock_count == locks_before + 2 && hallLive(controller.io_.out.hall.core_) == hall_state &&
+          pllLive(controller.io_.out.pll) == pll_state, "invalid controller parameters never enter a critical section");
 }
 #endif
 

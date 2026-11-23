@@ -36,7 +36,7 @@ static void exercise() {
     for (unsigned tick = 0; tick < 8000; ++tick) {
         const bool locked = pll.getInfo().is_sync;
         const unsigned old_losses = losses, old_reseeds = reseeds;
-        const uint8_t opposite = (static_cast<unsigned>(numberCast<float>(pll.getAngle())) + 3) % 6;
+        const uint8_t opposite = (static_cast<unsigned>(numberCast<float>(pll.angle_steps)) + 3) % 6;
         pll.updateHall(opposite);
         pll.updateTick();
         const auto after = pll.getInfo();

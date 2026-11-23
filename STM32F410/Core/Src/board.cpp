@@ -210,7 +210,7 @@ extern "C" int board_console_read() {
 extern "C" void board_break_interrupt() {
     if (TIM1->SR & TIM_SR_BIF) {
         trip(BREAK); // Hardware has already cleared MOE asynchronously.
-        if (controller) controller->cancelPwmInterruptHandler();
+        if (controller) controller->cancelPwmTick();
         // BKIN may remain low: disable its IRQ after latching to avoid an IRQ storm.
         CLEAR_BIT(TIM1->DIER, TIM_DIER_BIE);
         TIM1->SR = ~TIM_SR_BIF;
@@ -262,9 +262,8 @@ extern "C" void board_adc_interrupt() {
     }
     if (pwm_driver.faulted() && controller->getDriveMode() != libecu::DriveMode::NEUTRAL)
         controller->setDriveMode(libecu::DriveMode::NEUTRAL);
-    controller->pwmInterruptHandler();
-    if (console->wantsCurrentSample()) {
-        console->captureCurrentSample(controller->getNativeStatus());
+    if (controller->pwmInterruptHandler() && console->wantsCurrentSample()) {
+        console->captureCurrentSample(controller->io());
     }
     const uint32_t cycles = DWT->CYCCNT - started;
     if (cycles > f410_diagnostics.max_current_loop_cycles) f410_diagnostics.max_current_loop_cycles = cycles;

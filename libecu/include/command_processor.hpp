@@ -14,8 +14,7 @@
 namespace libecu {
 
 class BldcController;
-template<class P> struct MotorStatusT;
-using NativeMotorStatus = MotorStatusT<ActiveNumericProfile>;
+struct MotorIo;
 
 /**
  * @brief Byte-oriented protocol selected by a board's console factory
@@ -65,8 +64,8 @@ public:
     virtual void processOutput() noexcept {}
 
     /**
-     * @brief Opt in to a native status snapshot after the current-loop ISR
-     * @return false by default, avoiding a snapshot and capture work entirely
+     * @brief Opt in to sampling the live I/O after the current tick
+     * @return false by default, avoiding capture work entirely
      *
      * Called from the ISR. Both this query and captureCurrentSample() must be
      * bounded, non-blocking, and must not transmit or format output.
@@ -74,10 +73,10 @@ public:
     virtual bool wantsCurrentSample() const noexcept { return false; }
 
     /**
-     * @brief Consume an ISR snapshot when wantsCurrentSample() is true
-     * @param status Current-loop status in the selected numeric profile
+     * @brief Consume the completed tick while still in its interrupt
+     * @param io Controller-owned storage; copy only the subscribed channels
      */
-    virtual void captureCurrentSample(const NativeMotorStatus& status) noexcept { (void)status; }
+    virtual void captureCurrentSample(const MotorIo& io) noexcept { (void)io; }
 
 protected:
     /// @brief Controller shared with the application; no protocol state lives in the base

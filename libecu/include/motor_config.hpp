@@ -28,8 +28,6 @@ namespace libecu::motor_config {
 // against a reference thermometer - see the NTC note in stm32_adc.cpp.
 #define BLDC_MAX_TEMPERATURE 100.0f
 #define BLDC_INVERTION false
-#define BLDC_SPEED_VOLTAGE_KP 0.1f
-#define BLDC_SPEED_VOLTAGE_KI 0.2f
 // Select the outer speed PI here. Both gain pairs use the same current/PLL calibration.
 #ifndef MOTOR_1_LOADED
 #define MOTOR_1_LOADED 0
@@ -99,8 +97,6 @@ inline constexpr PiParameters foc_current_pi{0.549775f, 516.792f};
 #define BLDC_MAX_ACCELERATION 20.0f
 #define BLDC_MAX_TEMPERATURE 100.0f
 #define BLDC_INVERTION true
-#define BLDC_SPEED_VOLTAGE_KP 0.005f
-#define BLDC_SPEED_VOLTAGE_KI 0.02f
 #define BLDC_SPEED_CURRENT_KP 0.025f
 #define BLDC_SPEED_CURRENT_KI 0.025f
 inline constexpr CurrentLoopCalibration current_loop{};

@@ -27,8 +27,8 @@ limit and `BoardInfo::max_drive_current_a`; the port enforces its own raw curren
 
 See [board.hpp](../libecu/include/board.hpp) and the
 [F410 board port](../STM32F410/Core/Src/board.cpp).
-The current application requires an ADC interface even for its PWM-rate
-voltage-mode path; returning `nullptr` does not provide a working motor loop.
+Both electrical algorithms need phase current and bus voltage. The generic
+`pwmInterruptHandler()` returns `false` without an ADC interface.
 
 ### Current acquisition
 
@@ -37,17 +37,19 @@ registers, hardware oversampling or DMA. Raw getters retain one fixed configured
 scale: single-conversion counts on F410, sums of two on G431.
 Auxiliary readiness and source age remain the board's responsibility.
 
-Hall and PLL share one clock: prepare one control frame per PWM period.
+Hall and PLL share one clock: process one current frame per PWM period.
 Run the carrier above SysTick and telemetry/configuration readers. The Hall IRQ
 only marks a pending sample; give it equal or lower preemption priority. A
 higher-priority break may stop the bridge and cancel the frame, but must not
 read or change rotor or PI state. The carrier tracks in place with interrupts
-enabled; lower-priority readers take coherent snapshots.
+enabled; lower-priority readers copy only the fields they need under a short
+critical section.
 
-Both STM32 ports call `pwmInterruptHandler()` once per PWM period. STM32F410
-uses one 12-bit injected U/V/W scan at 20 kHz; STM32G431 uses dual injected
-acquisition with hardware x2. SysTick services their regular auxiliary DMA
-scans. The port is responsible for sample readiness, deadlines, raw-current
+Both STM32 ports call `pwmInterruptHandler()` once per 20-kHz PWM period.
+STM32F410 enters from JEOC at the end of one 12-bit injected U/V/W scan;
+STM32G431 reads dual injected results with hardware ×2 oversampling from
+the down-counting TIM1 update callback. SysTick services their regular
+auxiliary DMA scans. The port owns sample readiness, deadlines, raw-current
 protection and shutdown on failure.
 
 Current STM32 contracts are documented in
@@ -56,11 +58,10 @@ Current STM32 contracts are documented in
 retain their historical acquisition/scheduling configuration.
 
 The STM32 HAL returned to injected acquisition in `35e6dce`; F410 software
-double-scan acquisition was removed in `7e7f46c` on 2026-11-18. These ports
-use the single-call wrapper and retain the shared controller and numeric
-optimizations. For a new port, see [current frames and interrupt-state
-hooks](CURRENT_FRAME.md) before choosing split acquisition or direct status
-writes from a single PWM interrupt.
+double-scan acquisition was removed in `7e7f46c` on 2026-11-18. For a new
+port, see [current frames and interrupt-state hooks](CURRENT_FRAME.md) for
+callback routing, cancellation and capture, and [controller I/O](CONTROL_IO.md)
+for field ownership.
 
 ### Command protocol and transport
 
@@ -82,17 +83,17 @@ The shared application calls:
 | Hook | Context and contract |
 |---|---|
 | `onStarted()` | Once, after the controller and both loops start. Default is silent; AT emits its existing greeting. |
-| `onControlTick()` | Foreground slow tick. The processor obtains only the status snapshots it needs, in native or float units. AT owns the motor/PLL/Hall telemetry switches. |
+| `onControlTick()` | Foreground slow tick. The processor copies only the fields needed for each report under a short critical section. AT owns the motor/PLL/Hall telemetry switches. |
 | `process()` | Every foreground iteration. Consume available input and poll any protocol deadlines; never wait for a complete frame. |
 | `processOutput()` | Every foreground iteration. Drain deferred output; AT sends one buffered OSC sample per call. Default is silent. |
-| `wantsCurrentSample()` | Current-loop ISR, before obtaining a snapshot. Default false. |
-| `captureCurrentSample(const NativeMotorStatus&)` | ISR, only on request. Bounded capture with no formatting or transmission. Default no-op. |
+| `wantsCurrentSample()` | Current-loop ISR, after `pwmInterruptHandler()` returns `true`. Default false. |
+| `captureCurrentSample(const MotorIo&)` | ISR, only on request. Read the completed native I/O via `controller.io()`; no formatting or transmission. Default no-op. |
 
 The base stores only the controller pointer and has no parser or capture
 buffer. AT owns the 12-byte samples; `LIBECU_OSC_BUFFER_SIZE` defaults to 1024
 and can be defined target-wide (for example, 256 for a smaller-RAM board).
 Every translation unit using the AT class must see the same value.
-An inactive or full AT capture buffer stops requesting ISR snapshots.
+An inactive or full AT capture buffer stops requesting samples.
 
 Keep all `printf` diagnostics routed away from a binary command UART, including
 messages emitted by board initialization or fault reporting. The shared main
@@ -107,7 +108,7 @@ that policy in its foreground tick using board callbacks.
 | Motor PWM | Three synchronized center-aligned channels. Implement all `UP`, `DOWN` and `OFF` states, including per-leg high impedance for six-step operation. Existing power stages use three complementary output pairs. |
 | Output polarity | Independent main/complementary polarity and explicit inactive/idle levels compatible with the gate driver. |
 | Dead time | Hardware non-overlap generation, or an equivalent guarantee in the gate driver. Convert nanoseconds using the actual dead-time clock and report the programmed result. |
-| Fast shutdown | A hardware path from overcurrent detection to disabled gates, independent of ISR latency; present boards use timer break. |
+| Fast shutdown | Provide a hardware path from overcurrent detection to disabled gates, independent of ISR latency. F410 uses TIM1 BKIN. |
 | PWM update | Buffered compare registers and a coherent three-phase commit at a known boundary. State/commutation updates must also be coherent. |
 | ADC trigger | A hardware PWM-relative trigger at a programmable point in the valid current-sensing window. An internal compare channel is sufficient; it need not be routed to a pin. |
 | Current ADC | At least two valid phase measurements per control frame; three measurements are preferable when their windows permit full Clarke. Quantify resolution, input settling and channel-to-channel timing. |
@@ -187,7 +188,7 @@ frame is valid and seed digital filters from a valid frame.
 | Injected ranks | ADC1: U, U (padding); ADC2: V, W; Vbus is regular DMA | U, V, W; Vbus is regular DMA |
 | Oversampling | Hardware x2, no right shift | None; one 12-bit conversion per phase |
 | Trigger | TIM1 OC4REF/TRGO2, rising near the peak | TIM1 OC4REF/TRGO, falling 1 us before the peak |
-| Fast-loop entry | Timer update callback in current code | JEOC after one complete three-phase scan |
+| Fast-loop entry | TIM1 period-elapsed callback, down-counting update only | JEOC after one complete three-phase scan |
 
 On F410, each conversion takes `(15+12)/25 MHz = 1.08 us`.
 The complete three-rank scan takes about **3.24 us**, plus trigger
@@ -355,8 +356,8 @@ filters is not an electrically interchangeable model for this low-side board.
 
 Verify the current-sensing transfer function on the target inverter. If the
 sensor measures a MOSFET voltage drop instead of a shunt, the STM32 boards'
-shunt and amplifier calibration do not apply. Quiet voltage-mode operation
-alone does not validate current feedback for a fast Iq PI.
+shunt and amplifier calibration do not apply. Verify current feedback
+independently before tuning the fast Iq PI.
 
 ## 6. Timing, control tuning and digital filters
 
@@ -420,7 +421,7 @@ info_.current_feedback_filter_hz = ihm08::CURRENT_FEEDBACK_FILTER_HZ;
 
 The default board cutoff is zero (off). F410/IHM08M1 selects 2 kHz and G431
 selects bypass. The cutoff follows the board even if the motor changes.
-MOTOR_1's separate motor configuration selects FPID=0.549779/516.792.
+MOTOR_1's separate motor configuration selects FPID=0.549775/516.792.
 See [current-feedback filtering](software.md#current-feedback-filtering) for
 the 2026-11-11 comparison, including the quieter sound, slower current steps
 and increased lower-frequency ripple. Motor PI gains are independent of this
@@ -443,9 +444,8 @@ The raw ADC and raw dq telemetry remain available for protection/diagnosis.
 
 Nonzero current references, including small references below the noise floor,
 bypass this idle suppression. Zero-current control while rotating also stays
-active, because it must generate voltage to reject back-EMF. Direct voltage
-mode retains its command. Filtering or discarding all small phase-current
-samples unconditionally would lose these properties.
+active, because it must generate voltage to reject back-EMF. Discarding all
+small phase-current samples unconditionally would lose these properties.
 
 In the earlier prototype comparison, at equal 2-kHz cutoffs and the reduced
 PI gains, first-order filtering gave
@@ -491,8 +491,9 @@ about 0.634 A, no Hall faults/overruns, and a maximum processing window of
 3. Verify timer frequency, dead time, the ADC trigger and compare-transfer
    boundary. Confirm all retained sample apertures over angle/modulation.
 4. Run host tests, then measure the real optimized ISR/whole-frame budget.
-5. Exercise static zero-voltage and zero-current modes before motion. Capture
-   raw and filtered currents together. Check startup validity separately.
+5. At standstill, compare bridge-disabled readings with the response to a
+   zero-current target. Capture raw and filtered currents together. Check
+   startup validity separately.
 6. Use small bounded current steps, then rotation and load to validate tuning,
    signs, saturation recovery, sampling transitions and protection behavior.
 7. End a bench run with `SPD=0`, `CUR=0`, `DMODE=2`; report any latched fault

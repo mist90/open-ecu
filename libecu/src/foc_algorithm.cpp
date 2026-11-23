@@ -2,18 +2,16 @@
  * @brief PWM ownership and float-facing boundary of the typed FOC kernel
  */
 #include "../include/foc_algorithm.hpp"
-#if defined(LIBECU_PWM_DEADLINE_ONLY) && LIBECU_PWM_DEADLINE_ONLY
-#include "../include/bldc_controller.hpp"
-#endif
 
 namespace libecu {
-#if defined(LIBECU_PWM_DEADLINE_ONLY) && LIBECU_PWM_DEADLINE_ONLY
-// A non-template definition keeps its named SRAM section through GCC LTO.
-LIBECU_RAM_CODE("drive_foc") LIBECU_HOT_LOOP
-void FocAlgorithm::updateDriveStatus(const Core::Input& in, NativeMotorStatus& status) noexcept {
-    core_.update(in, status, status);
+// Both PWM commit conventions use this one kernel. A non-template entry
+// keeps the HW051 deadline build's named SRAM section through GCC LTO.
+LIBECU_DEADLINE_CODE("drive_foc") LIBECU_HOT_LOOP
+void FocAlgorithm::updateDriveStatus(const MotorInput& in, MotorElectricalOutput& out,
+                                     Core::Angle angle_steps, Core::PllSpeed speed_steps_s) noexcept {
+    core_.update(in, out, angle_steps, speed_steps_s);
+    out.duty_cycle = Core::Duty{}; // FOC reports modulation depth on the slow telemetry tick.
 }
-#endif
 
 #if defined(LIBECU_PWM_RAM) && LIBECU_PWM_RAM
 // Unlike an inline constexpr COMDAT, this definition retains its section
@@ -101,41 +99,17 @@ void FocAlgorithm::onEnter() noexcept {
 }
 
 MotorAlgorithmOutput FocAlgorithm::update(const MotorAlgorithmInput& in) noexcept {
-    Core::Input input{};
-    input.i_u = numberCast<Core::Current>(in.i_u);
-    input.i_v = numberCast<Core::Current>(in.i_v);
-    input.i_w = numberCast<Core::Current>(in.i_w);
-    input.bus_voltage = numberCast<Core::Voltage>(in.bus_voltage);
-    input.angle_steps = numberCast<Core::Angle>(in.angle_steps);
-    input.speed_steps_s = numberCast<ActiveNumericProfile::PllSpeed>(in.speed_steps_s);
-    input.target_current = numberCast<Core::Current>(in.target_current);
-    input.duty_command = numberCast<Core::Duty>(in.duty_command);
-    input.step = in.step;
-    input.drive_mode = in.drive_mode;
-    input.electric_mode = in.electric_mode;
-    const auto result = updateNative(input);
-    MotorAlgorithmOutput out{};
-    out.duty_u = numberCast<float>(result.duty_u);
-    out.duty_v = numberCast<float>(result.duty_v);
-    out.duty_w = numberCast<float>(result.duty_w);
-    out.measured_current = numberCast<float>(result.measured_current);
-    out.i_d = numberCast<float>(result.i_d);
-    out.i_q = numberCast<float>(result.i_q);
-    out.v_d = numberCast<float>(result.v_d);
-    out.v_q = numberCast<float>(result.v_q);
-    out.angle_e_rad = numberCast<float>(result.angle_e_rad);
-    out.saturation = result.saturation;
-    return out;
+    return motorOutputCast<MotorAlgorithmOutput>(updateNative(motorInputCast<Core::Input>(in)));
 }
 
-FocAlgorithm::Core::Output FocAlgorithm::updateNative(const Core::Input& input) noexcept {
-    Core::Frame frame{input, {}};
-    updateNative(frame);
-    return frame.output;
-}
-
-LIBECU_HOT_LOOP void FocAlgorithm::updateNative(Core::Frame& frame) noexcept {
-    updateNative(frame, pwm_interface_);
+FocAlgorithm::Core::Output FocAlgorithm::updateNative(const Core::Input& sample) noexcept {
+    MotorInput in{};
+    MotorElectricalOutput out{};
+    sample.unpack(in, out);
+    updateDriveStatus(in, out, sample.angle_steps, sample.speed_steps_s);
+    pwm_interface_.updateNativeDutyCycle(out.duty_u, out.duty_v, out.duty_w);
+    recordLoopStage(LoopStage::Pwm);
+    return Core::Output::fromCarrier(out);
 }
 
 float FocAlgorithm::modulationMagnitude(float d, float q, float bus) noexcept {

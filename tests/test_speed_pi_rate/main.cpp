@@ -42,8 +42,8 @@ struct Io final : PwmInterface, HallInterface, AdcInterface {
     bool initialize() override { return true; }
     uint8_t getPosition() override { return position; }
     uint32_t getRawTemperatureAdcValue() override { ++ntc_reads; return 1309; } // ~25 C
-    uint32_t getRawAdcValue(PwmChannel) override { require(false, "unexpected electrical completion"); return 0; }
-    uint32_t getRawAdcValue() override { require(false, "unexpected bus conversion"); return 0; }
+    uint32_t getRawAdcValue(PwmChannel) override { return 2048; }
+    uint32_t getRawAdcValue() override { return 3500; }
 };
 
 struct Tuning { float kp, ki, traction; };
@@ -62,7 +62,7 @@ MotorControlParams parameters(Tuning t) {
     p.acceleration_rate = motor_config::soft_start_rps2; // Mechanical rev/s² slew, for every run.
     p.traction_acceleration_rps2 = t.traction;
     p.measured_speed_lpf_alpha = 0.5f;
-    p.pi_current_mode = {t.kp, t.ki, BLDC_MAX_CURRENT, BLDC_MIN_CURRENT, BLDC_MAX_CURRENT, -4, 2};
+    p.speed_pi = {t.kp, t.ki, BLDC_MAX_CURRENT, BLDC_MIN_CURRENT, BLDC_MAX_CURRENT, -4, 2};
     return p;
 }
 
@@ -148,7 +148,7 @@ double run(double mass_kg, Tuning t, FILE* trace) {
     Plant plant(mass_kg);
     Metrics m;
     unsigned mid_ticks = 0, mid_changes = 0;
-    const auto& state = motor.getNativeStatus();
+    const auto& state = motor.io().in;
     const char* load = mass_kg ? "80kg" : "free";
     // t=0 is the first service boundary after arming. Before it, no PI-only tick has valid inputs.
     uint32_t phase = SYSTICK_HZ / SLOW_HZ - 1;
@@ -184,10 +184,8 @@ double run(double mass_kg, Tuning t, FILE* trace) {
             io.position = uint8_t((plant.sector % 6 + 6) % 6);
             motor.hallSensorInterruptHandler();
         }
-        // Run the actual Hall monitor and PLL once per carrier. The first-order current plant
-        // replaces electrical completion, so there are no synthetic ADC/duty saturation flags.
-        motor.preparePwmInterruptHandler();
-        motor.cancelPwmInterruptHandler();
+        // The plant integrates the requested Iq; the real carrier still consumes one qualified sample.
+        motor.pwmInterruptHandler();
     }
     require(io.ntc_reads == SECONDS * SLOW_HZ, "temperature was not sampled exactly at 100 Hz");
     require(mid_ticks == SECONDS * (PI_HZ - SLOW_HZ), "wrong number of intermediate PI ticks");

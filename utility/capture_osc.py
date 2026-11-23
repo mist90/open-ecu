@@ -2,11 +2,12 @@
 """Capture the 20 kHz +OSC ring buffer at a settled speed.
 
 +OSC streams 1024 consecutive PWM-ISR samples (51.2 ms) as
-    +OSC:<n>,<measured_mA>,<target_mA>,<duty%>,<commutation step>[,<Id_mA>,<Iq_mA>,<angle_deg_e>]
+    +OSC:<n>,<measured_mA>,<target_mA>,<reported duty%>,<Hall position>[,<Id_mA>,<Iq_mA>,<angle_deg_e>]
 then repeats.  That is the only view fast enough to see commutation-rate
 vibration or anything FOC does; +TM and +PLL are 100 Hz and alias it away.
 
-The last three fields were added with FOC and are zero in six-step mode.
+The last three fields were added with FOC. In six-step, Id/Iq are zero and
+the angle still tracks commutation.
 Firmware from before that change emits only the first five, which is why the
 parser below accepts either width.
 
@@ -29,17 +30,17 @@ def main():
     ap.add_argument("--bursts", type=int, default=6, help="1024-sample bursts to keep")
     ap.add_argument("--settle", type=float, default=4.0)
     ap.add_argument("--out", required=True)
-    ap.add_argument("--dmode", type=int, default=0)
+    ap.add_argument("--dmode", type=int, choices=(0, 1), default=0)
     ap.add_argument("--algo", type=int, choices=(0, 1), default=None,
                     help="0 = six-step, 1 = FOC. Omit to leave the ECU as it is.")
     args = ap.parse_args()
 
     ecu = Ecu(args.port)
-    dmode_was = ecu.query("AT+DMODE?", "+DMODE:") or "2"
     rows = []
     try:
         ecu.cmd("AT+OSC=0"); ecu.cmd("AT+TM=0")
         ecu.cmd("AT+PLL=0"); ecu.cmd("AT+HSTATUS=0")
+        ecu.cmd("AT+DMODE=2")
         ecu.cmd("AT+MODE=1")
         if args.algo is not None:
             # Switch algorithms before leaving NEUTRAL: it is a step change in

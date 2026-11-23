@@ -11,9 +11,9 @@ namespace libecu {
 
 namespace {
 template<auto Field>
-auto readStatusField(const BldcController& controller) noexcept {
+auto readInput(const BldcController& controller) noexcept {
     CriticalSection lock;
-    return controller.getNativeStatus().*Field;
+    return controller.io().in.*Field;
 }
 
 bool parsePiGains(const char* text, float& kp, float& ki) noexcept {
@@ -55,7 +55,7 @@ void AtCommandProcessor::onStarted() noexcept {
 
 void AtCommandProcessor::onControlTick() noexcept {
     if (isTelemetryEnabled()) {
-        sendTelemetry(controller_->getStatus());
+        sendTelemetry();
     }
     if (isPllTelemetryEnabled()) {
         sendPllTelemetry(controller_->getPllInfo());
@@ -211,7 +211,7 @@ namespace {
 /** Command IDs for AT command dispatch */
 enum class CommandId : uint8_t {
     Unknown,
-    Spd, Cur, Dut, Mode, EMode, DMode, Spid, Cpid, PllId, Pll, HStatus, HClear, Ver, Status, Tm, Osc, Maxvals,
+    Spd, Cur, Mode, DMode, Spid, Cpid, PllId, Pll, HStatus, HClear, Ver, Status, Tm, Osc, Maxvals,
     Algo, Fpid, Fang, Acc
 };
 
@@ -222,7 +222,6 @@ CommandId matchCommand(const char* cmd) noexcept {
     if (std::strncmp(cmd, "FPID", 4) == 0) return CommandId::Fpid;
     if (std::strncmp(cmd, "FANG", 4) == 0) return CommandId::Fang;
     if (std::strncmp(cmd, "DMODE", 5) == 0) return CommandId::DMode;
-    if (std::strncmp(cmd, "EMODE", 5) == 0) return CommandId::EMode;
     if (std::strncmp(cmd, "HSTATUS", 7) == 0) return CommandId::HStatus;
     if (std::strncmp(cmd, "HCLEAR", 6) == 0) return CommandId::HClear;
     if (std::strncmp(cmd, "STATUS", 6) == 0) return CommandId::Status;
@@ -231,7 +230,6 @@ CommandId matchCommand(const char* cmd) noexcept {
     if (std::strncmp(cmd, "PLLID", 5) == 0) return CommandId::PllId;
     if (std::strncmp(cmd, "SPD", 3) == 0) return CommandId::Spd;
     if (std::strncmp(cmd, "CUR", 3) == 0) return CommandId::Cur;
-    if (std::strncmp(cmd, "DUT", 3) == 0) return CommandId::Dut;
     if (std::strncmp(cmd, "MODE", 4) == 0) return CommandId::Mode;
     if (std::strncmp(cmd, "VER", 3) == 0) return CommandId::Ver;
     if (std::strncmp(cmd, "TM", 2) == 0) return CommandId::Tm;
@@ -298,8 +296,8 @@ void AtCommandProcessor::processCommand() noexcept {
 
     // Guard: commands that need controller_
     bool needsController = (id == CommandId::Spd || id == CommandId::Cur ||
-                            id == CommandId::Dut || id == CommandId::Mode ||
-                            id == CommandId::EMode || id == CommandId::DMode ||
+                            id == CommandId::Mode || id == CommandId::DMode ||
+                            id == CommandId::Algo || id == CommandId::Fpid || id == CommandId::Fang ||
                             id == CommandId::Spid || id == CommandId::Cpid ||
                             id == CommandId::PllId || id == CommandId::Acc ||
                             id == CommandId::Status || id == CommandId::Maxvals);
@@ -311,7 +309,7 @@ void AtCommandProcessor::processCommand() noexcept {
     switch (id) {
     case CommandId::Spd: {
         if (query) {
-            const auto speed = readStatusField<&NativeMotorStatus::current_speed_rps>(*controller_);
+            const auto speed = readInput<&MotorInput::current_speed_rps>(*controller_);
             sendFloatResponse("SPD", numberCast<float>(speed));
         } else {
             float val = parseFloatParam(valuePtr);
@@ -327,7 +325,7 @@ void AtCommandProcessor::processCommand() noexcept {
 
     case CommandId::Cur: {
         if (query) {
-            const auto current = readStatusField<&NativeMotorStatus::target_current>(*controller_);
+            const auto current = readInput<&MotorInput::target_current>(*controller_);
             sendFloatResponse("CUR", numberCast<float>(current));
         } else {
             float val = parseFloatParam(valuePtr);
@@ -336,21 +334,6 @@ void AtCommandProcessor::processCommand() noexcept {
                 return;
             }
             controller_->setCurrent(val);
-            sendOk();
-        }
-        break;
-    }
-
-    case CommandId::Dut: {
-        if (query) {
-            sendFloatResponse("DUT", numberCast<float>(readStatusField<&NativeMotorStatus::duty_cycle>(*controller_)));
-        } else {
-            float val = parseFloatParam(valuePtr);
-            if (val < 0.0f || val > 1.0f) {
-                sendError();
-                return;
-            }
-            controller_->setDutyCycle(val);
             sendOk();
         }
         break;
@@ -376,7 +359,7 @@ void AtCommandProcessor::processCommand() noexcept {
 
     case CommandId::Mode: {
         if (query) {
-            sendIntResponse("MODE", static_cast<int>(readStatusField<&NativeMotorStatus::control_mode>(*controller_)));
+            sendIntResponse("MODE", static_cast<int>(readInput<&MotorInput::control_mode>(*controller_)));
         } else {
             int val = parseIntParam(valuePtr);
             if (val < 0 || val > 2) {
@@ -384,21 +367,6 @@ void AtCommandProcessor::processCommand() noexcept {
                 return;
             }
             controller_->setControlMode(static_cast<ControlMode>(val));
-            sendOk();
-        }
-        break;
-    }
-
-    case CommandId::EMode: {
-        if (query) {
-            sendIntResponse("EMODE", static_cast<int>(readStatusField<&NativeMotorStatus::electric_mode>(*controller_)));
-        } else {
-            int val = parseIntParam(valuePtr);
-            if (val < 0 || val > 1) {
-                sendError();
-                return;
-            }
-            if (!controller_->setElectricMode(static_cast<ElectricMode>(val))) { sendError(); return; }
             sendOk();
         }
         break;
@@ -458,7 +426,7 @@ void AtCommandProcessor::processCommand() noexcept {
 
     case CommandId::DMode: {
         if (query) {
-            sendIntResponse("DMODE", static_cast<int>(controller_->getDriveMode()));
+            sendIntResponse("DMODE", static_cast<int>(readInput<&MotorInput::drive_mode>(*controller_)));
         } else {
             int val = parseIntParam(valuePtr);
             if (val < 0 || val > 2) {
@@ -544,25 +512,30 @@ void AtCommandProcessor::processCommand() noexcept {
     }
 
     case CommandId::Status: {
-        MotorStatus status = controller_->getStatus();
-        // Algorithm and the d/q pair are appended rather than woven in, so a
-        // consumer that only knows the original six fields still parses. This
-        // is a one-shot query, not a stream - +TM is deliberately left alone,
-        // because at 100 Hz it aliases everything FOC does anyway and +OSC is
-        // the view that can actually see it.
+        using P = ActiveNumericProfile;
+        struct {
+            ControlMode mode;
+            DriveAlgorithm algorithm;
+            P::Speed speed;
+            P::Current target, id, iq;
+            P::Duty duty;
+            P::Voltage bus;
+            P::Angle angle;
+        } s;
+        {
+            CriticalSection lock;
+            const auto& io = controller_->io();
+            const auto& e = io.out.electrical;
+            s = {io.in.control_mode, io.in.algorithm, io.in.current_speed_rps, io.in.target_current,
+                 e.i_d, e.i_q, io.reportedDuty(), e.bus_voltage, e.angle_e_rad};
+        }
+        // The second wire field is always 1 (current regulation). Keep later fields at their original positions.
         char buf[160];
         int len = std::snprintf(buf, sizeof(buf),
-            "+STATUS:%d,%d,%.2f,%.2f,%.2f,%.2f,%d,%.2f,%.2f,%.1f\r\n",
-            static_cast<int>(status.control_mode),
-            static_cast<int>(status.electric_mode),
-            status.current_speed_rps,
-            status.target_current,
-            status.duty_cycle,
-            status.bus_voltage,
-            static_cast<int>(status.algorithm),
-            status.i_d,
-            status.i_q,
-            status.angle_e_rad * (180.0f / FOC_PI));
+            "+STATUS:%d,1,%.2f,%.2f,%.2f,%.2f,%d,%.2f,%.2f,%.1f\r\n",
+            static_cast<int>(s.mode), numberCast<float>(s.speed), numberCast<float>(s.target),
+            numberCast<float>(s.duty), numberCast<float>(s.bus), static_cast<int>(s.algorithm),
+            numberCast<float>(s.id), numberCast<float>(s.iq), numberCast<float>(s.angle) * (180.0f / FOC_PI));
         if (len > 0) write(buf, static_cast<std::size_t>(len));
         break;
     }
@@ -627,25 +600,33 @@ void AtCommandProcessor::processCommand() noexcept {
     }
 }
 
-void AtCommandProcessor::sendTelemetry(const MotorStatus& status) noexcept {
-    if (!telemetry_enabled_) {
-        return;
+void AtCommandProcessor::sendTelemetry() noexcept {
+    using P = ActiveNumericProfile;
+    struct {
+        uint8_t hall, step;
+        P::Speed target_speed, speed;
+        P::Duty duty;
+        P::Current target_current, current;
+        P::Voltage bus;
+        P::Angle angle;
+        P::Temperature temperature;
+    } s;
+    {
+        CriticalSection lock;
+        const auto& io = controller_->io();
+        const auto& e = io.out.electrical;
+        s = {io.out.measured_position, e.target_position, io.in.target_speed_rps, io.in.current_speed_rps,
+             io.reportedDuty(), io.in.target_current, io.out.telemetryCurrent(), e.bus_voltage,
+             io.out.pll.angle_steps, io.in.temperature_c};
     }
 
     char buf[128];
     // Temperature is appended, not woven in, so a host that only knows the
     // original nine fields still parses the line.
     int len = std::snprintf(buf, sizeof(buf), "+TM:%u;%u;%.2f;%.2f;%.2f;%.2f;%.2f;%.2f;%.1f;%.1f\n",
-            static_cast<unsigned>(status.measured_position),
-            static_cast<unsigned>(status.target_position),
-            status.target_speed_rps,
-            status.current_speed_rps,
-            status.duty_cycle,
-            status.target_current,
-            status.measured_current_filtered,
-            status.bus_voltage,
-            status.pll_angle,
-            status.temperature_c);
+            unsigned(s.hall), unsigned(s.step), numberCast<float>(s.target_speed), numberCast<float>(s.speed),
+            numberCast<float>(s.duty), numberCast<float>(s.target_current), numberCast<float>(s.current),
+            numberCast<float>(s.bus), numberCast<float>(s.angle), numberCast<float>(s.temperature));
 
     if (len > 0 && static_cast<std::size_t>(len) < sizeof(buf)) {
         write(buf, static_cast<std::size_t>(len));
@@ -766,11 +747,7 @@ uint16_t oscAngle(Angle angle) noexcept {
 
 } // namespace
 
-void AtCommandProcessor::captureOscSample(const MotorStatus& status) noexcept {
-    captureNativeOscSample(motorStatusCast<ActiveNumericProfile>(status));
-}
-
-void AtCommandProcessor::captureNativeOscSample(const NativeMotorStatus& status) noexcept {
+void AtCommandProcessor::captureCurrentSample(const MotorIo& io) noexcept {
     if (!wantsCurrentSample())
         return;
 
@@ -778,18 +755,19 @@ void AtCommandProcessor::captureNativeOscSample(const NativeMotorStatus& status)
         return;
 
     OscSample& sample = osc_buffer_[osc_write_index_];
-    sample.duty_cycle = static_cast<uint8_t>(dutyToCompare(status.duty_cycle, 100));
-    sample.target_current_ma = oscMilliamps(status.target_current);
-    sample.measured_current_ma = oscMilliamps(status.measured_current);
-    sample.i_d_ma = oscMilliamps(status.i_d);
-    sample.i_q_ma = oscMilliamps(status.i_q);
+    const auto& e = io.out.electrical;
+    sample.duty_cycle = static_cast<uint8_t>(dutyToCompare(io.reportedDuty(), 100));
+    sample.target_current_ma = oscMilliamps(io.in.target_current);
+    sample.measured_current_ma = oscMilliamps(e.measured_current);
+    sample.i_d_ma = oscMilliamps(e.i_d);
+    sample.i_q_ma = oscMilliamps(e.i_q);
 
     // Electrical angle folded to one revolution and scaled to 16 bits, so the
     // consumer divides by 65536 to get revolutions without ever seeing a wrap
     // discontinuity that is not real.
-    sample.angle_e = oscAngle(status.angle_e_rad);
+    sample.angle_e = oscAngle(e.angle_e_rad);
 
-    sample.position = status.measured_position;
+    sample.position = io.out.measured_position;
 
     osc_write_index_++;
 

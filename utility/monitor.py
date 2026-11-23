@@ -9,7 +9,7 @@ import numpy as np
 from datetime import datetime
 from serial.tools import list_ports
 
-from PyQt6.QtCore import QObject, QThread, QTimer, pyqtSignal, Qt
+from PyQt6.QtCore import QObject, QSignalBlocker, QThread, QTimer, pyqtSignal, Qt
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QLineEdit, QComboBox, QDoubleSpinBox, QTabWidget,
@@ -83,7 +83,15 @@ class SerialWorker(QObject):
 
     def write(self, data: bytes):
         if self.serial is not None and self._running:
-            self.serial.write(data)
+            try:
+                self.serial.write(data)
+            except (OSError, serial.SerialException) as exc:
+                self._link_lost(exc)
+
+    def _link_lost(self, exc):
+        if self._running:
+            self._running = False
+            self.connection_status.emit(False, f"Disconnected: {exc}")
 
     def run(self):
         if self.serial is None:
@@ -100,7 +108,8 @@ class SerialWorker(QObject):
                     line, buffer = buffer.split("\n", 1)
                     stripped = line.strip()
                     self.line_received.emit(stripped if stripped else "")
-            except Exception:
+            except Exception as exc:
+                self._link_lost(exc)
                 break
 
 
@@ -149,7 +158,9 @@ class SpeedController(QWidget):
         layout.addWidget(self.spinbox)
 
         self.group = group
-        self.setLayout(layout)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(group)
 
     def set_enabled(self, enabled: bool):
         self.group.setEnabled(enabled)
@@ -216,7 +227,9 @@ class CurrentController(QWidget):
         layout.addWidget(self.spinbox)
 
         self.group = group
-        self.setLayout(layout)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(group)
 
     def set_enabled(self, enabled: bool):
         self.group.setEnabled(enabled)
@@ -365,9 +378,7 @@ class ControlPanel(QWidget):
         self.current_ctrl = CurrentController(self._write)
         layout.addWidget(self.current_ctrl)
 
-        # Ramp rate for the speed setpoint. Lives next to the speed slider
-        # because that is the only command it acts on - torque and open-loop
-        # duty are unaffected.
+        # The velocity loop ramps speed. Open loop commands field speed and current directly.
         self.accel_ctrl = AccelerationController(self._write)
         layout.addWidget(self.accel_ctrl)
 
@@ -398,7 +409,7 @@ class ControlPanel(QWidget):
         drive_mode_layout.addWidget(QLabel("Drive Mode:"))
         self.drive_mode_combo = QComboBox()
         self.drive_mode_combo.addItems(["FORWARD", "REVERSE", "NEUTRAL"])
-        self.drive_mode_combo.setCurrentIndex(0)  # FORWARD
+        self.drive_mode_combo.setCurrentIndex(2)  # NEUTRAL until the board replies
         self.drive_mode_combo.currentIndexChanged.connect(self._on_drive_mode_changed)
         drive_mode_layout.addWidget(self.drive_mode_combo)
         layout.addLayout(drive_mode_layout)
@@ -421,27 +432,28 @@ class ControlPanel(QWidget):
         layout.addWidget(self.fpid_widget)
 
         self.group = group
-        self.setLayout(layout)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(group)
         self._update_algorithm_widgets()
         self._update_enabled_states()
 
     def set_enabled(self, enabled: bool):
-        self.algorithm_combo.setEnabled(enabled)
-        self.control_mode_combo.setEnabled(enabled)
-        self.drive_mode_combo.setEnabled(enabled)
-        self.accel_ctrl.set_enabled(enabled)
-        self.spid_widget.setEnabled(enabled)
-        self.cpid_widget.setEnabled(enabled)
-        self.fpid_widget.setEnabled(enabled)
-        self._update_enabled_states()
+        self.setEnabled(enabled)
 
     def set_max_speed(self, max_rps: float):
-        self.speed_ctrl.slider.setRange(0, int(max_rps * 100))
-        self.speed_ctrl.spinbox.setRange(0, max_rps)
+        ctrl = self.speed_ctrl
+        with QSignalBlocker(ctrl.slider), QSignalBlocker(ctrl.spinbox):
+            ctrl.slider.setRange(0, int(max_rps * 100))
+            ctrl.spinbox.setRange(0, max_rps)
 
-    def set_max_current(self, max_a: float):
-        self.current_ctrl.slider.setRange(int(-max_a * 10), int(max_a * 10))
-        self.current_ctrl.spinbox.setRange(-max_a, max_a)
+    def set_current_limits(self, min_a: float, max_a: float):
+        # The binary drive may have a higher positive rail; AT+CUR accepts +/-6 A.
+        lo, hi = max(-6.0, min_a), min(6.0, max_a)
+        ctrl = self.current_ctrl
+        with QSignalBlocker(ctrl.slider), QSignalBlocker(ctrl.spinbox):
+            ctrl.slider.setRange(int(lo * 10), int(hi * 10))
+            ctrl.spinbox.setRange(lo, hi)
 
     def _on_control_mode_changed(self, index: int):
         if self._suppress_mode_signal:
@@ -483,13 +495,10 @@ class ControlPanel(QWidget):
         control_mode = self.control_mode_combo.currentIndex()
         drive_mode = self.drive_mode_combo.currentIndex()
 
-        # Speed enabled: only when control_mode=VELOCITY(1) AND drive_mode != NEUTRAL(2)
-        speed_enabled = (control_mode == 1) and (drive_mode != 2)
-        # Current enabled: only when control_mode=TORQUE(2) AND drive_mode != NEUTRAL(2)
-        current_enabled = (control_mode == 2) and (drive_mode != 2)
-
-        self.speed_ctrl.set_enabled(speed_enabled)
-        self.current_ctrl.set_enabled(current_enabled)
+        # OPEN_LOOP (0) uses speed for the rotating field and current for its torque.
+        self.speed_ctrl.set_enabled(drive_mode != 2 and control_mode in (0, 1))
+        self.current_ctrl.set_enabled(drive_mode != 2 and control_mode in (0, 2))
+        self.accel_ctrl.set_enabled(control_mode == 1)
 
     def _query_pid_params(self):
         self._write(format_at_command("AT+SPID?").encode("ascii"))
@@ -1122,6 +1131,7 @@ class MonitorWindow(QMainWindow):
         self._connected = False
         self.control_panel: ControlPanel | None = None
         self._maxvals_received = False
+        self._sync_target_speed = True
         self._max_speed = 50.0
         self._max_current = 6.0
         self._min_current = -6.0
@@ -1133,7 +1143,9 @@ class MonitorWindow(QMainWindow):
 
         self._init_ui()
         self._populate_ports()
+        self.control_panel.set_enabled(False)
         self.tab_at_console.set_enabled(False)
+        self.tab_waveform.btn_capture.setEnabled(False)
 
     def _init_ui(self):
         central = QWidget()
@@ -1199,16 +1211,18 @@ class MonitorWindow(QMainWindow):
             self.tab_at_console.log_sent(data.decode("ascii", errors="replace"))
 
     def _populate_ports(self):
-        self.port_combo.clear()
+        p = self.port_input.text()
         ports = sorted(p.device for p in list_ports.comports())
         if not ports:
             ports = ["/dev/ttyACM0"]
-        p = self.port_input.text()
         if p and p not in ports:
             ports.insert(0, p)
-        self.port_combo.addItems(ports)
-        if p in ports:
-            self.port_combo.setCurrentText(p)
+        # Refreshing the list must not discard a manually selected port on reconnect.
+        with QSignalBlocker(self.port_combo):
+            self.port_combo.clear()
+            self.port_combo.addItems(ports)
+            self.port_combo.setCurrentText(p or ports[0])
+        self.port_input.setText(self.port_combo.currentText())
 
     def _on_port_selected(self, text: str):
         self.port_input.setText(text)
@@ -1254,21 +1268,22 @@ class MonitorWindow(QMainWindow):
         self.btn_connect.setStyleSheet("background-color: #ff4444; color: white;")
         self.tab_continuous.reset()
         self.tab_waveform.reset()
+        self.tab_waveform.btn_capture.setEnabled(True)
         self.tab_at_console.set_enabled(True)
         if self.control_panel is not None:
             self.control_panel.set_enabled(True)
         self._populate_ports()
 
         self._maxvals_received = False
-        self._send_data(format_at_command("AT+MAXVALS").encode("ascii"))
+        self._send_data(format_at_command("AT+MAXVALS?").encode("ascii"))
         self._maxvals_timer = QTimer(self)
         self._maxvals_timer.setSingleShot(True)
         self._maxvals_timer.timeout.connect(self._on_maxvals_timeout)
         self._maxvals_timer.start(5000)
 
-        self._send_data(format_at_command("AT+STATUS").encode("ascii"))
+        self._send_data(format_at_command("AT+STATUS?").encode("ascii"))
         self._send_data(format_at_command("AT+DMODE?").encode("ascii"))
-        self._send_data(format_at_command("AT+SPD?").encode("ascii"))
+        self._sync_target_speed = True
         self._send_data(format_at_command("AT+ACC?").encode("ascii"))
         self._send_data(format_at_command("AT+SPID?").encode("ascii"))
         self._send_data(format_at_command("AT+CPID?").encode("ascii"))
@@ -1276,10 +1291,14 @@ class MonitorWindow(QMainWindow):
         self._send_data(format_at_command("AT+FPID?").encode("ascii"))
 
     def _stop(self):
+        self._connected = False
+        if self._maxvals_timer is not None:
+            self._maxvals_timer.stop()
+            self._maxvals_timer.deleteLater()
+            self._maxvals_timer = None
         if self.worker is not None:
             self.worker.stop_connection()
         self._cleanup_thread()
-        self._connected = False
         self.btn_connect.setText("Start")
         self.btn_connect.setStyleSheet("")
         self.status_label.setText("Disconnected")
@@ -1288,9 +1307,9 @@ class MonitorWindow(QMainWindow):
         if self.control_panel is not None:
             self.control_panel.set_enabled(False)
         self.tab_waveform._osc_active = False
-        if hasattr(self.tab_waveform, 'btn_capture'):
-            self.tab_waveform.btn_capture.setText("Start OSC")
-            self.tab_waveform.btn_capture.setStyleSheet("")
+        self.tab_waveform.btn_capture.setText("Start OSC")
+        self.tab_waveform.btn_capture.setStyleSheet("")
+        self.tab_waveform.btn_capture.setEnabled(False)
 
     def _cleanup_thread(self):
         if self.worker_thread is not None:
@@ -1300,6 +1319,8 @@ class MonitorWindow(QMainWindow):
         self.worker = None
 
     def _on_status(self, connected: bool, text: str):
+        if not connected and self._connected:
+            self._stop()
         self.status_label.setText(text)
         if connected:
             self.status_label.setStyleSheet("color: #44ff44;")
@@ -1309,7 +1330,15 @@ class MonitorWindow(QMainWindow):
     def _on_line(self, line: str):
         self.tab_at_console.log_received(line)
         if line.startswith("+TM:") or ("+TM:" in line and ";" in line):
-            self.tab_continuous.add_sample(line.split(";"))
+            fields = line.split(";")
+            self.tab_continuous.add_sample(fields)
+            if self._sync_target_speed and len(fields) >= 9:
+                try:
+                    self._apply_target_speed(float(fields[2]))
+                except ValueError:
+                    pass
+                else:
+                    self._sync_target_speed = False
         elif line.startswith("+OSC:"):
             if line == "+OSC:":
                 self.tab_waveform.add_line("")
@@ -1319,8 +1348,6 @@ class MonitorWindow(QMainWindow):
             self._parse_maxvals(line)
         elif line.startswith("+STATUS:"):
             self._parse_status(line)
-        elif line.startswith("+SPD:"):
-            self._parse_float_response(line, "+SPD:", self._apply_target_speed)
         elif line.startswith("+CUR:"):
             self._parse_float_response(line, "+CUR:", self._apply_target_current)
         elif line.startswith("+ACC:"):
@@ -1363,13 +1390,12 @@ class MonitorWindow(QMainWindow):
             if len(parts) < 3:
                 return
             control_mode = int(parts[0])
-            target_speed = float(parts[2])
+            # Field 1 is reserved; field 2 is measured speed. Neither is a control input.
             target_current = float(parts[3]) if len(parts) > 3 else 0.0
             # Field 6 (algorithm) exists only on FOC-era firmware.
             algo = int(parts[6]) if len(parts) > 6 else None
             if self.control_panel is not None:
                 self.control_panel._set_control_mode_from_firmware(control_mode)
-                self.control_panel._set_target_speed_from_firmware(target_speed)
                 self.control_panel._set_target_current_from_firmware(target_current)
                 if algo in (0, 1):
                     self.control_panel._set_algorithm_from_firmware(algo)
@@ -1439,7 +1465,7 @@ class MonitorWindow(QMainWindow):
                 self.tab_continuous.set_temp_limit(float(parts[5]))
             if self.control_panel is not None:
                 self.control_panel.set_max_speed(self._max_speed)
-                self.control_panel.set_max_current(self._max_current)
+                self.control_panel.set_current_limits(self._min_current, self._max_current)
             self._maxvals_received = True
             if self._maxvals_timer is not None:
                 self._maxvals_timer.stop()
@@ -1453,7 +1479,7 @@ class MonitorWindow(QMainWindow):
             # Defaults already set in __init__, just log (no print needed)
             if self.control_panel is not None:
                 self.control_panel.set_max_speed(self._max_speed)
-                self.control_panel.set_max_current(self._max_current)
+                self.control_panel.set_current_limits(self._min_current, self._max_current)
 
 def main():
     # Antialiased noisy paths can hold the GIL for tens of milliseconds, starving

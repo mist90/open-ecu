@@ -93,7 +93,7 @@ public:
      * After this the commutation and current-control ISRs run at
      * BoardInfo::pwm_frequency_hz against the given controller, and every PWM
      * cycle is offered for capture only when console.wantsCurrentSample() is
-     * true. Pass getNativeStatus() to console.captureCurrentSample(); keep
+     * true. Pass io() to console.captureCurrentSample(); keep
      * formatting and byte output in foreground context.
      *
      * @return true on success

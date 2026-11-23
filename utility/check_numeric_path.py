@@ -25,9 +25,14 @@ def main():
         "libecu::(anonymous namespace)::Stm32Board::readNativeThrottle(",
         "libecu::BldcController::setNativeTargetSpeed(",
         "libecu::BldcController::pwmInterruptHandler(", "libecu::BldcController::update(",
-        "libecu::AtCommandProcessor::captureNativeOscSample(",
+        "libecu::FocAlgorithm::updateDriveStatus(", "libecu::SixStepAlgorithm::updateElectrical(",
+        "libecu::AtCommandProcessor::captureCurrentSample(libecu::MotorIo const&)",
+        "libecu::PwmInterface::writeCarrierDuty(", "libecu::PwmInterface::applyCarrierStates(",
+        "libecu::PwmInterface::parkExclusive(",
         "libecu::Stm32Pwm::updateNativeDutyCycle(", "libecu::Stm32Pwm::setChannelState(",
         "libecu::Stm32Pwm::enable(", "libecu::Stm32Pwm::apply(",
+        "libecu::AdcInterface::readNativeCurrents(", "libecu::AdcInterface::readNativeBusVoltage(",
+        "libecu::AdcInterface::readNativeTemperature(",
         "libecu::Stm32Adc::getRawAdcValue(", "libecu::Stm32Adc::getRawTemperatureAdcValue(",
         "libecu::Stm32TimHallSensor::getPosition(", "libecu::FocAlgorithm::reset(",
         "libecu::FocAlgorithm::onEnter(", "libecu::SixStepAlgorithm::reset(",
@@ -36,7 +41,7 @@ def main():
     for root in roots:
         if not any(fn["name"].startswith(root) for fn in functions.values()):
             raise RuntimeError("Missing audit root: " + root)
-    if not any("captureNativeOscSample(libecu::MotorStatusT<libecu::FixedProfile>" in fn["name"]
+    if not any(fn["name"].startswith("libecu::Stm32Pwm::updateNativeDutyCycle(libecu::FixedPointType<")
                for fn in functions.values()):
         raise RuntimeError("Expected a NUMERIC_PROFILE=fixed ELF")
     pending = [addr for addr, fn in functions.items() if fn["name"].startswith(roots)]

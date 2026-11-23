@@ -19,26 +19,13 @@
 #include "pi_float_interface.hpp"
 #include "ecu_config.hpp"
 #include "motor_pll.hpp"
-#include "open_loop_phase.hpp"
+#include "motor_io.hpp"
 #include "current_loop_tuning.hpp"
 #include "hall_monitor.hpp"
 #include "traction_acceleration.hpp"
 
 namespace libecu {
 class CriticalSection;
-
-/**
- * @brief Motor control mode (mechanical/commutation strategy)
- */
-enum class ControlMode : uint8_t {
-    OPEN_LOOP = 0,              ///< Open loop control (timing-based, no sensors)
-    CLOSED_LOOP_VELOCITY = 1,   ///< Closed loop velocity control with PI + Hall sensors
-    CLOSED_LOOP_TORQUE = 2      ///< Closed loop torque control (fixed duty/current + Hall sensors)
-};
-
-// ElectricMode and DriveAlgorithm live in algorithms/motor_algorithm.hpp -
-// the algorithms themselves branch on them, and they would otherwise have to
-// include this header to see them.
 
 /**
  * @brief Motor control parameters
@@ -107,14 +94,12 @@ struct MotorControlParams {
      */
     uint8_t current_blanking_cycles;
     bool useInverseCommTable; ///< Use inverse six-step commutation table
-    PiParameters pi_voltage_mode; ///< Velocity PI parameters for voltage mode (outputs duty cycle)
-    PiParameters pi_current_mode; ///< Velocity PI parameters for current mode (outputs current)
-    PiParameters pi_current_regulator; ///< Current PI parameters for current mode (outputs duty cycle)
+    PiParameters speed_pi; ///< Velocity PI, outputs current in amperes
+    PiParameters pi_current_regulator; ///< Six-step current PI, outputs duty
 
     /**
      * @brief Which electrical algorithm the drive starts in
      *
-     * Orthogonal to ElectricMode - see the table in motor_algorithm.hpp.
      * SIX_STEP is the default because it is the mode with years of bench time
      * behind it; FOC is selected at runtime with AT+ALGO.
      */
@@ -133,93 +118,6 @@ struct MotorControlParams {
     PiParameters foc_current_regulator;
     float traction_acceleration_rps2 = 0.0f; ///< Mechanical feedback ceiling; 0 leaves speed PI unchanged.
 };
-
-/**
- * @brief Motor status information
- */
-template<class P>
-struct MotorStatusT {
-    /**
-     * @brief Measured motor speed (RPS), signed relative to the commanded direction
-     *
-     * Positive when the rotor turns the way DriveMode asks, negative when it
-     * turns against it - so in normal running it reads the same as it always
-     * did. The sign is what lets the velocity loop tell "too fast" from
-     * "going the wrong way"; a magnitude cannot, and feeding it one made the
-     * drive run away when the shaft was turned backwards. See the long note in
-     * BldcController::update().
-     */
-    typename P::Speed current_speed_rps;
-    typename P::Speed target_speed_rps;   ///< Target motor speed (RPS)
-    typename P::Duty duty_cycle;         ///< Current duty cycle
-    typename P::Current target_current;     ///< Target motor current (A)
-    typename P::Current measured_current;   ///< Raw per-PWM-cycle sample (A)
-    typename P::Current measured_current_filtered; ///< Telemetry LPF (A)
-    typename P::Voltage bus_voltage;         ///< Measured bus voltage (V)
-    /**
-     * @brief Measured NTC temperature (deg C), sampled at the 100 Hz loop rate
-     *
-     * TEMPERATURE_INVALID_C (-273) means the sensor read open or the ADC
-     * conversion did not complete - not a cold motor.
-     */
-    typename P::Temperature temperature_c;
-    typename P::Angle pll_angle;          ///< Rotor angle from PLL (steps, 0-6)
-    int8_t current_pi_saturation; ///< +1/-1 if duty is clamped high/low, else 0 (for speed PI anti-windup)
-    void setScalarDuty(typename P::Duty value) noexcept { duty_cycle = value; }
-    void setSaturation(int8_t value) noexcept { current_pi_saturation = value; }
-    uint8_t target_position;   ///< Driven motor position
-    uint8_t measured_position;   ///< Measured motor position
-    bool is_running;          ///< Motor running status
-    ControlMode control_mode;   ///< Current control mode (mechanical)
-    ElectricMode electric_mode; ///< Current electric mode (electrical)
-
-    /// @name FOC state, zero while six-step is selected
-    ///@{
-    DriveAlgorithm algorithm; ///< Electrical algorithm currently running
-    typename P::Current i_d;                ///< Measured d-axis current (A)
-    typename P::Current i_q;                ///< Measured q-axis current (A)
-    typename P::Voltage v_d;                ///< Applied d-axis voltage (V)
-    typename P::Voltage v_q;                ///< Applied q-axis voltage (V)
-    typename P::Angle angle_e_rad;        ///< Electrical angle used by the algorithm (rad)
-    typename P::Duty duty_u;             ///< Phase U duty actually applied
-    typename P::Duty duty_v;             ///< Phase V duty actually applied
-    typename P::Duty duty_w;             ///< Phase W duty actually applied
-    ///@}
-};
-
-using MotorStatus = MotorStatusT<FloatProfile>;
-using NativeMotorStatus = MotorStatusT<ActiveNumericProfile>;
-
-/** @brief Convert a completed status snapshot at a diagnostics boundary. */
-template<class OutProfile, class InProfile>
-MotorStatusT<OutProfile> motorStatusCast(const MotorStatusT<InProfile>& in) noexcept {
-    MotorStatusT<OutProfile> out{};
-    out.current_speed_rps = numberCast<typename OutProfile::Speed>(in.current_speed_rps);
-    out.target_speed_rps = numberCast<typename OutProfile::Speed>(in.target_speed_rps);
-    out.duty_cycle = numberCast<typename OutProfile::Duty>(in.duty_cycle);
-    out.target_current = numberCast<typename OutProfile::Current>(in.target_current);
-    out.measured_current = numberCast<typename OutProfile::Current>(in.measured_current);
-    out.measured_current_filtered = numberCast<typename OutProfile::Current>(in.measured_current_filtered);
-    out.bus_voltage = numberCast<typename OutProfile::Voltage>(in.bus_voltage);
-    out.temperature_c = numberCast<typename OutProfile::Temperature>(in.temperature_c);
-    out.pll_angle = numberCast<typename OutProfile::Angle>(in.pll_angle);
-    out.current_pi_saturation = in.current_pi_saturation;
-    out.target_position = in.target_position;
-    out.measured_position = in.measured_position;
-    out.is_running = in.is_running;
-    out.control_mode = in.control_mode;
-    out.electric_mode = in.electric_mode;
-    out.algorithm = in.algorithm;
-    out.i_d = numberCast<typename OutProfile::Current>(in.i_d);
-    out.i_q = numberCast<typename OutProfile::Current>(in.i_q);
-    out.v_d = numberCast<typename OutProfile::Voltage>(in.v_d);
-    out.v_q = numberCast<typename OutProfile::Voltage>(in.v_q);
-    out.angle_e_rad = numberCast<typename OutProfile::Angle>(in.angle_e_rad);
-    out.duty_u = numberCast<typename OutProfile::Duty>(in.duty_u);
-    out.duty_v = numberCast<typename OutProfile::Duty>(in.duty_v);
-    out.duty_w = numberCast<typename OutProfile::Duty>(in.duty_w);
-    return out;
-}
 
 /**
  * @brief High-level BLDC motor controller
@@ -243,15 +141,15 @@ public:
         friend class BldcController;
         const BldcController* owner_ = nullptr;
         Speed limited_speed_{};
-        OpenLoopPhase<Profile, ActiveTiming::CURRENT_HZ>::PreparedRate rate_{};
+        MotorField::PreparedRate rate_{};
     };
 
     /**
      * @brief Constructor
      * @param pwm_interface PWM interface
      * @param hall_interface Hall sensor interface
-     * @param params Motor control parameters (includes PI parameters for both modes)
-     * @param adc_interface ADC interface for current sensing (optional, nullptr for voltage mode only)
+     * @param params Motor and regulator parameters
+     * @param adc_interface Current acquisition; without it the generic PWM handler does no work
      */
     BldcController(
         PwmInterface& pwm_interface,
@@ -306,14 +204,6 @@ public:
     bool commitNativeTargetSpeed(const PreparedTargetSpeed& prepared, const CriticalSection& guard) noexcept;
 
     /**
-     * @brief Set duty cycle for open-loop control
-     * @param duty_cycle Duty cycle (0.0 to 1.0)
-     *                   0.0 = 0V output (no torque)
-     *                   1.0 = maximum voltage output (full torque)
-     */
-    void setDutyCycle(float duty_cycle) noexcept;
-
-    /**
      * @brief Set target current for torque control
      * @param current_a Target current in Amperes (min_current to max_current)
      *                  Clamped to [min_current, max_current] range
@@ -325,13 +215,6 @@ public:
      * @param mode Control mode
      */
     void setControlMode(ControlMode mode) noexcept;
-
-    /**
-     * @brief Set electric mode (electrical control strategy)
-     * @param mode Electric mode
-     * @return false if the target mode's tuning cannot be represented; the old mode remains active
-     */
-    bool setElectricMode(ElectricMode mode) noexcept;
 
     /**
      * @brief Select the electrical algorithm (six-step or FOC)
@@ -350,20 +233,20 @@ public:
     /// @brief Currently selected electrical algorithm
     DriveAlgorithm getAlgorithm() const noexcept;
     /** @brief Next active FOC's discarded phase, or -1 for other modes.
-     *  @note Read under current-ISR ownership, before complete (or the compatibility wrapper).
+     *  @note Read under current-ISR ownership, before pwmInterruptHandler().
      */
     int currentReconstructedPhase() const noexcept {
-        return algorithm_ == DriveAlgorithm::FOC && dmode_ != DriveMode::NEUTRAL
+        return io_.in.algorithm == DriveAlgorithm::FOC && io_.in.drive_mode != DriveMode::NEUTRAL
             ? int(foc_.reconstructedPhase()) : -1;
     }
     /** @brief Set this current frame's FOC reconstruction choice without changing its raw samples.
      *  @return false outside active FOC or for a phase outside U/V/W (0/1/2).
      *  @note Caller qualifies both retained phases and owns the serialized current ISR.
-     *        Call immediately before completePwmInterruptHandler() or pwmInterruptHandler();
+     *        Call immediately before pwmInterruptHandler();
      *        if the frame is aborted, park/reset the drive.
      */
     bool setCurrentReconstructedPhase(unsigned phase) noexcept {
-        return algorithm_ == DriveAlgorithm::FOC && dmode_ != DriveMode::NEUTRAL &&
+        return io_.in.algorithm == DriveAlgorithm::FOC && io_.in.drive_mode != DriveMode::NEUTRAL &&
                foc_.setNextReconstructedPhase(phase);
     }
 
@@ -420,7 +303,7 @@ public:
      * @param kp Proportional gain
      * @param ki Integral gain
      *
-     * Foreground setter for the active electrical mode. Preserves the last
+     * Foreground setter for the velocity loop. Preserves the last
      * command at the last sampled error, error history, and output/integral
      * limits. Normal integration continues on the next speed tick.
      * @return false without changing the tuning if it is unrepresentable or a
@@ -475,7 +358,7 @@ public:
      */
     // One volatile scalar load is atomic on supported Cortex-M targets. Keep
     // this in the caller's optimization domain, including size-optimized code.
-    DriveMode getDriveMode() const noexcept { return dmode_; }
+    DriveMode getDriveMode() const noexcept { return io_.in.drive_mode; }
 
     /**
      * @brief Get speed PI controller gains
@@ -508,14 +391,8 @@ public:
      */
     void stop() noexcept;
 
-    /**
-     * @brief Get motor status
-     * @return Current motor status
-     */
-    MotorStatus getStatus() const noexcept;
-
-    /** @brief Native snapshot for the PWM callback; caller owns synchronization. */
-    const NativeMotorStatus& getNativeStatus() const noexcept { return status_; }
+    /** @brief Live native I/O; read after PWM completion or under a reader's CriticalSection. */
+    const MotorIo& io() const noexcept { return io_; }
 
     /**
      * @brief Get motor control parameters (configured limits)
@@ -526,73 +403,29 @@ public:
     void hallSensorInterruptHandler() noexcept;
 
     /**
-     * @brief Compatibility current tick: prepare then complete at ActiveTiming::CURRENT_HZ.
+     * @brief Process one qualified current frame at ActiveTiming::CURRENT_HZ.
      * The port calls this once per PWM period after capture and protection,
      * regardless of the acquisition mechanism or number of samples in the frame.
      * Currents and the separately cached bus voltage must be ready to read.
      */
-    void pwmInterruptHandler() noexcept;
+    bool pwmInterruptHandler() noexcept;
 #if defined(LIBECU_PWM_BUS_LOOKAHEAD) && LIBECU_PWM_BUS_LOOKAHEAD
     /** @brief Prepare exact normalization for an available auxiliary DMA result outside the PWM IRQ. */
     void prepareFocBus(typename Profile::Voltage voltage) noexcept { foc_.prepareBus(voltage); }
 #endif
-    /** @brief Synchronous tick with the same concrete ADC/PWM bound by the owning board.
-     * Static binding avoids virtual calls for current feedback and the FOC compare commit.
-     * The split/erased API uses exactly the same completion below.
-     */
-    template<class Adc, class Pwm>
-    void pwmInterruptHandler(Adc& adc, Pwm& pwm) noexcept {
-        preparePwmInterruptHandler();
-        completePwmFrom(adc, pwm);
-    }
-
-    /**
-     * @brief Advance Hall/PLL once and snapshot commands/rotor state while ADC acquisition runs.
-     * Performs no ADC reads, electrical algorithm update or PWM writes. A pending
-     * preparation is not overwritten: another prepare is a no-op until complete
-     * or cancel. Without an ADC interface it is also a no-op, like the wrapper.
-     * @note The current IRQ owns Hall/PLL and outranks SysTick, configuration
-     * and telemetry. Prepare and complete never preempt each other. A break
-     * may gate off and cancel the frame, but must not access tracking state.
-     */
-    void preparePwmInterruptHandler() noexcept;
-    /** Prepare and finish in the same single-writer IRQ. Lower-priority readers
-     *  own their snapshot locks. The only preemptor may latch a hardware stop;
-     *  it must not read/write motor status, rotor/command state or enable gates. */
-    // A board that already sampled the pins supplies the decoded sector (0xff
-    // is an illegal Hall code). Other callers retain the HallInterface read.
+    /** @brief Same single PWM tick with statically bound drivers. An exclusive
+     * carrier can commit directly to its preloads and pass the decoded Hall
+     * sector sampled at entry (0xff is invalid). */
     static constexpr uint8_t HALL_NOT_SAMPLED = 0xfe;
-    void prepareOwnedCarrier(uint8_t position = HALL_NOT_SAMPLED) noexcept;
-    template<class Adc, class Pwm> void completeOwnedCarrier(Adc& adc, Pwm& pwm) noexcept;
-    void parkFromCarrier() noexcept;
-
-    /**
-     * @brief Consume the prepared frame once, reading ready currents/Vbus and running current control.
-     * No pending preparation means no work. Commands/rotor state come from prepare;
-     * live NEUTRAL and faults still prevent electrical control. The board validates
-     * acquisition ownership and may set the one-frame FOC reconstruction hint just
-     * before complete. This stage never advances Hall/PLL again.
-     */
-    void completePwmInterruptHandler() noexcept;
-    /** @brief Consume an earlier preparation with the board's concrete current/PWM drivers. */
     template<class Adc, class Pwm>
-    void completePwmInterruptHandler(Adc& adc, Pwm& pwm) noexcept { completePwmFrom(adc, pwm); }
-
-    /**
-     * @brief Discard pending work without ADC/PWM access or another Hall/PLL tick.
-     * The tick already performed by prepare is not rolled back. Start/stop,
-     * active drive re-entry and control/electrical mode changes cancel pending
-     * work too; parking is honored live at complete. A hint set for an aborted FOC
-     * frame still requires parking/resetting the drive, as for the unsplit API.
-     */
-    void cancelPwmInterruptHandler() noexcept { pwm_prepared_ = false; }
-    /** @brief After prepare returns, whether the carrier still owns the frame. */
-    bool hasPreparedPwmFrame() const noexcept { return pwm_prepared_; }
+    bool pwmInterruptHandler(Adc& adc, Pwm& pwm, uint8_t hall = HALL_NOT_SAMPLED) noexcept;
+    /** A protection IRQ can cancel this tick without touching rotor or command state. */
+    void cancelPwmTick() noexcept { pwm_cancelled_ = true; }
+    void parkFromCarrier() noexcept;
 
 private:
     /// @brief The algorithm currently selected, never null
     MotorAlgorithm& algorithm() noexcept;
-    const MotorAlgorithm& algorithm() const noexcept;
 
     // Component references
     PwmInterface& pwm_interface_;
@@ -600,25 +433,22 @@ private:
     AdcInterface* adc_interface_;
 
     // Owned components
-    HallMonitor hall_monitor_;
-    MotorPLL motor_pll_;
-    OpenLoopPhase<Profile, ActiveTiming::CURRENT_HZ> open_loop_;
+    MotorIo io_;
+    volatile bool pwm_cancelled_ = false; // Only BRK can preempt the carrier.
     using SpeedPi = PiFloatInterface<ActivePiProfile::SpeedPiTypes, ActiveTiming::SPEED_PI_HZ>;
     SpeedPi pi_speed_controller_;
     struct {
-        SpeedPi::Input target{}, measured{};
         SpeedPi::Output integral_ceiling{}, traction_ceiling{};
-    } speed_pi_frame_; // Prepared once per slow sample, including its acceleration allowance.
+    } speed_pi_limits_; // Recomputed once per measured acceleration sample.
     volatile bool speed_pi_ready_ = false; // A park in the higher-priority current ISR invalidates it.
 
     // Electrical algorithms. Both are constructed and kept alive; only the one
-    // selected by algorithm_ is ticked. Keeping the unselected one around
+    // selected by in.algorithm is ticked. Keeping the unselected one around
     // costs a few hundred bytes and makes switching back an O(1) operation
     // with no allocation, which matters because A/B-ing FOC against six-step
     // on the same run is the whole point of having both.
     SixStepAlgorithm six_step_;
     FocAlgorithm foc_;
-    DriveAlgorithm algorithm_;
 
     // Configuration
     MotorControlParams params_;
@@ -634,35 +464,13 @@ private:
     bool acceleration_enabled_ = false;
 
     // State variables
-    NativeMotorStatus status_{};
-    volatile DriveMode dmode_;
-    bool initialized_;
-
-    // Reused in place across the two serialized current-ISR stages; never heap allocated.
-    MotorAlgorithmFrameT<Profile> prepared_pwm_frame_{};
-    Profile::Angle prepared_pwm_measured_angle_{};
-    bool prepared_hall_controls_drive_ = false;
-    volatile bool pwm_prepared_ = false; // A higher-priority break can cancel it.
-
     // Deferred Hall update (re-read by the active current-rate handler)
-    volatile bool hall_update_pending_;      ///< Set by Hall ISR, consumed at PWM frame preparation
-
-    /**
-     * @brief Voltage-mode duty request, 0.0 to 1.0
-     *
-     * Kept separate from MotorStatus::duty_cycle, which is what the algorithm
-     * *reports*. The two agree in six-step voltage mode, but FOC reports a
-     * modulation index rather than the command it was given, so a single field
-     * serving as both would feed the report back in as the next command.
-     */
-    Duty duty_command_;
+    volatile bool hall_update_pending_ = false; ///< Set by Hall ISR, consumed by the PWM tick
 
     // Target speed filtering state (LPF → slew rate limiter cascade)
-    Speed filtered_target_speed_;            ///< LPF-filtered target speed
-    Speed filtered_measured_speed_;
-    Current filtered_measured_current_;       ///< LPF-filtered current, telemetry only
-    Accumulator limited_target_speed_;        ///< Retains sub-LSB ramp increments
-    Accumulator acceleration_step_;           ///< Maximum target-speed change per control tick
+    Speed filtered_target_speed_{};          ///< LPF-filtered target speed
+    Accumulator limited_target_speed_{};     ///< Retains sub-LSB ramp increments
+    Accumulator acceleration_step_{};        ///< Maximum target-speed change per control tick
     TractionAcceleration<Profile> traction_acceleration_{};
     Speed traction_acceleration_step_{};
 
@@ -681,12 +489,8 @@ private:
 
     /// @brief Age Hall health and consume a deferred reading; caller owns the current-rate ISR.
     void observeHall(bool guard_active, uint8_t position = HALL_NOT_SAMPLED) noexcept;
-    template<bool Owned> void preparePwmFrame(uint8_t position = HALL_NOT_SAMPLED) noexcept;
+    void trackRotor(uint8_t position) noexcept;
     void clearParkedCommands() noexcept;
-    void filterPublishedCurrent() noexcept;
-    void finishOwnedStatus() noexcept;
-    template<class Adc, class Pwm> void completePwmFrom(Adc& adc, Pwm& pwm) noexcept;
-    void publishPwmStatus() noexcept;
 
     /**
      * @brief Apply acceleration/deceleration limits to target speed
@@ -695,9 +499,8 @@ private:
      * Stores previous limited value internally - does NOT use measured speed.
      *
      * @param target_speed Desired target speed
-     * @return Rate-limited target speed
      */
-    Speed applyAccelerationLimit(Speed target_speed) noexcept;
+    void applyAccelerationLimit(Speed target_speed) noexcept;
 
 };
 

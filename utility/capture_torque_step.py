@@ -6,9 +6,8 @@ steps hard, and the PI would otherwise have to build the whole duty out of
 integral action.  A speed ramp does not test that, because the acceleration
 limiter makes the demand far slower than the current loop.
 
-Both step levels are positive - no regen - so the bus cannot be pumped by a
-supply that will not sink current.  Restores the mode and drive state it found,
-including on Ctrl-C.
+Both default step levels demand positive torque. On exit the script parks in
+neutral and restores the previous control mode.
 
     ./capture_torque_step.py --out step.log
 """
@@ -33,15 +32,14 @@ def main() -> int:
 
     ecu = Ecu(args.port)
     mode_was = ecu.query("AT+MODE?", "+MODE:") or "1"
-    dmode_was = ecu.query("AT+DMODE?", "+DMODE:") or "2"
-    print(f"mode={mode_was} dmode={dmode_was} emode={ecu.query('AT+EMODE?', '+EMODE:')}")
+    print(f"mode={mode_was} algo={ecu.query('AT+ALGO?', '+ALGO:')}")
 
     try:
         ecu.cmd("AT+OSC=0")
         ecu.cmd("AT+TM=0")
-        ecu.cmd("AT+CUR=0")
+        ecu.cmd("AT+DMODE=2")
 
-        # Torque mode: no speed PID, the current setpoint is the command.
+        # Torque mode: the host, rather than the speed PI, sets the current.
         ecu.cmd("AT+MODE=2")
         if (ecu.query("AT+MODE?", "+MODE:") or "").strip() != "2":
             print("!! could not enter torque mode - re-plug the USB and retry")
@@ -94,12 +92,11 @@ def main() -> int:
     finally:
         ecu.cmd("AT+OSC=0")
         ecu.cmd("AT+CUR=0")
-        print("coasting down ...")
-        time.sleep(3.0)
-        ecu.cmd(f"AT+DMODE={dmode_was}")
+        ecu.cmd("AT+SPD=0")
+        ecu.cmd("AT+DMODE=2")
         ecu.cmd(f"AT+MODE={mode_was}")
         ecu.cmd("AT+TM=0")
-        print(f"restored mode={mode_was} dmode={dmode_was}")
+        print(f"parked in NEUTRAL, restored mode={mode_was}")
         ecu.close()
     return 0
 

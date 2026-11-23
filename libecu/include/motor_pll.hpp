@@ -31,15 +31,16 @@ namespace libecu {
  *  - Call updateTick() from that same owner (20 kHz on STM32G431)
  *  - Call getNextHall() to get the next commutation step
  */
-class MotorPLL {
+class MotorPLL : private MotorPLLCore<ActiveNumericProfile, ActiveTiming::CURRENT_HZ> {
 public:
     using Core = MotorPLLCore<ActiveNumericProfile, ActiveTiming::CURRENT_HZ>;
     using PreparedGains = Core::PreparedGains;
-    Core::Angle getNativeAngle() const noexcept { return core_.getAngle(); }
-    uint8_t getNextHall(DriveMode mode, Core::Angle sampled) const noexcept { return core_.getNextHall(mode, sampled); }
-    Core::Speed getNativeSpeedStepsSec() const noexcept { return core_.getSpeedStepsSec(); }
-    uint8_t getHallStateRaw() const noexcept { return core_.hallState(); }
-    void getNativeBaseGains(Core::Gain& kp, Core::Gain& ki) const noexcept { core_.getGains(kp, ki); }
+    using Core::angle_steps;     ///< Last sampled rotor angle in [0,6) electrical steps.
+    /// Speed feedback is the signed PI integral in steps/s. It excludes the
+    /// proportional Hall-sector ripple; the angle advances with the full PI output.
+    using Core::speed_steps_s;
+    uint8_t getHallStateRaw() const noexcept { return hallState(); }
+    void getNativeBaseGains(Core::Gain& kp, Core::Gain& ki) const noexcept { getGains(kp, ki); }
     static constexpr float LIMIT_ANGLE_ERROR = 0.5f;
     static constexpr float ANGLE_MAX = 6.0f;
     static constexpr float SYNC_SPEED = 5.0f;
@@ -67,6 +68,9 @@ public:
     static constexpr float LOCK_TRIP = LIMIT_ANGLE_ERROR * 0.8f; ///< Mean |error| that means "lost"
     ///@}
 
+    /// @brief Zero-speed-limit PLL for a default-constructed telemetry record.
+    MotorPLL() noexcept : MotorPLL(0.0f) {}
+
     /**
      * @brief Constructor
      * @param max_electrical_speed Maximum signed speed magnitude, steps/sec
@@ -77,15 +81,15 @@ public:
     /**
      * @brief Install one decoded sector before the current-rate owner's next PLL tick.
      *
-     * @param hall_state Current Hall step (0-5).
+     * @param hall Current Hall step (0-5).
      */
-    void updateHall(uint8_t hall_state) noexcept;
+    using Core::updateHall;
 
     /**
      * @brief Angle integrator
      *
-     * Call once per prepared PWM frame, from its timer or PWM-synchronized ADC
-     * interrupt. Hall interrupts and slow-loop ticks never advance the angle.
+     * Call once per qualified current tick. Hall interrupts and slow-loop
+     * ticks never advance the angle.
      */
     void updateTick() noexcept;
 
@@ -99,39 +103,19 @@ public:
      * @param mode Current drive mode (FORWARD/REVERSE/NEUTRAL)
      * @return Next commutation step (0-5)
      */
-    uint8_t getNextHall(const volatile DriveMode &mode) noexcept;
+    using Core::getNextHall;
 
     /**
      * @brief Enable or disable PLL mode
-     * @param use true = PLL-based commutation, false = discrete Hall table
+     * @param enabled true = PLL-based commutation, false = discrete Hall table
      */
-    void setUsePLL(bool use) noexcept;
+    using Core::setUsePLL;
 
     /// @return true if PLL mode is active
-    bool isUsingPLL() const noexcept;
-
+    using Core::isUsingPLL;
 
     /// @brief Reset PLL state (angle, speed, integrator)
-    void reset() noexcept;
-
-
-    /// @return Current estimated rotor angle in steps (0-5)
-    float getAngle() const noexcept;
-
-    /**
-     * @brief Current estimated electrical speed in steps/sec
-     *
-     * Returns the PI *integrator*, not the full PI output.  The proportional
-     * term is fed by the Hall quantisation sawtooth (see LOCK_WINDOW_EREV), so
-     * the PI output carries a kp*0.5 = +-50 steps/sec ripple at every speed -
-     * 5% of the reading at 8 RPS but 28% of it at 1.5 RPS.  The integrator
-     * carries the same information without that ripple, because the sawtooth
-     * is symmetric about zero and integrates away.  The angle is still
-     * integrated with the full PI output; only the reported speed differs.
-     *
-     * @return Estimated electrical speed in steps/sec, signed (negative in REVERSE)
-     */
-    float getSpeedStepsSec() const noexcept;
+    using Core::reset;
 
     /**
      * @brief Snapshot of PLL internal state for telemetry
@@ -153,7 +137,7 @@ public:
      * @note Caller must hold a CriticalSection if reading from a different interrupt priority
      */
     PllInfo getInfo() const noexcept;
-    Core::Info nativeInfo() const noexcept { return core_.getInfo(); }
+    Core::Info nativeInfo() const noexcept { return Core::getInfo(); }
     static PllInfo describe(const Core::Info& state) noexcept;
 
     /**
@@ -166,7 +150,7 @@ public:
     /** @brief Validate and calculate gains outside the interrupt mask; transactional on failure. */
     static bool prepareGains(float kp_base, float ki_base, PreparedGains& prepared) noexcept;
     /** @brief Publish gains only; caller serializes with the sampling ISR. */
-    void applyPrepared(const PreparedGains& prepared) noexcept { core_.applyPrepared(prepared); }
+    using Core::applyPrepared;
 
     /**
      * @brief Get base PI gains
@@ -174,9 +158,6 @@ public:
      * @param ki_base Output: base integral gain
      */
     void getBaseGains(float& kp_base, float& ki_base) const noexcept;
-
-private:
-    Core core_;
 };
 
 } // namespace libecu

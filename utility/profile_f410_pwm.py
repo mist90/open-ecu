@@ -115,8 +115,7 @@ with serial.Serial(args.port, args.baud, timeout=.03) as uart:
         def capture(label, algo=1, current=0, phases=(2122, 2122, 2122), active=True, osc=False, telemetry=False):
             if args.case and label not in args.case:
                 return
-            for cmd in ['AT+OSC=0', 'AT+TM=0', 'AT+DMODE=2', f'AT+ALGO={algo}',
-                        'AT+MODE=2', 'AT+EMODE=1']:
+            for cmd in ['AT+OSC=0', 'AT+TM=0', 'AT+DMODE=2', f'AT+ALGO={algo}', 'AT+MODE=2']:
                 command(uart, cmd)
             write_words(symbols['f410_bench_inputs'], phases)
             if active:

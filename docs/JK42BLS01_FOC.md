@@ -6,18 +6,20 @@ at approximately 20 V on 2026-11-11:
 
 | Setting | Default |
 |---|---|
-| Algorithm / electrical mode | FOC / current |
+| Electrical algorithm | FOC with d/q current regulation |
 | FOC electrical angle | +120 degrees |
 | Effective phase resistance / inductance | 1.6 ohm / 1.7 mH |
 | Current-loop design bandwidth | 500 Hz |
 | FOC Kp / Ki | 5.340708 V/A / 5026.548 V/(A*s) |
-| Current-mode speed Kp / Ki | 0.025 / 0.025 |
+| Speed PI Kp / Ki (current output) | 0.025 / 0.025 |
 | Six-step current Kp / Ki | 0.15 / 200, independently tuned |
 
-The shared main derives the FOC gains as `Kp = 2*pi*f*L`, `Ki = 2*pi*f*R`.
+The [motor configuration](../libecu/include/motor_config.hpp) derives these
+FOC gains as `Kp = 2*pi*f*L`, `Ki = 2*pi*f*R`.
 `BLDC_SIX_STEP_USE_MOTOR_MODEL=false` selects the separately tuned six-step
-PI. The inverse motor/Hall alignment requires +120 degrees; the scooter's
--60-degree offset produced reverse acceleration in a voltage-mode check.
+PI. The inverse motor/Hall alignment requires +120 degrees. On the earlier
+firmware, the scooter's -60-degree offset produced reverse acceleration in
+a direct-voltage test; that was a bring-up result, not a current-command test.
 Feed-forward remains disabled because back-EMF has not been identified.
 
 ## Model provenance

@@ -4,10 +4,6 @@
  */
 
 #include "../include/six_step_algorithm.hpp"
-#include "../include/foc_math.hpp"
-#include "../include/bldc_controller.hpp"
-
-#include <algorithm>
 
 namespace libecu {
 
@@ -26,11 +22,7 @@ const CommutationStep SixStepAlgorithm::COMMUTATION_TABLE[6] = {
 SixStepAlgorithm::SixStepAlgorithm(PwmInterface& pwm_interface) noexcept
     : pwm_interface_(pwm_interface)
     , current_pi_()
-    , params_{0.95f, 6}
     , current_step_(0xFF)
-    , cached_phase_u_state_(PwmState::OFF)
-    , cached_phase_v_state_(PwmState::OFF)
-    , cached_phase_w_state_(PwmState::OFF)
     , cycles_since_commutation_(255)
     , last_duty_{}
     , last_saturation_(0)
@@ -39,8 +31,8 @@ SixStepAlgorithm::SixStepAlgorithm(PwmInterface& pwm_interface) noexcept
 
 void SixStepAlgorithm::setParams(const SixStepParams& params) noexcept
 {
-    params_ = params;
     max_duty_ = numberCast<Duty>(params.max_duty_cycle);
+    blanking_cycles_ = params.blanking_cycles;
 }
 
 bool SixStepAlgorithm::setCurrentPi(const PiParameters& params) noexcept
@@ -78,78 +70,51 @@ MotorAlgorithmOutput SixStepAlgorithm::update(const MotorAlgorithmInput& in) noe
     return motorOutputCast<MotorAlgorithmOutput>(updateNative(motorInputCast<Input>(in)));
 }
 
-SixStepAlgorithm::Output SixStepAlgorithm::updateNative(const Input& in) noexcept
+SixStepAlgorithm::Output SixStepAlgorithm::updateNative(const Input& sample) noexcept
 {
-    Frame frame{in, {}};
-    updateNative(frame);
-    return frame.output;
+    MotorInput in{};
+    MotorElectricalOutput out{};
+    sample.unpack(in, out);
+    const bool commutated = updateElectrical(in, out, sample.angle_steps);
+    pwm_interface_.updateNativeDutyCycle(out.duty_cycle);
+    if (commutated) pwm_interface_.apply();
+    return Output::fromCarrier(out);
 }
 
-LIBECU_HOT_LOOP void SixStepAlgorithm::updateNative(Frame& frame) noexcept
+void SixStepAlgorithm::updateCarrier(const MotorInput& in, MotorElectricalOutput& out,
+                                     Profile::Angle angle_steps) noexcept
 {
-    updateInto<false>(frame.input, frame.input, frame.output);
+    const bool commutated = updateElectrical(in, out, angle_steps);
+    pwm_interface_.writeCarrierDuty(out.duty_cycle, out.duty_cycle, out.duty_cycle);
+    if (commutated) pwm_interface_.applyCarrierStates();
 }
 
-[[gnu::noinline]] void SixStepAlgorithm::updateOwnedCarrier(const Input& in, MotorStatusT<Profile>& status) noexcept {
-    updateInto<true>(in, status, status);
-}
-
-template<bool Owned, class Commands, class Result>
-LIBECU_HOT_LOOP void SixStepAlgorithm::updateInto(const Input& in, const Commands& commands, Result& out) noexcept {
+LIBECU_HOT_LOOP bool SixStepAlgorithm::updateElectrical(
+        const MotorInput& in, MotorElectricalOutput& out, Profile::Angle angle_steps) noexcept {
     // Read the shunt *before* this cycle's commutation: the sample belongs to
-    // the period that just ended, under the switching states still cached.
-    const Current measured_current = currentFromActivePhase(in);
-
-    const bool commutating = (in.step <= 5) && (in.step != current_step_);
+    // the period that just ended, under the previously applied row.
+    const Current measured_current = currentFromActivePhase(out);
 
     Duty duty;
     int8_t saturation;
 
-    if (commands.electric_mode == ElectricMode::VOLTAGE_MODE) {
-        duty = numericClamp(in.duty_command, Duty{}, max_duty_);
-        saturation = 0;
+    if (cycles_since_commutation_ < blanking_cycles_) {
+        // Hold the last duty and leave the PI untouched, so neither the
+        // proportional term nor the integrator sees the freewheeling sample.
+        duty = last_duty_;
+        saturation = last_saturation_;
     } else {
-        const bool blanked = params_.blanking_cycles > 0 &&
-                             cycles_since_commutation_ < params_.blanking_cycles;
-        if (blanked) {
-            // Hold the last duty and leave the PI untouched, so neither the
-            // proportional term nor the integrator sees the freewheeling sample.
-            duty = last_duty_;
-            saturation = last_saturation_;
-        } else {
-            // The PI gains come from the motor's electrical model (see
-            // current_loop_tuning.hpp), so the loop bandwidth is set by physics
-            // rather than by hand-tuning.
-            using PiCurrent = ActivePiProfile::CurrentPiTypes::Input;
-            const Duty duty_raw = numberCast<Duty>(current_pi_.updateNative(
-                numberCast<PiCurrent>(commands.target_current), numberCast<PiCurrent>(measured_current)));
-            duty = numericClamp(duty_raw, Duty{}, max_duty_);
+        using PiCurrent = ActivePiProfile::CurrentPiTypes::Input;
+        const Duty duty_raw = numberCast<Duty>(current_pi_.updateNative(
+            numberCast<PiCurrent>(in.target_current), numberCast<PiCurrent>(measured_current)));
+        duty = numericClamp(duty_raw, Duty{}, max_duty_);
 
-            // Saturation is reported from the *clamped* duty, not from the
-            // regulator's own limits: max_duty_cycle is applied here, outside
-            // the PI, so the PI reports itself unsaturated while the bridge is
-            // in fact wide open. The sign tells the speed loop which way it is
-            // stuck; see PiController.
-            saturation = static_cast<int8_t>(current_pi_.saturationSign());
-            if (saturation == 0) {
-                saturation = (duty_raw > max_duty_) ? 1 : (duty_raw < Duty{}) ? -1 : 0;
-            }
+        // The bridge's duty ceiling may be below the PI's own upper rail.
+        // Report either clamp to the speed loop for anti-windup.
+        saturation = static_cast<int8_t>(current_pi_.saturationSign());
+        if (saturation == 0) {
+            saturation = (duty_raw > max_duty_) ? 1 : (duty_raw < Duty{}) ? -1 : 0;
         }
-    }
-
-    if (cycles_since_commutation_ < 255) {
-        cycles_since_commutation_++;
-    }
-
-    if (commutating) {
-        current_step_ = in.step;
-        cycles_since_commutation_ = 0;
-        applyCommutationStep<Owned>(COMMUTATION_TABLE[in.step], duty);
-    } else {
-        // Modulation depth only. All three phases carry the same duty; the
-        // switching state set at the last commutation decides which of them
-        // actually modulates it.
-        writeDuty<Owned>(duty);
     }
 
     last_duty_ = duty;
@@ -158,66 +123,53 @@ LIBECU_HOT_LOOP void SixStepAlgorithm::updateInto(const Input& in, const Command
     out.duty_u = duty;
     out.duty_v = duty;
     out.duty_w = duty;
-    out.setScalarDuty(duty);
+    out.duty_cycle = duty;
     out.measured_current = measured_current;
     out.i_d = Current{};
     out.i_q = Current{};
     out.v_d = Profile::Voltage{};
-    out.v_q = multiplyTo<Profile::Voltage>(duty, in.bus_voltage);
-    out.angle_e_rad = multiplyTo<Profile::Angle>(in.angle_steps,
+    out.v_q = multiplyTo<Profile::Voltage>(duty, out.bus_voltage);
+    out.angle_e_rad = multiplyTo<Profile::Angle>(angle_steps,
         number_v<Profile::Angle, 10471975511966LL, 10000000000000LL>);
-    out.setSaturation(saturation);
+    out.current_pi_saturation = saturation;
+
+    const uint8_t step = out.target_position;
+    if (step <= 5 && step != current_step_) {
+        current_step_ = step;
+        cycles_since_commutation_ = 0;
+        queueCommutationStep(COMMUTATION_TABLE[step]);
+        return true;
+    }
+    if (cycles_since_commutation_ < 255) ++cycles_since_commutation_;
+    return false;
 }
 
-template<bool Owned>
-void SixStepAlgorithm::writeDuty(Duty duty) noexcept {
-    if constexpr (Owned) pwm_interface_.writeCarrierDuty(duty, duty, duty);
-    else pwm_interface_.updateNativeDutyCycle(duty);
-}
-
-template<bool Owned>
-void SixStepAlgorithm::applyCommutationStep(const CommutationStep& step, Duty duty_cycle) noexcept
+void SixStepAlgorithm::queueCommutationStep(const CommutationStep& step) noexcept
 {
-    cached_phase_u_state_ = step.phase_u;
-    cached_phase_v_state_ = step.phase_v;
-    cached_phase_w_state_ = step.phase_w;
-
     // Queued, not applied: CCPC preloads OCxM/CCxE/CCxNE until the COM event.
     pwm_interface_.setChannelState(PwmChannel::PHASE_U, step.phase_u);
     pwm_interface_.setChannelState(PwmChannel::PHASE_V, step.phase_v);
     pwm_interface_.setChannelState(PwmChannel::PHASE_W, step.phase_w);
-
-    // Duty travels on its own path: preloaded against the timer's update event
-    // while the switching states above are preloaded against the COM event
-    // below. Both are atomic within themselves, and neither has to wait for the
-    // other, because no phase state is encoded in a compare register.
-    writeDuty<Owned>(duty_cycle);
-
-    // Apply all three channel states atomically (TIM_EGR_COMG on STM32)
-    if constexpr (Owned) pwm_interface_.applyCarrierStates();
-    else pwm_interface_.apply();
 }
 
-SixStepAlgorithm::Current SixStepAlgorithm::currentFromActivePhase(const Input& in) const noexcept
+SixStepAlgorithm::Current SixStepAlgorithm::currentFromActivePhase(const MotorElectricalOutput& sampled) const noexcept
 {
-    if (cached_phase_u_state_ == PwmState::DOWN) {
-        return in.i_u;
-    } else if (cached_phase_v_state_ == PwmState::DOWN) {
-        return in.i_v;
-    } else if (cached_phase_w_state_ == PwmState::DOWN) {
-        return in.i_w;
-    }
-    // No DOWN phase (all OFF, or FOC left the bridge in all-UP): nothing on a
-    // shunt that means anything.
-    return Current{};
+    // After park or FOC there is no preceding six-step DOWN phase.
+    if (current_step_ >= 6) return {};
+    const auto& step = COMMUTATION_TABLE[current_step_];
+    if (step.phase_u == PwmState::DOWN) return sampled.i_u;
+    if (step.phase_v == PwmState::DOWN) return sampled.i_v;
+    return sampled.i_w; // Every commutation row has exactly one DOWN phase.
 }
 
 PwmState SixStepAlgorithm::getPhaseState(PwmChannel channel) const noexcept
 {
+    if (current_step_ >= 6) return PwmState::OFF;
+    const auto& step = COMMUTATION_TABLE[current_step_];
     switch (channel) {
-        case PwmChannel::PHASE_U: return cached_phase_u_state_;
-        case PwmChannel::PHASE_V: return cached_phase_v_state_;
-        case PwmChannel::PHASE_W: return cached_phase_w_state_;
+        case PwmChannel::PHASE_U: return step.phase_u;
+        case PwmChannel::PHASE_V: return step.phase_v;
+        case PwmChannel::PHASE_W: return step.phase_w;
         default:                  return PwmState::OFF;
     }
 }

@@ -32,6 +32,11 @@ public:
     struct PreparedRate {
         uint32_t increment = 0;
         Rate electrical_rate{};
+
+        Rate signedSpeed(DriveMode mode) const noexcept {
+            return mode == DriveMode::FORWARD ? electrical_rate :
+                   mode == DriveMode::REVERSE ? -electrical_rate : Rate{};
+        }
     };
 
     /**
@@ -68,28 +73,6 @@ public:
     }
 
     /**
-     * @brief Publish a successfully prepared rate without overwriting an advancing phase
-     * @param prepared Rate returned by prepareSpeed(); caller synchronizes with advance()
-     */
-    void applyPreparedRate(const PreparedRate& prepared) noexcept {
-        increment_ = prepared.increment;
-        speed_steps_s_ = prepared.electrical_rate;
-    }
-
-    /**
-     * @brief Set mechanical RPS without changing the present phase
-     * @param speed Nonnegative mechanical revolutions per second
-     * @param poles Even, nonzero number of motor poles
-     * @return false on invalid/unrepresentable rate; the previous rate is retained
-     */
-    bool setSpeed(Speed speed, uint8_t poles) noexcept {
-        PreparedRate prepared;
-        if (!prepareSpeed(speed, poles, prepared)) return false;
-        applyPreparedRate(prepared);
-        return true;
-    }
-
-    /**
      * @brief Seed from a normalized Hall/PLL angle; invalid input seeds zero
      * @param angle Electrical step units in [0,6)
      */
@@ -107,9 +90,9 @@ public:
     }
 
     /** @brief Advance one PWM sample. @param mode Direction; NEUTRAL holds phase. */
-    void advance(DriveMode mode) noexcept {
-        if (mode == DriveMode::FORWARD) phase_ += increment_;
-        else if (mode == DriveMode::REVERSE) phase_ -= increment_;
+    void advance(DriveMode mode, const PreparedRate& rate) noexcept {
+        if (mode == DriveMode::FORWARD) phase_ += rate.increment;
+        else if (mode == DriveMode::REVERSE) phase_ -= rate.increment;
     }
 
     /** @return Continuous virtual angle in electrical step units [0,6). */
@@ -139,17 +122,8 @@ public:
         return static_cast<uint8_t>(sector);
     }
 
-    /** @param mode Drive direction. @return Signed field speed in electrical steps/s. */
-    Rate speed(DriveMode mode) const noexcept {
-        if (mode == DriveMode::FORWARD) return speed_steps_s_;
-        if (mode == DriveMode::REVERSE) return -speed_steps_s_;
-        return Rate{};
-    }
-
 private:
     uint32_t phase_ = 0;
-    uint32_t increment_ = 0;
-    Rate speed_steps_s_{};
 };
 
 } // namespace libecu

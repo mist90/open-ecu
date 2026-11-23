@@ -148,7 +148,7 @@ int main() {
         uint8_t next_comm_step = pll.getNextHall(mode);
 
         // Capture PLL speed at key time points for scenario assertions
-        float pll_speed_now = pll.getSpeedStepsSec();
+        const float pll_speed_now = libecu::numberCast<float>(pll.speed_steps_s);
         if (!captured_01 && current_time >= 0.1f) {
             pll_speed_at_01 = pll_speed_now; real_speed_at_01 = real_speed; captured_01 = true;
         }
@@ -168,8 +168,8 @@ int main() {
                  << real_angle << ","
                  << real_speed << ","
                  << static_cast<int>(current_hall_step) << ","
-                 << pll.getAngle() << ","
-                 << pll.getSpeedStepsSec() << ","
+                 << libecu::numberCast<float>(pll.angle_steps) << ","
+                 << pll_speed_now << ","
                  << static_cast<int>(next_comm_step) << ","
                  << static_cast<int>(pll.getInfo().is_sync) << "\n";
     }

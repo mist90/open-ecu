@@ -38,12 +38,12 @@ void trace(float target) {
         fixed.updateHall(hall);
         floating.updateTick();
         fixed.updateTick();
-        const float delta = std::remainder(floating.getAngle() - fixed.getAngle().toFloat(), 6.0f);
+        const float delta = std::remainder(floating.angle_steps - fixed.angle_steps.toFloat(), 6.0f);
         worst_angle = std::max(worst_angle, std::abs(delta));
-        worst_speed = std::max(worst_speed, std::abs(floating.getSpeedStepsSec() - fixed.getSpeedStepsSec().toFloat()));
-        check(fixed.getAngle() >= number<FixedProfile::Angle>(0) &&
-              fixed.getAngle() < number<FixedProfile::Angle>(6), "fixed phase stays in one revolution");
-        if (elapsed >= ramp_time + 1.0f) { mean_speed += fixed.getSpeedStepsSec().toFloat(); ++count; }
+        worst_speed = std::max(worst_speed, std::abs(floating.speed_steps_s - fixed.speed_steps_s.toFloat()));
+        check(fixed.angle_steps >= number<FixedProfile::Angle>(0) &&
+              fixed.angle_steps < number<FixedProfile::Angle>(6), "fixed phase stays in one revolution");
+        if (elapsed >= ramp_time + 1.0f) { mean_speed += fixed.speed_steps_s.toFloat(); ++count; }
     }
     mean_speed /= count;
     std::printf("%u Hz, %+7.1f steps/s: max phase delta %.7f, speed delta %.5f, mean %.3f\n",
@@ -65,11 +65,11 @@ void overslew() {
         phase = std::fmod(phase + speed / 20000, 6.0f);
         fixed.updateHall(static_cast<uint8_t>(phase));
         fixed.updateTick();
-        check(fixed.getAngle() >= number<FixedProfile::Angle>(0) &&
-              fixed.getAngle() < number<FixedProfile::Angle>(6), "overslew keeps the phase wrapped");
-        check(numericAbs(fixed.getSpeedStepsSec()) <= number<FixedProfile::PllSpeed>(6050),
+        check(fixed.angle_steps >= number<FixedProfile::Angle>(0) &&
+              fixed.angle_steps < number<FixedProfile::Angle>(6), "overslew keeps the phase wrapped");
+        check(numericAbs(fixed.speed_steps_s) <= number<FixedProfile::PllSpeed>(6050),
               "overslew keeps the speed state bounded");
-        if (elapsed > 2.0f) { sum += fixed.getSpeedStepsSec().toFloat(); ++samples; }
+        if (elapsed > 2.0f) { sum += fixed.speed_steps_s.toFloat(); ++samples; }
     }
     check(std::abs(sum / samples - 4800.0f) < 5.0f, "PLL reacquires after an excessive acceleration");
 }
@@ -82,6 +82,23 @@ static int64_t roundRatio(__int128 numerator, int64_t denominator) {
 }
 static int32_t narrow(int64_t value) {
     return int32_t(std::clamp<int64_t>(value, INT32_MIN, INT32_MAX));
+}
+
+static void narrowIntegralReseed() {
+    // A generic profile can represent the full PI output but clip it when
+    // reseeding its integrator. The published speed must follow the integrator.
+    struct NarrowIntegral : FixedProfile { using PllAccumulator = FixedPointType<26>; };
+    using Core = MotorPLLCore<NarrowIntegral, 16000>;
+    Core pll(number<Core::Speed>(16));
+    pll.updateHall(3);
+    pll.updateTick();
+    const auto info = pll.getInfo();
+    check(info.angle_per_second > number<Core::Speed>(32) && pll.speed_steps_s == number<Core::Speed>(32),
+          "generic profile publishes the reseeded integral in speed units, not the full PI output");
+    pll.updateHall(5);
+    pll.reset();
+    check(pll.angle_steps == number<Core::Angle>(5) && pll.speed_steps_s == Core::Speed{},
+          "reset publishes the current Hall angle and zero speed before the next tick");
 }
 
 template<uint32_t Frequency>
@@ -179,6 +196,7 @@ int main() {
     trace<8000>(480.0f);
     trace<16000>(-480.0f);
     overslew();
+    narrowIntegralReseed();
     exactTrace<1>(); // Forces multi-turn wrapping as well as single-turn updates.
     exactTrace<8000>();
     exactTrace<16000>();
