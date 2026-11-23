@@ -4,7 +4,9 @@ Open-source BLDC motor control firmware with platform-independent architecture. 
 
 The firmware regulates motor current using FOC or six-step commutation. In
 velocity mode the speed PI supplies the current demand; in torque and open-loop
-modes the host supplies it in amperes. See the [AT commands and telemetry](docs/AT_COMMANDS.md)
+modes the host supplies it in amperes. In FOC this demand is `Iq*`: the d/q
+current PIs request voltages, and SVPWM converts the limited voltages to three
+phase duties. See the [AT commands and telemetry](docs/AT_COMMANDS.md)
 and the [controller I/O contract](docs/CONTROL_IO.md) for the commands, sampled results
 and interrupt that owns each current tick.
 
@@ -88,14 +90,12 @@ without carrying the AT parser or its oscilloscope buffer; see the
 
 ### Key Features
 
-See [Software and control algorithms](docs/software.md) for the control pipeline,
-FOC, six-step, PLL, filtering, hybrid Iq and voltage-limiter implementation.
+See [Software and control algorithms](docs/software.md) for FOC and six-step
+current regulation, Hall/PLL feedback, filtering and voltage limiting.
 
 - **FOC** with Hall sensor position feedback; [modes, feedback and timing](docs/FOC_HANDOFF.md)
 - **Calibrated d/q current PIs** for the scooter motor: speed-dependent error
   weights and a separate [speed-PI integral limit](docs/software.md#motor_1-defaults)
-- **Experimental hybrid Iq**: opt-in model-led voltage with slow averaged-current
-  trim; [algorithm and tuning](docs/software.md#hybrid-iq-control-through-uq)
 - **One current tick per PWM period**: acquisition, control and PWM application
   use the controller's native I/O in place;
   [STM32 interrupt paths and optional IRQ-state hooks](docs/CURRENT_FRAME.md)
@@ -248,7 +248,6 @@ Additional host regressions:
 - `tests/test_profile_math/run.sh` — LUT/transforms, voltage limits and Cortex-M0 helper audit
 - `tests/test_numeric_adc/run.sh` — full-range current, bus, NTC and PWM comparisons
 - `tests/test_foc/run.sh float|fixed` — closed-loop motor model and anti-windup recovery
-- `tests/test_hybrid_iq/run.sh` — float/fixed hybrid current control, delayed motor model, noise and recovery
 - `tests/test_current_filter/run.sh` — dq filters, delayed-loop stability and zero-current noise suppression
 - `tests/test_control/run.sh float|fixed|numeric-fixed|scooter-fixed` — current-only commands, frame ownership, protection, speed PI and OSC; `scooter-fixed` uses a 16-kHz MOTOR_1 host fixture
 - `tests/test_mtte/run.sh` — rolling-wheel torque observer and traction model, using synthetic data

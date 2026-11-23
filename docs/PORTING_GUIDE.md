@@ -25,6 +25,10 @@ belong in `motor_config.hpp`, together with the current-error curves and rolling
 integral ceiling. The maximum positive current command is the lower of the motor
 limit and `BoardInfo::max_drive_current_a`; the port enforces its own raw current trip.
 
+In FOC the d/q current PIs turn current errors into voltage requests for PWM.
+The generic motor calibration permits optional d/q decoupling; `MOTOR_1`
+rejects it. See the [current-loop equations](software.md#ordinary-dq-pi-strategy).
+
 See [board.hpp](../libecu/include/board.hpp) and the
 [F410 board port](../STM32F410/Core/Src/board.cpp).
 Both electrical algorithms need phase current and bus voltage. The generic

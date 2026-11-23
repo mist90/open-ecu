@@ -74,21 +74,29 @@ struct Pwm final : PwmInterface {
 void activeFoc() {
     Pwm pwm;
     FocAlgorithm foc(pwm);
-#ifdef MOTOR_1
     auto options = foc.getParams();
     options.use_decoupling = true;
+#ifdef MOTOR_1
     if (foc.setParams(options) || foc.getParams().use_decoupling) {
         std::fputs("PI-only scooter accepted decoupling\n", stderr);
         std::exit(1);
     }
-    options.use_decoupling = false;
-    options.hybrid_iq.enabled = true;
-    options.hybrid_iq.r_phase_ohm = 0.658f;
-    options.flux_linkage_wb = 0.012336f;
-    if (foc.setParams(options) || foc.getParams().hybrid_iq.enabled) {
-        std::fputs("PI-only scooter accepted hybrid Iq\n", stderr);
-        std::exit(1);
+#else
+    // With zero current error a rotating motor needs only its signed back-EMF.
+    options.flux_linkage_wb = 0.02f;
+    if (!foc.setParams(options)) std::exit(1);
+    for (int direction : {-1, 1}) {
+        Core::Input in{};
+        in.drive_mode = DriveMode::FORWARD;
+        in.bus_voltage = number<P::Voltage>(40);
+        in.speed_steps_s = number<P::PllSpeed>(direction * 60); // 10 electrical revolutions/s.
+        const auto out = foc.updateNative(in);
+        near(numberCast<float>(out.v_d), 0, 0, "zero-current decoupled Vd", direction * 60);
+        near(numberCast<float>(out.v_q), direction * 20 * std::acos(-1.0) * options.flux_linkage_wb,
+             0.001, "back-EMF compensation", direction * 60);
     }
+    options.use_decoupling = false;
+    if (!foc.setParams(options)) std::exit(1);
 #endif
     // At 16 kHz, Ki=125 integrates one weighted error in exactly 128 frames.
     if (!foc.setAngleOffsetRad(0) || !foc.setCurrentPiGains(1, 125)) {

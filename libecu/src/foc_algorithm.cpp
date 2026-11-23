@@ -28,7 +28,7 @@ FocAlgorithm::FocAlgorithm(PwmInterface& pwm) noexcept : pwm_interface_(pwm) {
 }
 
 bool FocAlgorithm::setParams(const FocParams& params) noexcept {
-    if (motor_config::current_loop.pi_only && (params.hybrid_iq.enabled || params.use_decoupling)) return false;
+    if (motor_config::current_loop.disable_decoupling && params.use_decoupling) return false;
     Core::Params typed{};
     if (!tryNumber(params.max_modulation, typed.max_modulation) ||
         !tryNumber(params.max_duty_cycle, typed.max_duty_cycle) ||
@@ -45,12 +45,6 @@ bool FocAlgorithm::setParams(const FocParams& params) noexcept {
     typed.low_side_clamped_pwm = params.low_side_clamped_pwm;
     if (!makeCurrentFilterCoefficients(params.current_filter_order, params.current_filter_cutoff_hz,
                                        ActiveTiming::CURRENT_HZ, typed.current_filter)) return false;
-    if (!makeHybridIqParams<ActiveNumericProfile, ActiveTiming::CURRENT_HZ>(
-            params.hybrid_iq, typed.hybrid_iq)) return false;
-    if (params.hybrid_iq.enabled && (params.flux_linkage_wb <= 0.0f || params.l_phase_h < 0.0f)) return false;
-    ActiveNumericProfile::Flux bemf_per_step{};
-    if (params.hybrid_iq.enabled &&
-        !tryNumber(params.flux_linkage_wb * FOC_RAD_PER_STEP, bemf_per_step)) return false;
     core_.setParams(typed);
     params_ = params;
     return true;

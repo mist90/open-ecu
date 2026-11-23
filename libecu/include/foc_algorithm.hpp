@@ -162,9 +162,6 @@ struct FocParams {
     float current_filter_cutoff_hz = 2000.0f;
     /// @brief dq noise floor in amperes for zero-demand standstill; zero disables it.
     float current_noise_floor_a = 0.0f;
-
-    /// @brief Optional model-led q-axis voltage with slow current trim; d-axis keeps its PI.
-    HybridIqParams hybrid_iq{};
 };
 
 /**
@@ -204,9 +201,7 @@ public:
     /**
      * @brief Set the d/q current regulator gains
      *
-     * With PI feedback both axes share one set of gains, which is
-     * correct for a motor with Ld == Lq. Hybrid Iq uses these gains for Id
-     * only; its q-axis correction is configured through HybridIqParams.
+     * Both current PIs share one set of gains, for a motor with Ld == Lq.
      * The output of these regulators is in **volts**, not duty, so
      * the gains are not interchangeable with the six-step current PI: see
      * tuneFocCurrentPi() in current_loop_tuning.hpp.

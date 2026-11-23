@@ -13,7 +13,6 @@ sampling, PWM limits and loop rates enter through `BoardInfo`.
 - [Six-step commutation](#six-step-commutation)
 - [Field-oriented control](#field-oriented-control)
 - [Current-feedback filtering](#current-feedback-filtering)
-- [Hybrid Iq control through Uq](#hybrid-iq-control-through-uq)
 - [Polygon voltage limiting](#polygon-voltage-limiting)
 - [Real-time execution](#real-time-execution)
 - [Verification](#verification)
@@ -42,8 +41,8 @@ compares 100 and 500 Hz on the host with a 16-kHz MOTOR_1 current loop.
 The mechanical mode chooses the current source: in velocity mode the speed
 PI supplies the target; torque and open-loop modes take a signed ampere
 command. The electrical algorithm chooses how to meet it: six-step regulates
-the conducting shunt, while FOC regulates d/q currents. Hybrid Iq is an
-optional q-axis strategy within FOC.
+the current in the conducting shunt; FOC regulates the measured d/q currents
+with one PI per axis.
 
 In open-loop operation, a PWM-clocked angle generator supplies the commanded
 field angle and speed. Hall tracking continues to describe the physical rotor.
@@ -178,7 +177,8 @@ omega_n = sqrt(a*Ki)
 zeta = (a*Kp + b) / (2*omega_n)
 ```
 
-For the MOTOR_1 model, `Kt = 0.37008 N*m/A`. A 10-inch tire and 80-kg
+For the MOTOR_1 model, 20 pole pairs and a flux linkage of 0.012336 Wb give
+`Kt = 0.37008 N*m/A`. A 10-inch tire and 80-kg
 effective translating mass contribute `J_load = 1.29032 kg*m^2`, compared
 with an identified unloaded-wheel inertia of approximately `0.00625 kg*m^2`.
 Consequently, unloaded stability and loaded response impose very different
@@ -187,8 +187,8 @@ requirements.
 An earlier `Kp/Ki = 3/0.15` experiment improved modeled loaded damping but
 responded too slowly to real load changes; it was replaced by `3/2`.
 On 2026-11-17, the then-default became **3/20**, following the user's
-successful free-wheel test on STM32F410. This is a speed-PI change; the
-electrical current-loop gains and the hybrid Iq correction gain are separate.
+successful free-wheel test on STM32F410. Only the speed PI changed; the
+electrical current-loop gains stayed the same.
 
 ### SPID 3/20 stability assessment
 
@@ -240,8 +240,8 @@ only transient/rebound budgets, and 11 also fail settled-motion checks.
 With `3/2`, 24 cases exceeded transient budgets, with no settled-motion
 failures. Thus the successful nominal free-wheel result does not imply
 stability over the full uncertainty range. The model approximates torque
-response by a bounded 125-500-Hz first-order lag; it does not qualify
-voltage saturation, six-step ripple, or the full hybrid Uq/Iq dynamics.
+response by a bounded 125-500-Hz first-order lag; it does not simulate the
+d/q current PIs, voltage saturation or six-step ripple.
 
 Sources: [PI implementation](../libecu/include/pi_controller.hpp),
 [motor configuration](../libecu/include/motor_config.hpp),
@@ -287,8 +287,8 @@ Its ideal linear natural frequency is about 5.63 Hz; Hall quantization,
 detector clipping and reseeding modify the actual response.
 
 **Reported PLL speed is the integral term.** Angle advancement uses the full
-`Kp*error + integral` result. The mechanical fallback and any optional
-back-EMF model use the integral speed, not the phase-correction ripple.
+`Kp*error + integral` result. The mechanical fallback and optional d/q
+decoupling use the integral speed, not the phase-correction ripple.
 Diagnostics expose both quantities as `pll_integral` and `angle_per_second`.
 
 ### Synchronization and reseeding
@@ -405,9 +405,8 @@ or post-commutation blanking windows.
    Iq = -Ialpha*sin(theta) + Ibeta*cos(theta)
    ```
 
-4. **Regulate current.** Filter the feedback as configured and calculate
-   requested `Ud/Uq`. The ordinary strategy uses independent d/q PIs; the
-   hybrid strategy replaces only the q-axis controller.
+4. **Regulate current.** Filter the measured `Id` and `Iq` as configured.
+   The d PI uses the `Id` error to request `Ud`; the q PI uses the `Iq` error to request `Uq`.
 5. **Limit voltage.** Apply the d-priority polygon limiter and update regulator
    integrators using the voltage selected by that limiter.
 6. **Generate PWM.** Inverse Park returns `Ualpha/Ubeta`; space-vector PWM
@@ -419,10 +418,10 @@ not establish this motor-specific alignment.
 
 ### Ordinary d/q PI strategy
 
-**MOTOR_1 closes both axes on measured current** (`current_loop.pi_only=true`).
-At 20 kHz on STM32 the d PI uses `Id* = 0`; the q PI uses the signed current
-request `Iq*` from the outer PI. Feedback filtering is [board-specific](#current-feedback-filtering).
-Neither axis adds model-led voltage or decoupling.
+With the [MOTOR_1 calibration](../libecu/include/motor_config.hpp), the d PI
+regulates `Id` toward zero; in velocity mode the q PI tracks the signed `Iq*`
+from the speed PI. Both run at **20 kHz** on STM32, with
+[board-specific feedback filtering](#current-feedback-filtering).
 
 ```text
 ed = wd * (Id* - filtered_Id)     Vd_requested = Kp*ed + integral_d
@@ -441,17 +440,20 @@ the magnitude of electrical PLL speed; for this 120-sector/rev motor:
 | At or above 4 RPS | 1 | 1/16 |
 
 At 4 RPS (240 RPM) the effective q gains are about **0.0344 V/A** and
-**32.3 V/(A·s)**. The controller corrects a measured current error more slowly;
-it does **not** divide `Iq*` by 16 or switch to hybrid voltage control. JK42BLS01
-uses unit weights on both axes.
+**32.3 V/(A·s)**. The q PI corrects measured current error more slowly at
+that speed; the `Iq*` setpoint is unchanged. JK42BLS01 uses unit weights on both axes.
 
 After voltage limiting, each axis integral receives `Ki*Ts*error`, followed, when enabled,
 by `Kb*(limited-requested)`. Here FOC `Kb` is a **dimensionless per-sample
 fraction**, normally 1; it differs from the time-scaled `Kb` of the generic
 speed/six-step PI. Integrals are also bounded by the available voltage scale.
 
-Optional decoupling adds `-omega_e*L*Iq` to Ud and
-`omega_e*(L*Id + flux)` to Uq. Shared startup defaults disable it.
+`MOTOR_1` does not permit d/q decoupling: its PI outputs go straight to the
+voltage limiter. The generic calibration permits decoupling as a separate
+option, off at startup. When enabled it adds `-omega_e*L*Iq` to the d PI
+output and `omega_e*(L*Id + flux)` to the q PI output before limiting, using
+the measured `Id` and `Iq`.
+
 FOC PI gains come from `Kp = L*omega_c`, `Ki = R*omega_c`: outputs are volts,
 so these gains do not contain a bus-voltage divisor.
 
@@ -477,15 +479,15 @@ Sources: [FOC core](../libecu/include/foc_control_core.hpp),
 
 ## Current-feedback filtering
 
-Filtering occurs after phase reconstruction and Clarke/Park, before ordinary
-current PI errors. Independent first-order filters use:
+After phase reconstruction and Clarke/Park, each axis filters its measured
+current before the PI computes the error. The first-order update is:
 
 ```text
 y += alpha * (input - y)
 ```
 
 Only first order and bypass are implemented. The first valid sample initializes
-the ordinary filter's state. Its coefficient is designed outside the ISR for
+the filter state. Its coefficient is designed outside the ISR for
 the actual sample rate and requested digital -3-dB cutoff:
 
 ```text
@@ -504,7 +506,8 @@ The cutoff belongs to the board's analog front end and is published through
 
 At 20 kHz sampling, the 2-kHz filter has `alpha ~= 0.455887`. The MOTOR_1
 calibration stores `Kp = 0.549775 V/A`, `Ki = 516.792 V/(A*s)`. This pair
-corresponds to a 125-Hz model input with R=0.658 ohm and L=0.7 mH;
+corresponds to a 125-Hz model input with R=0.658 ohm and L=0.7 mH.
+The resistance estimate includes inverter drops and is an upper bound;
 125 Hz is not a measured closed-loop bandwidth.
 
 The F410 comparison selected the 2-kHz filter with these quarter-strength
@@ -525,119 +528,7 @@ enabled, it suppresses feedback only at zero d/q demand and near standstill,
 with hysteresis. Small nonzero demands and zero-current regulation while
 rotating retain feedback.
 
-In hybrid mode, Id keeps its ordinary filter. Iq goes to the dedicated
-error-averaging path below; the otherwise unused ordinary q filter is bypassed
-unless the optional idle-noise detector needs it.
-
 Source: [feedback filter](../libecu/include/current_feedback_filter.hpp).
-
-## Hybrid Iq control through Uq
-
-The hybrid strategy combines **fast model-based voltage** with **slow measured
-current correction**. It targets noisy current feedback, where a fast
-proportional response can turn switching spikes into voltage disturbances.
-
-It remains current control: the outer speed PI or `AT+CUR` supplies an ampere demand.
-`HybridIqParams::enabled` selects this strategy in a core that supports it;
-the scooter calibration uses the ordinary q PI.
-
-A board opts in through `BoardInfo::hybrid_iq_control`. Shared main supplies
-phase resistance from `BLDC_R_PHASE_OHM`, inductance from `BLDC_L_PHASE_H`
-and flux linkage from `BLDC_KE_V_S_PER_RAD_E`. Direct users configure
-`FocParams::hybrid_iq` and call `FocAlgorithm::setParams()`.
-
-Setup validates coefficients outside the ISR; invalid or unrepresentable
-parameters leave the previous configuration intact. Enabled hybrid requires
-positive phase resistance and flux linkage, nonnegative inductance, and a
-positive averaging time and slew rate. Integral gain and correction magnitude
-may be zero. `HybridIqParams` defaults to zero resistance: supply a motor model
-before enabling it.
-
-### Fast model path
-
-For signed q-current demand:
-
-```text
-Uq_requested = R_est*Iq_target + flux_est*omega_e + correction
-```
-
-The resistive term responds immediately to a new current request; the
-back-EMF term supplies the voltage needed for the present rotor speed.
-For MOTOR_1, increasing Iq demand by 1 A adds 0.658 V immediately at unchanged
-speed and correction. Actual current then follows the motor's electrical
-dynamics.
-
-The underlying q-axis model is
-`Uq = R*Iq + L*dIq/dt + omega_e*(L*Id + flux)`. With the usual zero Id target,
-the fast path supplies its steady resistive and back-EMF terms.
-There is no `L*dIq_target/dt` feed-forward: differentiating the outer
-loop's stepped request would create voltage kicks.
-
-Back-EMF feed-forward operates with hybrid Iq, including when
-`use_decoupling` is false. If optional cross-coupling is enabled, it uses
-**reference currents** rather than raw ADC currents, so it does not bypass
-the slow feedback path. Shared startup defaults disable that coupling.
-
-### Slow error correction
-
-Every fast tick filters the current error:
-
-```text
-e_avg += alpha * (Iq_target - Iq_raw - e_avg)
-alpha = Ts / (averaging_time + Ts)
-```
-
-After the current tick's voltage has been limited, the next correction is:
-
-```text
-delta = clamp(Ki_trim*Ts*e_avg, -slew*Ts, +slew*Ts)
-correction_next = clamp(correction + delta, -correction_limit, +correction_limit)
-```
-
-| Parameter | Current default |
-|---|---:|
-| Error-averaging time constant | 20 ms, approximately 8-Hz cutoff |
-| Trim integral gain | 2 V/(A*s) |
-| Correction magnitude | +/-4 V |
-| Correction slew | 10 V/s |
-| MOTOR_1 R estimate | 0.658 ohm |
-| MOTOR_1 flux estimate | 0.012336 V*s/electrical radian |
-
-At 20 kHz, the error-filter coefficient is `1/401` and correction changes
-by at most 0.5 mV per tick. At 16 kHz the corresponding values are `1/321`
-and 0.625 mV. For a sustained averaged 1-A error, the unconstrained rate
-is 2 V/s at either frequency.
-
-Filtering the **error** is equivalent to filtering reference and measurement
-with the same pole. Filtering only measured Iq would make a correctly followed
-reference step appear to leave a persistent deficit. Error history starts at
-zero, so the first sample cannot initialize a large long-lived bias.
-
-There is no proportional term driven by instantaneous measured-current error.
-The approximate trim crossover `Ki/(2*pi*R) ~= 0.48 Hz` describes model
-adaptation, not the response time of the fast demand path. Neither filtering
-nor integration is moved to a lower sample rate.
-
-### Saturation, reset and model limits
-
-The correction update observes the **final d-priority vector limiter**. If
-its delta would push Uq further into clipping, the correction is held and
-`e_avg` is cleared. Integration that moves out of saturation is allowed.
-Instantaneous clipping is not back-calculated into this slow trim, because
-doing so could inject Id noise through the shared voltage limit.
-
-Id retains its ordinary PI with a zero target. Parking/reset and changes to
-the gains, filter or electrical angle offset clear hybrid adaptation. Switching
-between ordinary PI and hybrid also clears the old q PI integral.
-
-The MOTOR_1 R estimate includes inverter effects and is an upper-bound estimate
-from a no-load fit. Model errors can affect the first electrical transient;
-slow adaptation corrects sustained error. Averaging does not remove sensor
-gain/offset bias, and approximate average-current tracking is not an
-instantaneous current limit. Raw-current and hardware protection are separate.
-
-Sources: [hybrid controller](../libecu/include/hybrid_iq_control.hpp),
-[FOC integration](../libecu/include/foc_control_core.hpp).
 
 ## Polygon voltage limiting
 
@@ -708,9 +599,9 @@ of bus voltage and modulation; otherwise it computes the values itself.
 - Saturation means an output was actually clamped. A point outside the old
   circle but inside the polygon does not falsely trigger anti-windup.
 
-Ordinary d/q PIs back-calculate using the limiter's selected voltage. Hybrid
-q correction uses conditional integration instead. The outer speed PI receives
-the clipping sign so it can stop integrating an unavailable current request.
+Both current PIs back-calculate using the limiter's selected voltage. The
+outer speed PI receives the clipping sign so it can stop integrating an
+unavailable current request.
 
 Source: [polygon limiter](../libecu/include/polygon_voltage_limit.hpp).
 
@@ -763,24 +654,16 @@ bash tests/test_speed_pi_rate/run.sh
 bash tests/test_foc/run.sh float
 bash tests/test_foc/run.sh fixed
 bash tests/test_current_filter/run.sh
-bash tests/test_hybrid_iq/run.sh
 bash tests/test_voltage_limit/run.sh
 bash tests/test_profile_math/run.sh
 bash tests/test_command_processor/run.sh
 bash tests/test_mtte/run.sh
 ```
 
-The suites cover Hall/PLL behavior, algorithm handover, delayed motor
-models, feedback filters, both torque signs, hybrid model error and saturation
-recovery, independent polygon geometry and reconstructed PWM voltages.
-The hybrid motor model uses an ideal rotor angle; it does not validate PLL
-noise or mechanical vibration. The profile-math suite also audits the
-Cortex-M0 fixed path for floating-point helpers.
-
-The hybrid runner builds float and fixed profiles sequentially; `BUILD_DIR`
-selects its output directory. Its motor model uses reconstructed PWM voltages,
-one-frame actuation delay and rotor motion at 8/16/20 kHz. Shared-main tests
-verify board opt-in and motor-resistance wiring in both numeric profiles.
+The suites cover Hall/PLL behavior, algorithm handover, feedback filters with
+loop delay, both torque signs, saturation recovery, polygon geometry and
+reconstructed PWM voltages. The profile-math suite also audits the Cortex-M0
+fixed path for floating-point helpers.
 
 The [rolling-wheel torque observer](../libecu/include/mtte_observer.hpp)
 uses synchronized Hall speed and measured q-axis current to bound positive

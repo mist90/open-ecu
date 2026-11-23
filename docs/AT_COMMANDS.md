@@ -304,7 +304,7 @@ the host does not set them.
 | Value | Algorithm | Description |
 |-------|-----------|-------------|
 | 0 | SIX_STEP | The current PI (`AT+CPID`) uses the active DOWN-phase shunt and sets duty for the commutated phases. |
-| 1 | FOC | The d/q regulators set voltage for space-vector PWM. `AT+FPID` tunes the ordinary d/q PIs; configured hybrid Iq replaces only the q regulator. |
+| 1 | FOC | The d/q current PIs (`AT+FPID`) convert the errors in `Id` and `Iq` to voltage requests for space-vector PWM. |
 
 > **Switch at standstill or in NEUTRAL.** Changing algorithm is a step change
 > in the applied voltage — the outgoing algorithm's integrators are cleared and

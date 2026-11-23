@@ -151,8 +151,6 @@ public:
             info_.max_drive_current_a = std::strtof(limit, nullptr);
         if (const char* cutoff = std::getenv("TEST_BOARD_CURRENT_FILTER_HZ"))
             info_.current_feedback_filter_hz = std::strtof(cutoff, nullptr);
-        if (const char* hybrid = std::getenv("TEST_BOARD_HYBRID_IQ"))
-            info_.hybrid_iq_control = std::strcmp(hybrid, "1") == 0;
         return pwm_.initialize(info_.pwm_frequency_hz, info_.requested_dead_time_ns) && hall_.initialize();
     }
     const BoardInfo& info() const noexcept override { return info_; }
@@ -161,9 +159,6 @@ public:
     AdcInterface* adc() noexcept override { return nullptr; }
     CommandProcessor& createConsole(BldcController& controller) noexcept override {
         record('C');
-#ifdef MOTOR_1
-        check(!info_.hybrid_iq_control, "a PI-only motor must reject a hybrid board before protocol startup");
-#endif
         testDefaults(controller);
         testMotorDefaults(controller, info_);
         const auto& foc = controller.getParams().foc;
@@ -173,9 +168,6 @@ public:
               "board enables dq filtering independently of the selected motor");
         check(foc.current_filter_cutoff_hz == info_.current_feedback_filter_hz,
               "shared main loads the board's actual dq cutoff without a motor override");
-        check(foc.hybrid_iq.enabled == info_.hybrid_iq_control &&
-              foc.hybrid_iq.r_phase_ohm == BLDC_R_PHASE_OHM,
-              "board selects hybrid strategy while the motor supplies its resistance");
         static Protocol protocol(&controller);
         return protocol;
     }
@@ -218,13 +210,6 @@ public:
         std::exit(failures == 0 ? 0 : 1);
     }
     [[noreturn]] void fail() noexcept override {
-#ifdef MOTOR_1
-        if (info_.hybrid_iq_control) {
-            check(std::strcmp(events, "I") == 0, "incompatible current control is rejected before arming loops");
-            std::printf("Hybrid board / PI-only motor: boot rejected, %u failures\n", failures);
-            std::exit(failures ? 1 : 0);
-        }
-#endif
         std::fprintf(stderr, "FAIL: shared main rejected the fake board\n");
         std::exit(1);
     }

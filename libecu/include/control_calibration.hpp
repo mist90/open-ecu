@@ -31,7 +31,7 @@ struct CurrentErrorCurve {
 
 struct CurrentLoopCalibration {
     CurrentErrorCurve d{}, q{};
-    bool pi_only = false; // Omit model-led Iq and decoupling on a classical PI drive.
+    bool disable_decoupling = false; // Omit optional cross-coupling and back-EMF compensation for this motor.
 };
 inline constexpr CurrentLoopCalibration unweighted_current_loop{};
 

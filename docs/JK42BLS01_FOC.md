@@ -20,7 +20,8 @@ FOC gains as `Kp = 2*pi*f*L`, `Ki = 2*pi*f*R`.
 PI. The inverse motor/Hall alignment requires +120 degrees. On the earlier
 firmware, the scooter's -60-degree offset produced reverse acceleration in
 a direct-voltage test; that was a bring-up result, not a current-command test.
-Feed-forward remains disabled because back-EMF has not been identified.
+The JK42BLS01 back-EMF constant has not been identified. Its qualified setup
+uses the d/q current PIs without decoupling.
 
 ## Model provenance
 

@@ -113,8 +113,6 @@ libecu::MotorControlParams makeMotorParams(const libecu::BoardInfo& board_info) 
     motor_params.foc.current_filter_order = board_info.current_feedback_filter_hz > 0.0f
         ? libecu::CurrentFilterOrder::FIRST_ORDER : libecu::CurrentFilterOrder::OFF;
     motor_params.foc.current_filter_cutoff_hz = board_info.current_feedback_filter_hz;
-    motor_params.foc.hybrid_iq.enabled = board_info.hybrid_iq_control;
-    motor_params.foc.hybrid_iq.r_phase_ohm = BLDC_R_PHASE_OHM;
 
     motor_params.foc_current_regulator = libecu::motor_config::foc_current_pi;
 

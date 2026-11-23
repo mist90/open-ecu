@@ -4,7 +4,10 @@ Run `bash tests/test_motor_calibration/run.sh` from `open-ecu`. The test drives
 the real `FocAlgorithm::updateNative` at 16 kHz with known phase currents,
 independently signed Hall speeds, torque requests and both drive directions.
 It checks the d/q proportional voltage and the voltage retained by each
-integrator when the error vanishes across a change in gain.
+integrator when the error vanishes across a change in gain. The `MOTOR_1`
+fixture also checks that requesting d/q decoupling fails and leaves it off.
+The JK42 fixture enables decoupling and checks the sign and magnitude of the
+back-EMF voltage at zero current in both directions.
 
 | Absolute Hall speed (steps/s) | MOTOR_1 d-axis weight | MOTOR_1 q-axis weight |
 |---|---|---|
