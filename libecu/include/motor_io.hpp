@@ -32,7 +32,7 @@ struct MotorInput {
 #if LIBECU_FOC_DUTY_TELEMETRY
     P::Duty foc_modulation{};      // Slow telemetry derived from a coherent dq/bus sample.
 #endif
-    P::Speed velocity_feedback_rps{}; // Same units/sign/LPF; outer PI and traction only.
+    P::Speed velocity_feedback_rps{}; // Filtered mechanical feedback for the outer speed PI.
 };
 
 /** Storage shared by the electrical kernel and its standalone numerical adapter. */

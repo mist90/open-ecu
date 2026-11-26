@@ -28,42 +28,27 @@ namespace libecu::motor_config {
 // against a reference thermometer - see the NTC note in stm32_adc.cpp.
 #define BLDC_MAX_TEMPERATURE 100.0f
 #define BLDC_INVERTION false
-// One default for the light wheel and a rolling load. Explicit legacy selections change only Kp/Ki.
-#if !defined(MOTOR_1_LOADED)
-#define BLDC_SPEED_CURRENT_KP 11.0f
-#define BLDC_SPEED_CURRENT_KI 3.0f
-#elif MOTOR_1_LOADED == 0
-// Reference free-wheel gains.
-#define BLDC_SPEED_CURRENT_KP 1.25f
-#define BLDC_SPEED_CURRENT_KI 5.0f
-#elif MOTOR_1_LOADED == 1
-// Previous loaded-roller tuning; verify under the intended load.
-#define BLDC_SPEED_CURRENT_KP 3.0f
-#define BLDC_SPEED_CURRENT_KI 24.0f
-#else
-#error "MOTOR_1_LOADED must be 0 or 1"
-#endif
+// Velocity PI at standstill and at 1 mechanical RPS. This calibration follows the motor across ports.
+#define BLDC_SPEED_CURRENT_KP 27.5f
+#define BLDC_SPEED_CURRENT_KI 12.0f
+inline constexpr float running_speed_kp = 11.0f, running_speed_ki = 3.0f;
 #define BLDC_PLL_KP 50.0f
 #define BLDC_PLL_KI 1250.0f
 // Mechanical velocity PI feedback only. Set to 0 for a stock-PLL comparison build.
 #ifndef LIBECU_HALL_PERIOD_SPEED
 #define LIBECU_HALL_PERIOD_SPEED 1
 #endif
+
 // Hall sectors/s (120 per mechanical revolution here). Both axes recover full
 // PI authority after the low-speed ramp; only Iq fades again at high speed.
 inline constexpr ErrorWeightRamp low_speed_weight{60, 75, 1.0f / 16};
 inline constexpr CurrentLoopCalibration current_loop{
     {low_speed_weight, {}}, {low_speed_weight, {360, 480, 1.0f / 16}}, true
 };
-// The integral earns 16 A/(rev/s) above 7.5 RPM. The output ceiling from
-// measured acceleration and the port's hardware phase-current trip are separate.
+// The integral earns 16 A/(rev/s) above 7.5 RPM, within the configured current limit.
 inline constexpr RollingIntegralLimit rolling_integral{12.0f, 0.125f, 16.0f};
 inline constexpr float speed_integral_max_a = BLDC_MAX_CURRENT;
-inline constexpr float traction_acceleration_rps2 = 3.0f, traction_gain_a_per_rps = 3.0f;
-// Extra positive authority only when speed is falling faster than the allowed acceleration
-// and the ramp is already ahead. The total positive increment still has a hard per-time limit.
-inline constexpr float recovery_lag_rps = .25f, recovery_gain_a_per_rps = 6.f, max_traction_rise_a_s = 150.f;
-inline constexpr float soft_start_rps2 = BLDC_MAX_ACCELERATION; // Command ramp, independent of traction feedback.
+inline constexpr float soft_start_rps2 = BLDC_MAX_ACCELERATION; // Mechanical speed command ramp.
 // Retain 1/8 of fast speed error within a 0.25 RPS band around its moving mean.
 // Sustained error and large transients still reach the PI (no steady-state deadband).
 inline constexpr float velocity_error_band_rps = .25f, velocity_fast_weight = .125f;
@@ -110,11 +95,10 @@ inline constexpr PiParameters foc_current_pi{0.549775f, 516.792f};
 #define BLDC_INVERTION true
 #define BLDC_SPEED_CURRENT_KP 0.025f
 #define BLDC_SPEED_CURRENT_KI 0.025f
+inline constexpr float running_speed_kp = BLDC_SPEED_CURRENT_KP, running_speed_ki = BLDC_SPEED_CURRENT_KI;
 inline constexpr CurrentLoopCalibration current_loop{};
 inline constexpr RollingIntegralLimit rolling_integral{};
 inline constexpr float speed_integral_max_a = 12.0f;
-inline constexpr float traction_acceleration_rps2 = 0.0f, traction_gain_a_per_rps = 0.0f;
-inline constexpr float recovery_lag_rps = 0.f, recovery_gain_a_per_rps = 0.f, max_traction_rise_a_s = 0.f;
 inline constexpr float soft_start_rps2 = BLDC_MAX_ACCELERATION;
 inline constexpr float velocity_error_band_rps = 0.f, velocity_fast_weight = 1.f, velocity_error_alpha = 1.f;
 // Six-step uses its independently tuned duty-output current PI.
@@ -142,6 +126,23 @@ inline constexpr float velocity_error_band_rps = 0.f, velocity_fast_weight = 1.f
 inline constexpr PiParameters foc_current_pi =
     tuneFocCurrentPi({BLDC_L_PHASE_H, BLDC_R_PHASE_OHM, 0, BLDC_ILOOP_BW_HZ});
 #endif
+
+inline constexpr bool schedule_speed_pi =
+    BLDC_SPEED_CURRENT_KP != running_speed_kp || BLDC_SPEED_CURRENT_KI != running_speed_ki;
+
+/** @brief Interpolate speed gains from the magnitude of filtered mechanical rev/s, in native PI formats. */
+template<class Kernel>
+constexpr typename Kernel::Gains scheduledSpeedGains(typename Kernel::Input feedback) noexcept {
+    using Speed = typename Kernel::Input;
+    using Gain = typename Kernel::Gain;
+    constexpr auto low = number_v<Speed, 1, 8>, high = number_v<Speed, 1>;
+    constexpr auto kp_slope = divideTo<Gain>(constant<Gain>(BLDC_SPEED_CURRENT_KP - running_speed_kp), high - low);
+    constexpr auto ki_slope = divideTo<Gain>(constant<Gain>(BLDC_SPEED_CURRENT_KI - running_speed_ki), high - low);
+    const auto distance = numericClamp(numericAbs(feedback), low, high) - low;
+    const auto kp = constant<Gain>(BLDC_SPEED_CURRENT_KP) - multiplyTo<Gain>(distance, kp_slope);
+    const auto ki = constant<Gain>(BLDC_SPEED_CURRENT_KI) - multiplyTo<Gain>(distance, ki_slope);
+    return {kp, ki, divideByInteger<typename Kernel::StepGain>(ki, 2u * Kernel::FREQUENCY_HZ)};
+}
 
 } // namespace libecu::motor_config
 #endif // LIBECU_MOTOR_CONFIG_HPP

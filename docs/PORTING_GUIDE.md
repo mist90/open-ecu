@@ -23,7 +23,11 @@ low-side-clamped PWM choice and `current_feedback_filter_hz` for the current
 sensing front end. Motor poles, electrical model and PI tuning
 belong in `motor_config.hpp`, together with the current-error curves and rolling
 integral ceiling. The maximum positive current command is the lower of the motor
-limit and `BoardInfo::max_drive_current_a`; the port enforces its own raw current trip.
+limit and `BoardInfo::max_drive_current_a`. The port independently enforces its
+measured-current limits. For example, the
+[F410 raw-current trip](NUCLEO_F410RB_IHM08M1.md#hardware-overcurrent-protection)
+parks the bridge. A port that enables `LIBECU_SPEED_PI_CURRENT_CAP` can also narrow
+both PI output rails with `updateProtectionCap()` before a hard trip.
 
 In FOC the d/q current PIs turn current errors into voltage requests for PWM.
 The generic motor calibration permits optional d/q decoupling; `MOTOR_1`

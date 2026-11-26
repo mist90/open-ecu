@@ -15,7 +15,7 @@ persist between calls.
 Setters validate and convert commands before publishing related values in
 one short critical section. Mode transitions may also seed or reset state.
 On STM32, the speed PI runs at 1 kHz by default; filtered mechanical feedback,
-temperature, the setpoint ramp and traction limits update at 100 Hz.
+temperature, the setpoint ramp and the rolling integral limit update at 100 Hz.
 
 ## Which signal drives the motor?
 
@@ -27,9 +27,10 @@ speed PI sets the current demand in amperes. In torque mode (`MODE=2`),
 describe the **rotor**. `in.current_speed_rps` is the filtered mechanical
 speed in revolutions per second, signed relative to the drive direction.
 For MOTOR_1, `in.velocity_feedback_rps` uses a qualified period of six Hall sectors
-for the outer PI and the traction ceiling; the monitor and standstill gates retain
-the independently filtered PLL speed. The Hall capture IRQ dates transitions;
-period arithmetic and filtering run at 100 Hz. See the [speed and current cascade](software.md#speed-loop-tuning).
+for the outer PI's speed error, scheduled gains and rolling integral limit.
+The monitor and standstill gates retain the independently filtered PLL speed.
+The Hall capture IRQ dates transitions; period arithmetic and filtering run
+at 100 Hz. See the [speed and current cascade](software.md#speed-loop-tuning).
 `NEUTRAL` clears the drive demands while acquisition can continue tracking it.
 
 Six-step regulates the conducting shunt; FOC regulates d/q current. `v_d`,
@@ -47,6 +48,11 @@ regulator's history.
   second field is the literal `1` for wire compatibility. `reportedDuty()` is
   six-step applied duty or, when enabled, FOC modulation computed on the slow
   tick. The individual FOC phase duties are updated on **every** current tick.
+- A board can attach a [`MeasuredDqMonitor`](../libecu/include/measured_dq_monitor.hpp)
+  to read an eight-sample mean of filtered Id/Iq in signed Q20 amperes. The
+  100-Hz service samples before standstill noise suppression. A verified parked
+  bridge reports zero; an incomplete window or unavailable measurement reports
+  `INT32_MIN` on both axes. The STM32 AT status and scope use their existing samples.
 - Both STM32 ports call `pwmInterruptHandler()` once per full PWM period.
   The board passes `controller.io()` to `captureCurrentSample()` only after
   a successful tick and only if `wantsCurrentSample()` is true. AT records

@@ -1,6 +1,6 @@
 /**
  * @file main.cpp
- * @brief Closed-loop scooter speed PI cadence A/B. Only Iq tracking and mechanics are simulated.
+ * @brief Scooter speed PI cadence A/B. Only Iq tracking and mechanics are simulated.
  */
 #include "bldc_controller.hpp"
 #include "motor_config.hpp"
@@ -46,9 +46,7 @@ struct Io final : PwmInterface, HallInterface, AdcInterface {
     uint32_t getRawAdcValue() override { return 3500; }
 };
 
-struct Tuning { float kp, ki, traction; };
-
-MotorControlParams parameters(Tuning t) {
+MotorControlParams parameters() {
     MotorControlParams p{};
     p.num_poles = BLDC_NUM_POLES;
     p.max_speed_rps = BLDC_MAX_SPEED;
@@ -59,11 +57,12 @@ MotorControlParams parameters(Tuning t) {
     p.max_temperature_c = BLDC_MAX_TEMPERATURE;
     p.algorithm = DriveAlgorithm::FOC;
     p.useInverseCommTable = BLDC_INVERTION;
-    p.acceleration_rate = motor_config::soft_start_rps2; // Mechanical rev/s² slew, for every run.
-    p.traction_acceleration_rps2 = t.traction;
+    p.acceleration_rate = motor_config::soft_start_rps2;
+    p.schedule_speed_pi = motor_config::schedule_speed_pi;
     p.shape_velocity_error = motor_config::velocity_error_band_rps > 0;
     p.measured_speed_lpf_alpha = 0.5f;
-    p.speed_pi = {t.kp, t.ki, BLDC_MAX_CURRENT, BLDC_MIN_CURRENT, BLDC_MAX_CURRENT, -4, 2};
+    p.speed_pi = {BLDC_SPEED_CURRENT_KP, BLDC_SPEED_CURRENT_KI, BLDC_MAX_CURRENT, BLDC_MIN_CURRENT,
+                  motor_config::speed_integral_max_a, -4, 2};
     return p;
 }
 
@@ -136,12 +135,15 @@ struct Metrics {
     }
 };
 
-double run(double mass_kg, Tuning t, FILE* trace) {
+Metrics run(double mass_kg, FILE* trace) {
     carrier_tick = 0;
     Io io;
     require(io.AdcInterface::initialize({0.003f, 16, 3.3f, 12}, {169000, 18000}), "ADC fixture setup");
-    BldcController motor(io, io, parameters(t), &io);
+    BldcController motor(io, io, parameters(), &io);
     require(motor.setPllGains(BLDC_PLL_KP, BLDC_PLL_KI) && motor.initialize(), "scooter controller setup");
+    float kp, ki;
+    motor.getSpeedPiGains(kp, ki);
+    require(kp == 27.5f && ki == 12.f, "wrong standstill speed gains");
     motor.start();
     motor.setDriveMode(DriveMode::FORWARD);
     motor.setTargetSpeed(float(TARGET_RPS));
@@ -173,10 +175,12 @@ double run(double mass_kg, Tuning t, FILE* trace) {
         const float request = state.target_current.toFloat();
         require(request >= BLDC_MIN_CURRENT && request <= BLDC_MAX_CURRENT, "current request outside scooter rails");
         // Common 2-ms trace grid for both rates, after any update, BEFORE advancing the plant.
-        if (trace && carrier_tick % (CARRIER_HZ / SYSTICK_HZ) == 0)
-            std::fprintf(trace, "%u,%s,%g,%g,%g,%.3f,%.8f,%.8f,%d,%.8f,%.8f\n", PI_HZ, load,
-                         t.kp, t.ki, t.traction, carrier_tick * DT, plant.speed,
+        if (trace && carrier_tick % (CARRIER_HZ / SYSTICK_HZ) == 0) {
+            motor.getSpeedPiGains(kp, ki);
+            std::fprintf(trace, "%u,%s,%g,%g,%.3f,%.8f,%.8f,%d,%.8f,%.8f\n", PI_HZ, load,
+                         kp, ki, carrier_tick * DT, plant.speed,
                          state.velocity_feedback_rps.toFloat(), plant.sector, request, plant.iq);
+        }
 
         const int old_sector = plant.sector;
         plant.step(request);
@@ -193,15 +197,20 @@ double run(double mass_kg, Tuning t, FILE* trace) {
     require(motor.getHallFault() == HallFault::NONE && motor.getDriveMode() == DriveMode::FORWARD,
             "controller fault or unexpected park");
     require(m.t90 > m.t10 && m.t10 >= 0, "10-90% speed crossing missing");
-    require(std::abs(m.tail_sum - m.tail_feedback_sum) / (TAIL_SECONDS * SLOW_HZ) < 0.05,
+    const double tail_mean = m.tail_sum / (TAIL_SECONDS * SLOW_HZ);
+    require(m.tail_min >= 0.98 * TARGET_RPS && m.tail_max <= 1.02 * TARGET_RPS,
+            "wheel speed did not stay within 2% of 155 rpm over the final five seconds");
+    require(std::abs(tail_mean - m.tail_feedback_sum / (TAIL_SECONDS * SLOW_HZ)) < 0.05,
             "late mean Hall feedback lost the moving wheel");
     require(PI_HZ == SLOW_HZ || mid_changes > 0, "no intermediate PI command reached the plant");
-    std::printf("%u,%s,%g,%g,%g,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.2f,%.2f,%.2f,%.2f,%.2f\n",
-                PI_HZ, load, t.kp, t.ki, t.traction, m.launch_wheel200, m.launch_feedback200,
-                m.wheel200, m.feedback200, m.hall200, m.wheel10, m.feedback10,
+    motor.getSpeedPiGains(kp, ki);
+    require(kp == 11.f && ki == 3.f, "settled 155 rpm must use running gains");
+    std::printf("%u,%s,%g,%g,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.2f,%.2f,%.2f,%.2f,%.2f\n",
+                PI_HZ, load, BLDC_SPEED_CURRENT_KP, BLDC_SPEED_CURRENT_KI,
+                m.launch_wheel200, m.launch_feedback200, m.wheel200, m.feedback200, m.hall200, m.wheel10, m.feedback10,
                 m.t90 - m.t10, m.t90, 60 * std::max(0.0, m.max_speed - TARGET_RPS),
-                60 * m.tail_sum / (TAIL_SECONDS * SLOW_HZ), 60 * (m.tail_max - m.tail_min));
-    return m.launch_wheel200;
+                60 * tail_mean, 60 * (m.tail_max - m.tail_min));
+    return m;
 }
 } // namespace
 
@@ -211,17 +220,11 @@ int main(int argc, char** argv) {
     if (argc == 2) {
         trace = std::fopen(argv[1], "w");
         require(trace, "cannot open trace");
-        std::fputs("pi_hz,load,kp,ki,traction_rps2,t_s,wheel_rps,feedback_rps,hall_count,request_a,iq_a\n", trace);
+        std::fputs("pi_hz,load,kp,ki,t_s,wheel_rps,feedback_rps,hall_count,request_a,iq_a\n", trace);
     }
-    for (double mass : {0.0, 80.0}) {
-        constexpr float traction = motor_config::traction_acceleration_rps2;
-        run(mass, {BLDC_SPEED_CURRENT_KP, BLDC_SPEED_CURRENT_KI, traction}, trace);
-        // Preserve all historical comparison arms regardless of the motor's boot PI selection.
-        run(mass, {1.25f, 5, traction}, trace);
-        const double cap_on = run(mass, {3, 24, traction}, trace);
-        run(mass, {6, 24, traction}, trace);
-        const double cap_off = run(mass, {3, 24, 0}, trace);
-        require(cap_on > 0 && cap_on < cap_off, "3/24 traction control did not attenuate this model's launch");
-    }
+    const Metrics free = run(0.0, trace);
+    const Metrics loaded = run(80.0, trace);
+    require(loaded.t90 > free.t90 && loaded.launch_wheel200 > 0 && loaded.launch_wheel200 < free.launch_wheel200,
+            "the 80 kg load must accelerate more slowly and reach 90% later than the free wheel");
     if (trace) require(std::fclose(trace) == 0, "could not write trace");
 }

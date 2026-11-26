@@ -110,11 +110,22 @@ public:
         return kernel_.updateCapped(setpoint, feedback, external_saturation, ceiling);
     }
 
-    /** @brief Independently bound the accumulated load current and the applied traction current. */
+    /** @brief Independently bound the integral and the positive output for one sample. */
     Output updateNativeCapped(Input setpoint, Input feedback, int external_saturation,
                               Output ceiling, Output output_ceiling) noexcept {
         return kernel_.updateCapped(setpoint, feedback, external_saturation, ceiling, output_ceiling);
     }
+
+    /** @brief Apply both speed-PI output rails before anti-windup. */
+    template<bool SampledKi = false>
+    Output updateNativeBounded(Input error, int saturation, Output integral_ceiling,
+                               Output floor, Output ceiling, StepGain previous_ki_step = {}) noexcept {
+        return kernel_.template updateBounded<SampledKi>(error, saturation, integral_ceiling,
+                                                         floor, ceiling, previous_ki_step);
+    }
+
+    /** @brief Select calibrated native gains for a sample without rebasing the integrator. */
+    void applySampleGains(const Gains& gains) noexcept { kernel_.applyGains(gains, nullptr); }
 
     /** @brief Clear accumulated state. */
     void reset() noexcept { kernel_.reset(); }

@@ -71,17 +71,12 @@ void testMotorDefaults(BldcController& controller, const BoardInfo& board) {
     check(params.num_poles == 40 && !params.useInverseCommTable, "scooter Hall configuration survives");
     check(std::fabs(controller.getFocAngleOffsetDeg() + 60.0f) < 0.001f,
           "scooter FOC alignment remains -60 degrees");
-#if !defined(MOTOR_1_LOADED)
-    check(speed_kp == 11.f && speed_ki == 3.f, "scooter boots with one speed PI for free and loaded rotation");
-#elif MOTOR_1_LOADED
-    check(speed_kp == 3.f && speed_ki == 24.f, "loaded scooter boots with 3/24 speed PI");
-#else
-    check(speed_kp == 1.25f && speed_ki == 5.f, "explicit unloaded reference selects 1.25/5 speed PI");
-#endif
+    static_assert(motor_config::schedule_speed_pi);
+    check(params.schedule_speed_pi && speed_kp == 27.5f && speed_ki == 12.f,
+          "MOTOR_1 boots with the standstill gain pair on every port");
     check(pll_kp == 50.f && pll_ki == 1250.f, "scooter Hall PLL uses 50/1250");
-    check(params.traction_acceleration_rps2 == 3.f && motor_config::traction_gain_a_per_rps == 3.f &&
-          params.acceleration_rate == 4.f && params.shape_velocity_error,
-          "scooter PI selections share the calibrated ramp, traction and feedback response");
+    check(params.acceleration_rate == 4.f && params.shape_velocity_error,
+          "MOTOR_1 boots with a 4 RPS/s command ramp and shaped speed error");
     const float positive_limit = std::min(45.f, board.max_drive_current_a);
     check(params.speed_pi.integral_max == positive_limit, "rolling I headroom cannot exceed the drive rail");
     using FocGain = ActiveNumericProfile::Gain;
@@ -91,18 +86,20 @@ void testMotorDefaults(BldcController& controller, const BoardInfo& board) {
     check(std::fabs(current_kp - 0.183260f) < 0.0001f && std::fabs(current_ki - 172.264f) < 0.002f,
           "scooter six-step PI still follows the model and the test board's 24 V bus");
 #else
+    static_assert(!motor_config::schedule_speed_pi);
     check(params.num_poles == 8 && params.useInverseCommTable, "JK42 inverse Hall configuration loads");
     check(std::fabs(controller.getFocAngleOffsetDeg() - 120.0f) < 0.001f,
           "JK42 boots with the hardware-qualified inverse FOC alignment");
-    check(std::fabs(speed_kp - 0.025f) < 0.00001f && std::fabs(speed_ki - 0.025f) < 0.00001f,
+    check(!params.schedule_speed_pi && std::fabs(speed_kp - 0.025f) < 0.00001f &&
+          std::fabs(speed_ki - 0.025f) < 0.00001f,
           "JK42 boots with the damped speed PI");
     check(std::fabs(foc_kp - 5.340708f) < 0.0001f && std::fabs(foc_ki - 5026.548f) < 0.002f,
           "JK42 model produces the hardware-qualified FOC gains without AT commands");
     check(std::fabs(current_kp - 0.15f) < 0.0001f && std::fabs(current_ki - 200.0f) < 0.002f,
           "JK42 FOC model does not replace the independently tuned six-step PI");
     check(pll_kp == 100.f && pll_ki == 5000.f, "JK42 keeps its own Hall PLL tuning");
-    check(params.traction_acceleration_rps2 == 0.f && !params.shape_velocity_error,
-          "JK42 boots without measured acceleration feedback or velocity error shaping");
+    check(params.acceleration_rate == 20.f && !params.shape_velocity_error,
+          "JK42 boots with its own command ramp and unshaped speed error");
     const float positive_limit = std::min(6.f, board.max_drive_current_a);
 #endif
     check(params.max_current == positive_limit && params.speed_pi.max_output == positive_limit &&

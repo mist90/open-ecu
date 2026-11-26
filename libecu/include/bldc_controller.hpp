@@ -24,7 +24,7 @@
 #include "current_loop_tuning.hpp"
 #include "hall_monitor.hpp"
 #include "hall_period_speed.hpp"
-#include "traction_acceleration.hpp"
+#include "measured_dq_monitor.hpp"
 
 namespace libecu {
 class CriticalSection;
@@ -118,8 +118,8 @@ struct MotorControlParams {
      * series, this one outputs volts and sees one. Use tuneFocCurrentPi().
      */
     PiParameters foc_current_regulator;
-    float traction_acceleration_rps2 = 0.0f; ///< Mechanical feedback ceiling; 0 leaves speed PI unchanged.
     bool shape_velocity_error = false; ///< Apply the motor's transient-error calibration in velocity mode.
+    bool schedule_speed_pi = false; ///< Use the motor's speed-dependent gains until an explicit setSpeedPi().
 };
 
 /**
@@ -174,6 +174,14 @@ public:
     /** @brief Take one intermediate speed PI step. Same SysTick owner as update(); never call both on one tick.
      * Uses the last slow sample and ceilings; without a valid velocity command there is no work. */
     void updateSpeedPi() noexcept;
+    /** Read both measurement filter states under the caller's short snapshot lock. */
+    auto measuredFilteredCurrents() const noexcept { return foc_.measuredFilteredCurrents(); }
+    /** Attach a board-owned monitor before enabling the 100 Hz control timer. */
+    void attachCurrentMonitor(MeasuredDqMonitor& monitor) noexcept { current_monitor_ = &monitor; }
+#if LIBECU_SPEED_PI_CURRENT_CAP
+    /** Speed-tick owner: reduce the allowed magnitude of Iq* under overload, recover on release. */
+    void updateProtectionCap(bool limiting) noexcept;
+#endif
 
     /**
      * @brief Set mechanical-RPS demand for velocity control or the open-loop field
@@ -311,6 +319,7 @@ public:
      * Foreground setter for the velocity loop. Preserves the last
      * command at the last sampled error, error history, and output/integral
      * limits. Normal integration continues on the next speed tick.
+     * An accepted write selects constant gains, including when they match the current schedule point.
      * @return false without changing the tuning if it is unrepresentable or a
      * live bumpless transfer is unavailable (saturation, integral limit or
      * changed operating point); the caller may retry on a later tick.
@@ -366,7 +375,7 @@ public:
     DriveMode getDriveMode() const noexcept { return io_.in.drive_mode; }
 
     /**
-     * @brief Get speed PI controller gains
+     * @brief Get the effective speed PI gains (last sampled pair while scheduling)
      * @param kp Output: proportional gain
      * @param ki Output: integral gain
      */
@@ -444,10 +453,11 @@ private:
     volatile bool pwm_cancelled_ = false; // Only BRK can preempt the carrier.
     using SpeedPi = PiFloatInterface<ActivePiProfile::SpeedPiTypes, ActiveTiming::SPEED_PI_HZ>;
     SpeedPi pi_speed_controller_;
-    struct {
-        SpeedPi::Output integral_ceiling{}, traction_ceiling{};
-    } speed_pi_limits_; // Recomputed once per measured acceleration sample.
+    SpeedPi::Output speed_integral_ceiling_{}; // Updated on the measured-speed tick.
     volatile bool speed_pi_ready_ = false; // A park in the higher-priority current ISR invalidates it.
+#if LIBECU_SPEED_PI_CURRENT_CAP
+    Current protection_cap_{};
+#endif
 
     // Electrical algorithms. Both are constructed and kept alive; only the one
     // selected by in.algorithm is ticked. Keeping the unselected one around
@@ -478,8 +488,6 @@ private:
     Speed filtered_target_speed_{};          ///< LPF-filtered target speed
     Accumulator limited_target_speed_{};     ///< Retains sub-LSB ramp increments
     Accumulator acceleration_step_{};        ///< Maximum target-speed change per control tick
-    TractionAcceleration<Profile> traction_acceleration_{};
-    Speed traction_acceleration_step_{};
 #if LIBECU_HALL_PERIOD_SPEED
     HallPeriodSpeed hall_period_{};
 #endif
@@ -494,6 +502,7 @@ private:
      * a bumpless re-engagement needs. See the note at the call site.
      */
     void holdVelocityLoop() noexcept;
+    void stepSpeedPi(bool new_speed_sample) noexcept;
     void publishSpeedPiOutput(SpeedPi::Output output) noexcept;
 
     /// @brief Refresh physical Hall after a mode change/parking; caller holds CriticalSection.
@@ -503,6 +512,10 @@ private:
     void observeHall(bool guard_active, uint8_t position = HALL_NOT_SAMPLED) noexcept;
     void trackRotor(uint8_t position) noexcept;
     void clearParkedCommands() noexcept;
+    MeasuredDqMonitor* current_monitor_ = nullptr;
+    void invalidateCurrentMonitor() noexcept {
+        if (current_monitor_) current_monitor_->invalidate();
+    }
 
     /**
      * @brief Apply acceleration/deceleration limits to target speed

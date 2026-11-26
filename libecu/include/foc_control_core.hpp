@@ -87,7 +87,18 @@ public:
     }
     /** @brief Measured d/q currents used by the PIs after filtering and idle suppression. */
     DqVectorT<Current> filteredCurrents() const noexcept {
-        return zero_current_idle_ ? DqVectorT<Current>{} : DqVectorT<Current>{filter_d_.value(), filter_q_.value()};
+        return zero_current_idle_ ? DqVectorT<Current>{} : measuredFilteredCurrents();
+    }
+    /** Measurement, before standstill noise suppression in the PI command path. */
+    DqVectorT<Current> measuredFilteredCurrents() const noexcept {
+        return {filter_d_.value(), filter_q_.value()};
+    }
+    /** Observe the calibrated three-phase measurement in a non-FOC drive mode. */
+    void observePhaseCurrents(Current u, Current v, Current w, Angle angle) noexcept {
+        const auto dq = Transforms::park(Transforms::clarke(-u, -v, -w),
+                                         Transforms::rotation(angle + params_.angle_offset_rad));
+        filter_d_.update(dq.d, params_.current_filter);
+        filter_q_.update(dq.q, params_.current_filter);
     }
     void setCurrentPiGains(Gain kp, Gain ki) noexcept {
         setCurrentPiGains(kp, ki, divideByInteger<StepGain>(ki, FrequencyHz));

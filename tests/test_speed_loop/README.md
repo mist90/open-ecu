@@ -2,7 +2,7 @@
 
 This characterizes one variable: the speed PI gain pair. The default **3/0.15**
 reproduces the 54-case damping reference on the original 20 A, 100/5000 PLL
-fixture. For the active scooter calibration and traction/rolling limits, run
+fixture. For the active scooter calibration, setpoint ramp and rolling integral limit, run
 the [100/500 Hz controller comparison](../test_speed_pi_rate/README.md).
 
 The earlier **3/20** tuning was run unloaded on STM32F410. Against this fixture's
@@ -32,7 +32,7 @@ unchanged. The MOTOR_1 pole count and back-EMF constant set the mechanical
 conversion. For reproducible gain comparisons, the fixture sets the Hall PLL
 to 100/5000, the PI to 100 Hz, the command ramp to 6 rev/s², feedback alpha
 to 0.5, target alpha to 0, the static integral to [-4,12] A and
-back-calculation gain to 2. It uses no measured-acceleration limiter.
+back-calculation gain to 2.
 The PLL's **integrator** is the speed observation, as in the actual controller.
 
 Mechanical speed and angle result from torque, never from a prescribed speed

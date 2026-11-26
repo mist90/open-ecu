@@ -62,26 +62,35 @@ def analyze(path):
     return result
 
 
+def response_checks(r):
+    # Use actual wheel motion and the same budgets at 100/500/1000 Hz.
+    light = r["kg"] == "0"
+    if r["scene"] == "quiet":
+        low, high = (.7, 2.) if light else (4., 7.)
+        yield "launch", r["t90_s"] is not None and low < r["t90_s"] < high
+        yield "settled", r["tsettle_s"] is not None and r["tail_pp_rpm"] < 5
+    elif r["scene"] == "sweep":
+        yield "chatter", r["tail_pp_rpm"] < 6 and r["tail_max_error_rpm"] < 4
+    elif r["scene"] in ("3to4", "5to4"):
+        yield "rolling step", r["t90_s"] is not None and r["t90_s"] < (1. if light else 5.)
+        yield "rolling recovery", r["tsettle_s"] is not None and r["tsettle_s"] < (3. if light else 14.)
+        yield "rolling accuracy", r["tail_max_error_rpm"] < 4 and r["peak_error_rpm"] < 30
+    elif r["scene"] == "hold-pulse" and light:
+        yield "pulse", r["loaded_min_rps"] > 2.5 and r["release_max_rps"] < 5.1 and r["tail_pp_rpm"] < 5
+
+
 if __name__ == "__main__":
     rows = analyze(sys.argv[1])
-    if "--check" in sys.argv[2:]:
-        # Deliberately use actual wheel motion and broad physical acceptance windows.
-        # The 100/500/1000 Hz comparison can move a Hall edge by a sample.
-        for r in rows:
-            light = r["kg"] == "0"
-            if r["scene"] == "quiet":
-                low, high = (.7, 2.) if light else (4., 7.)
-                assert r["t90_s"] is not None and low < r["t90_s"] < high, ("launch", r)
-                assert r["tsettle_s"] is not None and r["tail_pp_rpm"] < 5, ("settled", r)
-            if r["scene"] == "sweep":
-                assert r["tail_pp_rpm"] < 6 and r["tail_max_error_rpm"] < 4, ("chatter", r)
-            if r["scene"] in ("3to4","5to4"):
-                assert r["t90_s"] is not None and r["t90_s"] < (1. if light else 5.), ("rolling step",r)
-                assert r["tsettle_s"] is not None and r["tsettle_s"] < (3. if light else 14.), ("rolling recovery",r)
-                assert r["tail_max_error_rpm"] < 4 and r["peak_error_rpm"] < 30, ("rolling accuracy",r)
-            if r["scene"] == "hold-pulse" and light:
-                assert r["loaded_min_rps"] > 2.5 and r["release_max_rps"] < 5.1 and r["tail_pp_rpm"] < 5, ("pulse",r)
+    if not rows:
+        sys.exit("No dynamics samples in trace")
     writer = csv.DictWriter(sys.stdout, fieldnames=list(dict.fromkeys(k for r in rows for k in r)))
     writer.writeheader()
+    failed = False
     for row in rows:
         writer.writerow({k:round(v,5) if isinstance(v,float) else v for k,v in row.items()})
+        if "--check" in sys.argv[2:]:
+            for name, passed in response_checks(row):
+                if not passed:
+                    print(f"FAIL {name}: {row}", file=sys.stderr)
+                    failed = True
+    sys.exit(int(failed))

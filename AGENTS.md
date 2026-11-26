@@ -112,7 +112,7 @@ cd STM32G431
   - `tests/test_command_processor/run.sh` — real shared main with a non-AT
     processor, lifecycle/default silence, float/fixed and manual input on/off
   - `tests/test_motor_calibration/run.sh` — signed d/q error weights and FOC
-    response for both motors and both scooter speed-PI gain pairs
+    response for the scooter and JK42 motors
   - `tests/test_control/run.sh float|fixed|numeric-fixed|scooter-fixed` — controller and AT
     integration, including rejection of removed commands, the `AT+STATUS?` wire
     fields and capture hooks. `scooter-fixed` is a 16-kHz MOTOR_1 host fixture;

@@ -6,11 +6,9 @@ trap 'rm -rf "$build_dir"' EXIT
 for profile in float fixed; do
     flags=()
     if [[ $profile == fixed ]]; then flags+=(-DECU_FIXED_NUMERIC); fi
-    for motor in jk42 scooter scooter-free scooter-loaded; do
+    for motor in jk42 scooter; do
         motor_flags=()
-        if [[ $motor != jk42 ]]; then motor_flags+=(-DMOTOR_1); fi
-        if [[ $motor == scooter-free ]]; then motor_flags+=(-DMOTOR_1_LOADED=0); fi
-        if [[ $motor == scooter-loaded ]]; then motor_flags+=(-DMOTOR_1_LOADED=1); fi
+        if [[ $motor == scooter ]]; then motor_flags+=(-DMOTOR_1); fi
         for manual in off on; do
             manual_flags=()
             if [[ $manual == on ]]; then manual_flags+=(-DTHROTTLE_BRAKE_CONTROL); fi

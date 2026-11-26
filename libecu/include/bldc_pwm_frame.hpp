@@ -42,6 +42,10 @@ LIBECU_HOT_LOOP bool BldcController::pwmInterruptHandler(Adc& adc, Pwm& pwm, uin
         foc_.updateCarrier(in, e, angle, speed, pwm);
     } else {
         six_step_.updateCarrier(in, e, angle);
+#if LIBECU_OBSERVE_SIX_STEP_DQ
+        // Diagnostics can select six-step. The board guard still needs a live filtered vector.
+        foc_.observePhaseCurrents(e);
+#endif
     }
     recordLoopStage(LoopStage::Algorithm);
 #if !defined(LIBECU_RAW_CURRENT_TELEMETRY) || !LIBECU_RAW_CURRENT_TELEMETRY

@@ -76,26 +76,41 @@ public:
      * @return Applied, bounded control output
      */
     Output update(Input setpoint, Input feedback, int external_saturation = 0) noexcept {
-        return step(setpoint, feedback, external_saturation, tuning_.integral_high, tuning_.output_high);
+        return step(setpoint, feedback, external_saturation, tuning_.integral_high,
+                    tuning_.output_low, tuning_.output_high);
     }
 
     /** @brief Tighten the integral ceiling for this tick, even when the inner loop blocks integration.
      * Per-sample caps are local; the configured limits are never overwritten.
      */
     Output updateCapped(Input setpoint, Input feedback, int external_saturation, Output ceiling) noexcept {
-        return stepCapped(setpoint, feedback, external_saturation, ceiling, tuning_.output_high);
+        return updateBounded(setpoint - feedback, external_saturation, ceiling, outputFloor(), outputCeiling());
     }
 
-    /** @brief Also limit traction, without changing the braking floor or hiding the limit from back-calculation. */
+    /** @brief Tighten the positive output rail while preserving the configured negative rail. */
     Output updateCapped(Input setpoint, Input feedback, int external_saturation,
                         Output integral_ceiling, Output output_ceiling) noexcept {
-        const Output limit = std::clamp(output_ceiling, asLimit(tuning_.output_low), asLimit(tuning_.output_high));
-        // With Kb the back-calculation tracks the applied output. Only the Kb=0
-        // case needs an extra conditional hold while positive demand pushes into a traction cap.
-        if (tuning_.kb_step <= StepGain{} && setpoint > feedback && limit < asLimit(tuning_.output_high) &&
-            (saturation_ > 0 || point_.output >= limit))
-            external_saturation = 1;
-        return stepCapped(setpoint, feedback, external_saturation, integral_ceiling, Accumulator(limit));
+        const auto floor = outputFloor();
+        return updateBounded(setpoint - feedback, external_saturation, integral_ceiling,
+                             floor, std::max(output_ceiling, floor));
+    }
+
+    /** Tighten both actuator rails. Anti-windup must see the actually applied Iq*, including braking. */
+    template<bool SampledKi = false>
+    Output updateBounded(Input error, int external_saturation, Output integral_ceiling,
+                         Output floor, Output ceiling, StepGain previous_ki_step = {}) noexcept {
+        floor = std::max(floor, asLimit(tuning_.output_low));
+        ceiling = std::min(ceiling, asLimit(tuning_.output_high));
+        const auto high = Accumulator(std::clamp(integral_ceiling, integralFloor(), integralCeiling()));
+        integral_ = std::clamp(integral_, tuning_.integral_low, high);
+        if (tuning_.kb_step <= StepGain{}) {
+            if (error > Input{} && ceiling < asLimit(tuning_.output_high) &&
+                (saturation_ > 0 || point_.output >= ceiling)) external_saturation = 1;
+            if (error < Input{} && floor > asLimit(tuning_.output_low) &&
+                (saturation_ < 0 || point_.output <= floor)) external_saturation = -1;
+        }
+        return step<SampledKi>(error, {}, external_saturation, high, Accumulator(floor), Accumulator(ceiling),
+                               previous_ki_step);
     }
 
 private:
@@ -111,21 +126,23 @@ private:
             return Output::fromRaw(static_cast<typename Output::StorageType>(limit.raw() >> shift));
         }
     }
-    Output stepCapped(Input setpoint, Input feedback, int external_saturation,
-                      Output ceiling, Accumulator output_high) noexcept {
-        const Accumulator high(std::clamp(ceiling, integralFloor(), integralCeiling()));
-        integral_ = std::max(tuning_.integral_low, std::min(integral_, high));
-        return step(setpoint, feedback, external_saturation, high, output_high);
-    }
+    template<bool SampledKi = false>
     Output step(Input setpoint, Input feedback, int external_saturation,
-                Accumulator integral_high, Accumulator output_high) noexcept {
+                Accumulator integral_high, Accumulator output_low, Accumulator output_high,
+                StepGain previous_ki_step = {}) noexcept {
         const Input error = setpoint - feedback;
         const Accumulator proportional = multiplyTo<Accumulator>(tuning_.kp, error);
         const bool pushing_into_limit = (external_saturation > 0 && error > Input{}) ||
                                         (external_saturation < 0 && error < Input{});
         Accumulator next_integral = integral_;
         if (!pushing_into_limit) {
-            next_integral += multiplyTo<Accumulator>(tuning_.ki_step, error + point_.error);
+            // A schedule change belongs to the new endpoint only. Constant gains
+            // retain the original single multiply and its exact fixed-point rounding.
+            if (SampledKi && previous_ki_step != tuning_.ki_step)
+                next_integral += multiplyTo<Accumulator>(tuning_.ki_step, error)
+                               + multiplyTo<Accumulator>(previous_ki_step, point_.error);
+            else
+                next_integral += multiplyTo<Accumulator>(tuning_.ki_step, error + point_.error);
             next_integral = std::max(tuning_.integral_low, std::min(next_integral, integral_high));
         }
         const Accumulator requested = proportional + next_integral;
@@ -133,15 +150,15 @@ private:
         if constexpr (std::is_same_v<Accumulator, FixedProfile::Accumulator> &&
                       (std::is_same_v<Output, FixedProfile::Current> || std::is_same_v<Output, FixedProfile::Duty>)) {
             if (requested > output_high) { applied = output_high; saturation_ = 1; }
-            else if (requested < tuning_.output_low) { applied = tuning_.output_low; saturation_ = -1; }
+            else if (requested < output_low) { applied = output_low; saturation_ = -1; }
             else saturation_ = 0;
             // Even an endpoint is representable: 'applied' is now bounded by
             // two exactly widened Output values. Only the normal rounding remains.
             constexpr unsigned shift = Accumulator::FRACTION_BITS - Output::FRACTION_BITS;
             point_.output = Output::fromRaw(int32_t(fixed_detail::roundedLowWord<shift>(applied.raw())));
         } else {
-            applied = std::max(tuning_.output_low, std::min(requested, output_high));
-            saturation_ = requested > output_high ? 1 : requested < tuning_.output_low ? -1 : 0;
+            applied = std::max(output_low, std::min(requested, output_high));
+            saturation_ = requested > output_high ? 1 : requested < output_low ? -1 : 0;
             point_.output = Output(applied);
         }
 
@@ -191,6 +208,9 @@ public:
     /** @brief Cheap individual reads for callers snapshotting gains/rails under an interrupt mask. */
     Gain proportionalGain() const noexcept { return tuning_.kp; }
     Gain integralGain() const noexcept { return tuning_.ki; }
+    StepGain integralStepGain() const noexcept { return tuning_.ki_step; }
+    Output outputFloor() const noexcept { return asLimit(tuning_.output_low); }
+    Output outputCeiling() const noexcept { return asLimit(tuning_.output_high); }
     Output integralFloor() const noexcept { return asLimit(tuning_.integral_low); }
     Output integralCeiling() const noexcept { return asLimit(tuning_.integral_high); }
 

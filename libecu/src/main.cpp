@@ -50,7 +50,6 @@ libecu::MotorControlParams makeMotorParams(const libecu::BoardInfo& board_info) 
     motor_params.max_temperature_c = BLDC_MAX_TEMPERATURE;
     motor_params.max_speed_rps = BLDC_MAX_SPEED;
     motor_params.acceleration_rate = BLDC_MAX_ACCELERATION;  // RPS/s
-    motor_params.traction_acceleration_rps2 = libecu::motor_config::traction_acceleration_rps2;
     motor_params.shape_velocity_error = libecu::motor_config::velocity_error_band_rps > 0;
     motor_params.target_speed_lpf_alpha = 0.0f;  // LPF smoothing for noisy potentiometer input
     motor_params.measured_speed_lpf_alpha = 0.5f; // LPF smoothing for noisy velocity measurement
@@ -59,6 +58,7 @@ libecu::MotorControlParams makeMotorParams(const libecu::BoardInfo& board_info) 
     // about nine PWM cycles after a commutation on this motor. Six covers the
     // bulk of the transient without holding the duty for much of a short sector.
     motor_params.current_blanking_cycles = 6;
+    motor_params.schedule_speed_pi = libecu::motor_config::schedule_speed_pi;
     motor_params.speed_pi = {BLDC_SPEED_CURRENT_KP, BLDC_SPEED_CURRENT_KI};
     motor_params.speed_pi.integral_max = std::min(board_info.max_drive_current_a,
                                                  libecu::motor_config::speed_integral_max_a);

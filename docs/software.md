@@ -31,7 +31,7 @@ Id* = 0, Iq* and measured Id/Iq -> d/q current PIs -> Vd/Vq -> voltage limit -> 
 
 The current loop and PLL run at **20 kHz** on STM32 (`Ts = 50 us`). The
 outer speed PI runs at **1 kHz** by default. Speed measurement and its
-`alpha=0.5` filter, the setpoint ramp, traction ceiling and foreground
+`alpha=0.5` filter, the setpoint ramp, rolling integral limit and foreground
 telemetry stay at **100 Hz**. On a coincident tick the new limits and feedback
 precede a single PI step; between measurements the PI integrates the held
 error and observes the latest saturation. `-DSPEED_PI_HZ=100` selects the
@@ -80,9 +80,9 @@ A reversal, missing/invalid edge, IRQ-only bounce, stale window or implied speed
 twice the motor maximum falls back to the PLL until there is a valid new turn.
 Duplicate IRQs do not refresh a timestamp.
 
-`in.velocity_feedback_rps` filters this estimate for the speed PI and both current
-ceilings. `in.current_speed_rps` independently filters the original PLL speed for
-telemetry and guards. Both are signed relative to the selected direction and use
+`in.velocity_feedback_rps` filters this estimate for the speed PI, its gain schedule
+and its rolling integral limit. `in.current_speed_rps` independently filters the
+original PLL speed for telemetry and guards. Both are signed relative to the selected direction and use
 `alpha = 0.5` per 10 ms. JK42 uses the PLL for both. See the
 [period estimator](../libecu/include/hall_period_speed.hpp) and [signal ownership](CONTROL_IO.md).
 
@@ -97,16 +97,15 @@ e_PI = e - (7/8)*clamp(e - m, -0.25, +0.25)     # mechanical RPS
 
 Small, rapid deviations from the moving mean get about one eighth of their usual
 gain. A sustained error passes in full as the mean catches up; there is no deadband.
-For a large transient the correction is at most 0.21875 RPS. Both P and I use
-`e_PI`; the traction ceiling uses the **unshaped** lag `e`.
+For a large transient the correction is at most 0.21875 RPS. Both P and I use `e_PI`.
 
-**Speed PI, 1 kHz on STM32 by default.** Each PI tick reuses the latest error
-and ceilings; it does not manufacture a new speed measurement:
+**Speed PI, 1 kHz on STM32 by default.** Each PI tick reuses the latest shaped
+speed error, gains and integral limit:
 
 ```text
-I = clamp(I + Ki*Ts*(e_PI + previous_e_PI)/2, I_min, I_max)  # trapezoidal
+I = clamp(I + Ts*(Ki*e_PI + previous_Ki*previous_e_PI)/2, I_min, I_max)
 requested = Kp*e_PI + I
-Iq* = clamp(requested, braking_floor, traction_ceiling)       # A in FOC
+Iq* = clamp(requested, current_min, current_max)              # A in FOC
 I = clamp(I + Kb*Ts*(Iq* - requested), I_min, I_max)         # back-calculation
 ```
 
@@ -128,39 +127,36 @@ the rebase. On failure it returns `false` and keeps the previous gains.
 
 | Setting | Value |
 |---|---:|
-| Current-output speed Kp | 11 A / mechanical RPS |
-| Current-output speed Ki | 3 A / (mechanical RPS * s) |
+| Current-output speed Kp | 27.5 → 11 A / mechanical RPS |
+| Current-output speed Ki | 12 → 3 A / (mechanical RPS * s) |
 | Current output limits | -6 to +20 A on STM32F410 and STM32G431 with MOTOR_1 (motor ceiling +45 A, limited by the board) |
 | Speed-PI integral limits | -4 A to a rolling upper bound: 12 A through 0.125 RPS, then +16 A per RPS up to the current limit |
-| Command ramp / measured acceleration setting | 4 / 3 rev/s² |
-| Positive traction ceiling | 3 A/RPS base gain; 6 A/RPS extra on excess speed loss; at most +1.5 A per 10 ms |
+| Command ramp | 4 rev/s² at the speed setpoint |
 | Speed-PI back-calculation gain | 2 / s |
 | Measured-speed LPF alpha | 0.5 per 10-ms measurement |
-| Target-speed LPF | Disabled; acceleration limiting is separate |
+| Target-speed LPF | Disabled |
 
-With `MOTOR_1_LOADED` undefined, the [calibration](../libecu/include/motor_config.hpp)
-uses **11/3** for both the free wheel and a rolling load. It does not estimate
-inertia or switch gains at runtime. Explicit `=0` and `=1` select only the earlier
-Kp/Ki pairs **1.25/5** and **3/24**, respectively.
+The [MOTOR_1 calibration](../libecu/include/motor_config.hpp) uses **27.5/12**
+at or below 0.125 mechanical RPS and **11/3** at or above 1 RPS. It interpolates
+both gains linearly using the magnitude of the filtered speed feedback. The
+100-Hz measurement selects the gains; intermediate PI ticks reuse them.
+The integral is stored in amperes and carries over across gain changes.
+An accepted `AT+SPID` write selects constant gains for the session.
 
 ### How much positive current is available?
 
-Every 10 ms the [traction limiter](../libecu/include/traction_acceleration.hpp)
-compares the change in measured speed `dv` with `3 RPS/s * 0.01 s = 0.03 RPS`.
-It starts from the **last limited PI output**, not accumulated unused headroom:
+The PI can request the full configured drive current even at standstill. The
+[rolling limit](../libecu/include/control_calibration.hpp) bounds only the integral:
+motion in the commanded direction increases `I_max` above its 12 A starting value.
+If the board is rated below 12 A, its rating already limits the integral at rest.
+The proportional term responds to the shaped speed error on the first PI sample.
 
-```text
-dA = 3 * (0.03 - dv)
-if e > 0.25 and dv < -0.03: dA += 6 * (-dv - 0.03)
-traction_ceiling = clamp(max(last_Iq_request, 0) + min(dA, 1.5), 0, board_motor_limit)
-```
-
-At constant speed this allows +0.09 A per tick (**9 A/s**) if the PI needs it.
-A sudden load can unlock extra current; after load release the ceiling can drop
-immediately. This bounds positive **demand**, not physical acceleration or braking.
-The rolling ceiling in the table limits only the integral. Neither ceiling changes
-the raw phase-current trip. The [dynamics fixture](../tests/test_speed_dynamics/README.md)
-exercises the startup, load application and release.
+`current_min` is the motor braking floor; `current_max` is the lower of the board
+and motor drive ratings. The PI publishes the bounded `Iq*` directly, with no
+additional slew limit. Wheel acceleration depends on torque, inertia and load.
+The F410's [raw-current trip](NUCLEO_F410RB_IHM08M1.md#hardware-overcurrent-protection)
+remains independent. The [dynamics fixture](../tests/test_speed_dynamics/README.md)
+exercises launch, load application and release.
 
 ### Inertia and earlier gains
 
@@ -667,8 +663,12 @@ fixed path for floating-point helpers.
 
 The [rolling-wheel torque observer](../libecu/include/mtte_observer.hpp)
 uses synchronized Hall speed and measured q-axis current to bound positive
-PI output. `test_mtte` checks its signs, timing and behavior under simulated
-traction changes. The observer is not enabled by either STM32 port.
+PI output. [`test_mtte`](../tests/test_mtte/run.sh) compares a plain PI with the
+same PI plus the observer. In two cases the simulated road loses 5% or 1% of
+its available contact force from identical rolling conditions in each arm. The
+5% loss interrupts PLL lock; at 1% the observer reduces slip while the PLL stays
+locked. The CSVs record slip, transmitted force, lock loss and current limiting
+before the first loss. The observer is not enabled by either STM32 port.
 
 The [speed-loop characterization](../tests/test_speed_loop/README.md) has its
 own retained comparison budgets: the historical 3/20 tuning exceeded them in

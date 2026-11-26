@@ -3,10 +3,9 @@ set -euo pipefail
 cd "$(dirname "$0")"
 build=$(mktemp -d "${TMPDIR:-/tmp}/motor-calibration.XXXXXX")
 trap 'rm -rf "$build"' EXIT
-for motor in jk42 scooter scooter-loaded; do
+for motor in jk42 scooter; do
     motor_flags=()
-    if [[ $motor != jk42 ]]; then motor_flags+=(-DMOTOR_1); fi
-    if [[ $motor == scooter-loaded ]]; then motor_flags+=(-DMOTOR_1_LOADED=1); fi
+    if [[ $motor == scooter ]]; then motor_flags+=(-DMOTOR_1); fi
     for numeric in float fixed; do
         flags=("${motor_flags[@]}")
         if [[ $numeric == fixed ]]; then flags+=(-DECU_FIXED_NUMERIC); fi

@@ -111,9 +111,10 @@ current regulation, Hall/PLL feedback, filtering and voltage limiting.
 ### Control Loop
 
 **Speed PI:** 1 kHz on both STM32 ports, driven by SysTick. Every 10 ms a
-service tick first filters the PLL speed, advances the setpoint ramp and
-traction ceiling, and runs slow supervision. Between service ticks the PI
-uses the held reference, feedback and limits to update the current demand.
+service tick filters mechanical speed, advances the setpoint ramp and runs
+slow supervision. For `MOTOR_1` it also updates the PI gains and rolling
+integral bound. Between service ticks the PI uses the held error and the
+current loop's latest saturation sign to update the current demand.
 Foreground telemetry stays at 100 Hz. `-DSPEED_PI_HZ=100` selects the
 comparison rate without changing SysTick.
 
@@ -228,8 +229,9 @@ integer operations before starting its synthetic control loop.
 Motor parameters live in [`motor_config.hpp`](libecu/include/motor_config.hpp).
 STM32F410 selects the scooter (`MOTOR_1`); STM32G431 defaults to JK42BLS01 and
 accepts `./build.sh --platform STM32G431 --motor-1` or CMake `-DMOTOR_1=ON`.
-The common scooter velocity PI is **11/3** and observes the period of six Hall sectors.
-Explicit `MOTOR_1_LOADED=0` and `=1` retain 1.25/5 and 3/24 as reference gains.
+The scooter velocity PI uses **Kp/Ki = 27.5/12** through 0.125 mechanical RPS
+and **11/3** from 1 RPS, interpolating between them using the magnitude of the
+filtered speed feedback. Electrical calibration and board current limits are independent.
 See [speed-loop tuning](docs/software.md#speed-loop-tuning).
 
 Additional host regressions:

@@ -8,7 +8,7 @@ tmp=$(mktemp -d "${TMPDIR:-/tmp}/speed-pi-rate.XXXXXX")
 trap 'rm -rf "$tmp"' 0
 trap 'exit 1' HUP INT TERM
 if [ "$#" -eq 1 ]; then mkdir -p "$1"; fi
-echo 'pi_hz,load,kp,ki,traction_rps2,launch_wheel200_rps2,launch_feedback200_rps2,wheel200_rps2,feedback200_rps2,hall2x200_rps2,wheel10_rps2,feedback10_rps2,rise10_90_s,t90_s,overshoot_rpm,tail_mean_rpm,tail_pp_rpm'
+echo 'pi_hz,load,kp,ki,launch_wheel200_rps2,launch_feedback200_rps2,wheel200_rps2,feedback200_rps2,hall2x200_rps2,wheel10_rps2,feedback10_rps2,rise10_90_s,t90_s,overshoot_rpm,tail_mean_rpm,tail_pp_rpm'
 for hz in 100 500; do
     "${CXX:-c++}" -std=c++17 -O2 -Wall -Wextra -Werror -fno-exceptions -fno-rtti \
         -fsanitize=undefined -fno-sanitize-recover=all \

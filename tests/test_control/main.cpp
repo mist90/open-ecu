@@ -5,7 +5,6 @@
 #include "../../libecu/include/at_command_processor.hpp"
 #include "../../libecu/include/crc16.hpp"
 #include "../../libecu/include/critical_section.hpp"
-#include "../../libecu/include/traction_acceleration.hpp"
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -209,7 +208,7 @@ static void testSlewClock() {
     controller.setTargetSpeed(10.0f);
     for (int tick = 0; tick < 10; ++tick) controller.update();
     check(std::abs(numberCast<float>(controller.io().in.target_current) - 20.0f / ActiveTiming::SPEED_HZ) < tolerance,
-          "acceleration limit advances by rate/frequency per sample");
+          "speed reference advances by the configured ramp rate per sample");
     controller.setAccelerationRate(4.0f);
     controller.update();
     check(std::abs(numberCast<float>(controller.io().in.target_current) - 24.0f / ActiveTiming::SPEED_HZ) < tolerance,
@@ -261,107 +260,42 @@ static void testIntermediatePi() {
     check(numberCast<float>(motor.io().in.target_current) == -3, "intermediate speed PI never takes ownership of torque mode");
 }
 
-static void testTractionAcceleration() {
-    using Profile = ActiveNumericProfile;
-    using S = Profile::Speed;
-    using C = Profile::Current;
-    TractionAcceleration<Profile> limiter;
-    const auto amp = [](auto c) { return numberCast<float>(c); };
-    const auto step = number_v<S, 2, 100>;
-    const auto eight = number_v<C, 8>;
-    const auto max = number_v<C, 45>;
-    const auto gain = number_v<S, 2>; // A per rev/s
-    // Same current command and speed setpoint, only the *measured* trajectory differs.
-    const C first = limiter.ceiling(number_v<S, 3>, step, eight, max, gain);
-    const C brisk = limiter.ceiling(number_v<S, 31, 10>, step, eight, max, gain);
-    check(std::abs(amp(first) - 8.04f) < 0.001f && std::abs(amp(brisk) - 7.84f) < 0.001f,
-          "real acceleration folds back positive torque; a coasting engagement has no fictitious impulse");
-    check(limiter.ceiling(number_v<S, 4>, step, C{}, max, gain) == C{},
-          "external positive acceleration can remove traction but cannot demand braking");
-    check(limiter.ceiling(number_v<S, 4>, S{}, C{}, max, gain) == max,
-          "disabled feedback preserves the original current ceiling");
-    limiter.reset();
-    check(limiter.ceiling(number_v<S, -4>, step, eight, max, gain) == first,
-          "reversing the direction frame does not differentiate across directions");
-    check(std::abs(amp(limiter.ceiling(number_v<S, -4>, step, eight, max, number_v<S, 3, 4>)) - 8.015f) < 0.001f,
-          "the explicit feedback gain scales the change in applied torque");
-    // A periodic Hall speed error has zero net acceleration. Rectifying the
-    // changes here would ratchet the torque ceiling down on every full period.
-    limiter.reset();
-    C applied = limiter.ceiling(number_v<S, 2>, step, eight, max, gain);
-    for (int i = 0; i < 10; ++i) {
-        applied = limiter.ceiling(number_v<S, 21, 10>, step, applied, max, gain);
-        applied = limiter.ceiling(number_v<S, 2>, step, applied, max, gain);
-    }
-    check(std::abs(amp(applied) - 8.84f) < 0.002f, "alternating signed speed error does not consume net headroom");
-    const auto loss = [&](float lag, float change) {
-        limiter.reset();
-        const typename TractionAcceleration<Profile>::Recovery tuning{
-            number_v<S, 1, 4>, number_v<S, 6>, number_v<C, 3, 2>};
-        limiter.ceiling(number_v<S, 3>, number_v<S, 3, 100>, eight, max, number_v<S, 3>);
-        return amp(limiter.ceiling(numberCast<S>(3.f + change), number_v<S, 3, 100>, eight,
-                                   max, number_v<S, 3>, numberCast<S>(lag), tuning));
-    };
-    check(std::abs(loss(.25f, -.20f) - 8.69f) < .001f &&
-          std::abs(loss(.3f, -.20f) - 9.50f) < .001f,
-          "only an actual speed loss behind the ramp earns recovery; total positive rise is bounded");
-    check(std::abs(loss(.3f, .30f) - 7.19f) < .001f && loss(2.f, -2.f) <= 9.5001f,
-          "unloading can remove torque immediately and a single bad sample cannot add unbounded current");
-    using Pi = PiFloatInterface<ActivePiProfile::SpeedPiTypes, ActiveTiming::SPEED_PI_HZ>;
-    Pi pi;
-    PiParameters limits{};
-    limits.kp = 6; limits.ki = 24; limits.kb = 0;
-    limits.min_output = -6; limits.max_output = 45;
-    limits.integral_min = -4; limits.integral_max = 12;
-    check(pi.setParameters(limits), "configure bounded speed PI");
-    for (int i = 0; i < 100; ++i) {
-        pi.updateNativeCapped(number_v<Pi::Input, 2>, Pi::Input{}, 0,
-                              number_v<Pi::Output, 12>, number_v<Pi::Output, 1>);
-    }
-    check(pi.getOutput() == 1.0f && pi.getIntegral() < 0.25f && pi.saturationSign() == 1,
-          "without Kb, a positive traction limit blocks continuing integral windup");
-    for (int i = 1; i <= 50; ++i) {
-        pi.updateNativeCapped(number_v<Pi::Input, 2>, Pi::Input{}, 0, number_v<Pi::Output, 12>,
-                              numberCast<Pi::Output>(1.0f + i * 0.04f));
-    }
-    check(pi.getIntegral() < 0.25f && std::abs(pi.getOutput() - 3.0f) < 0.00001f,
-          "rising but still binding ceiling does not accumulate positive integral without Kb");
-    const auto brake = pi.updateNativeCapped(Pi::Input{}, number_v<Pi::Input, 2>, 0,
-                                              number_v<Pi::Output, 12>, Pi::Output{});
-    check(amp(brake) == -6.0f && pi.saturationSign() == -1,
-          "zero traction authority does not mask speed PI braking or the hard current floor");
-#ifdef MOTOR_1
+static void testSpeedPiOutputRails() {
     Pwm pwm;
     Hall hall;
     auto params = makeParams();
-    params.traction_acceleration_rps2 = 2.0f;
-    params.speed_pi.kp = 6.0f;
+    params.speed_pi.kp = 10.0f;
     params.speed_pi.ki = 24.0f;
     params.speed_pi.kb = 2.0f;
     BldcController drive(pwm, hall, params);
-    check(drive.initialize(), "scooter controller accepts the fixture's measured-acceleration rate");
+    check(drive.initialize(), "speed PI output rail fixture initializes");
     drive.start();
     drive.setDriveMode(DriveMode::FORWARD);
+    auto& io = const_cast<MotorIo&>(drive.io());
+    const auto amps = [&] { return numberCast<float>(io.in.target_current); };
     drive.setTargetSpeed(4.0f);
     drive.update();
-    check(std::abs(numberCast<float>(drive.io().in.target_current) - 0.06f) < 0.001f,
-          "unramped speed step is bounded at the speed PI output");
+    check(amps() == params.max_current, "an unramped speed step can reach the drive rail on its first sample");
     for (unsigned i = 0; i < 25; ++i) serviceInterval(drive);
-    check(std::abs(numberCast<float>(drive.io().in.target_current) - 1.56f) < 0.002f,
-          "a loaded stationary rotor recovers more torque without bypassing the ceiling");
+    check(amps() == params.max_current, "sustained positive speed error stays on the drive rail");
+    io.out.pll.speed_steps_s = number_v<ActiveNumericProfile::PllSpeed, 480>; // 4 mechanical RPS.
+    drive.setTargetSpeed(1.0f);
+    drive.update();
+    check(amps() == params.min_current, "a moving wheel above target reaches the independent braking rail");
     drive.setControlMode(ControlMode::CLOSED_LOOP_TORQUE);
     drive.setCurrent(-3.0f);
     drive.update();
-    check(numberCast<float>(drive.io().in.target_current) == -3.0f, "torque mode still accepts the commanded braking current");
+    check(amps() == -3.0f, "torque mode accepts the commanded braking current");
     drive.setDriveMode(DriveMode::NEUTRAL);
     drive.update();
-    check(!pwm.enabled && numberCast<float>(drive.io().in.target_current) == 0, "park immediately removes torque");
+    check(!pwm.enabled && amps() == 0, "park removes torque");
+    io.out.pll.speed_steps_s = {};
     drive.setControlMode(ControlMode::CLOSED_LOOP_VELOCITY);
     drive.setDriveMode(DriveMode::REVERSE);
-    drive.setTargetSpeed(4.0f);
+    drive.setTargetSpeed(0.25f);
     drive.update();
-    check(std::abs(numberCast<float>(drive.io().in.target_current) - 0.06f) < 0.001f, "reverse launch starts without stored torque");
-#endif
+    const float first = 0.25f * (params.speed_pi.kp + 0.5f * params.speed_pi.ki / ActiveTiming::SPEED_PI_HZ);
+    check(std::abs(amps() - first) < 0.00001f, "reverse rearm starts with the new PI error and no stored torque");
 }
 
 static void testLiveSpeedPiGains() {
@@ -425,6 +359,127 @@ static void testLiveSpeedPiGains() {
     std::printf("Speed PI 6/24: %.5f -> %.5f A (unchanged twin); live Kp retune held %.5f A\n",
                 before, numberCast<float>(reference.io().in.target_current), numberCast<float>(held));
 }
+
+#ifdef MOTOR_1
+static void testScheduledSpeedPi() {
+    static_assert(motor_config::schedule_speed_pi);
+    static_assert(BLDC_SPEED_CURRENT_KP == 27.5f && BLDC_SPEED_CURRENT_KI == 12.f);
+    Pwm pwm;
+    Hall hall;
+    auto params = makeParams();
+    params.schedule_speed_pi = motor_config::schedule_speed_pi;
+    params.shape_velocity_error = true;
+    params.measured_speed_lpf_alpha = .5f;
+    params.speed_pi.kp = BLDC_SPEED_CURRENT_KP;
+    params.speed_pi.ki = BLDC_SPEED_CURRENT_KI;
+    params.speed_pi.kb = 2.f;
+    BldcController drive(pwm, hall, params);
+    check(drive.initialize(), "scheduled velocity controller initializes");
+    drive.start();
+    drive.setDriveMode(DriveMode::FORWARD);
+
+    // Substitute the carrier's signed PLL sample, in electrical Hall steps/s.
+    // With no Hall-period history, the real 100 Hz feedback filter takes that sample.
+    auto& io = const_cast<MotorIo&>(drive.io());
+    const auto sample = [&](float feedback, float target) {
+        const float previous = numberCast<float>(io.in.velocity_feedback_rps);
+        io.out.pll.speed_steps_s = numberCast<ActiveNumericProfile::PllSpeed>((2*feedback - previous) * 120);
+        drive.setTargetSpeed(target);
+        drive.update();
+        check(numberCast<float>(io.in.velocity_feedback_rps) == feedback, "fixture reaches requested filtered RPS");
+    };
+    // The stock PLL telemetry and the PI feedback can have different histories.
+    io.in.current_speed_rps = number_v<BldcController::Speed, 2>;
+    struct Frame { float speed, target; int inner_saturation; };
+    constexpr Frame frames[] = {
+        {0, .5f, 0}, {.0625f, .8125f, 0}, {.125f, .625f, 0}, {.34375f, 1.09375f, 0},
+        {.5625f, 1.0625f, 0}, {1, 1.75f, 0}, {1.25f, 1.75f, 0},
+        {-.5625f, .125f, 0}, {-1.25f, .125f, 0}, {-.125f, .375f, 0},
+        {0, 2.25f, 0}, {1.25f, .125f, 0}, // Into both actuator rails, then leave them.
+        {.5625f, 1.0625f, 0}, {.125f, .625f, 1}, {.5625f, 1.3125f, 1},
+        {1, 1.5f, 0}, {.5625f, .125f, -1},
+    };
+    constexpr double dt = 1.0 / ActiveTiming::SPEED_PI_HZ;
+    double integral = 0, previous_rate = 0, mean = 0;
+    for (auto frame : frames) {
+        io.out.electrical.current_pi_saturation = frame.inner_saturation;
+        sample(frame.speed, frame.target);
+        const double weight = std::clamp((std::abs(frame.speed) - .125) / .875, 0., 1.);
+        const double kp = 27.5 - 16.5 * weight, ki = 12. - 9. * weight;
+        const double raw = frame.target - frame.speed;
+        mean += (raw - mean) / 80;
+        const double error = raw - .875 * std::clamp(raw - mean, -.25, .25);
+        for (unsigned tick = 0; tick < ActiveTiming::SPEED_PI_HZ / ActiveTiming::SPEED_HZ; ++tick) {
+            if (tick) drive.updateSpeedPi();
+            if (error * frame.inner_saturation <= 0)
+                integral = std::clamp(integral + .5 * dt * (ki * error + previous_rate), -4., 12.);
+            previous_rate = ki * error;
+            const double request = kp * error + integral;
+            const double applied = std::clamp(request, -6., 18.);
+            integral = std::clamp(integral + 2. * dt * (applied - request), -4., 12.);
+            check(std::abs(numberCast<float>(io.in.target_current) - applied) < 8e-6,
+                  "scheduled shaped P+I, both trapezoid endpoints and back-calculation match on each PI tick");
+            float native_kp{}, native_ki{};
+            drive.getSpeedPiGains(native_kp, native_ki);
+            check(std::abs(native_kp - kp) < 2e-6 && std::abs(native_ki - ki) < 1e-6,
+                  "live gain pair follows the absolute filtered mechanical speed");
+            if (!tick && request > 18.)
+                check(!drive.setSpeedPi(13, 0) && drive.getParams().schedule_speed_pi,
+                      "rejected saturated retune leaves scheduling active");
+        }
+    }
+    io.out.electrical.current_pi_saturation = 0;
+    const double first = (27.5 + .5 * dt * 12.) * (.5 - .875 * .25);
+    const auto fresh = [&] {
+        sample(0, .5f);
+        check(std::abs(numberCast<float>(io.in.target_current) - first) < 2e-6,
+              "first active sample has no stale shaped error, integral or trapezoid endpoint");
+    };
+    drive.stop();
+    drive.start();
+    fresh();
+    drive.setTargetSpeed(0);
+    drive.update();
+    check(io.in.target_current == BldcController::Current{}, "standstill release zeros scheduled command");
+    fresh();
+#if LIBECU_SPEED_PI_CURRENT_CAP
+    drive.updateProtectionCap(true);
+    const auto derated = io.in.target_current;
+    drive.updateSpeedPi();
+    check(numberCast<float>(derated) < first && io.in.target_current == derated,
+          "scheduled PI publishes the protection-limited command");
+#endif
+    static BldcController* interrupted;
+    interrupted = &drive;
+    before_mask_hook = [] { interrupted->parkFromCarrier(); };
+    drive.updateSpeedPi();
+    check(!before_mask_hook && !pwm.enabled && io.in.target_current == BldcController::Current{},
+          "a carrier park during the scheduled step wins publication");
+#if LIBECU_SPEED_PI_CURRENT_CAP
+    drive.updateProtectionCap(false); // A parked protection tick restores its available ceiling.
+#endif
+    drive.setDriveMode(DriveMode::FORWARD);
+    drive.updateSpeedPi();
+    check(io.in.target_current == BldcController::Current{}, "rearm cannot replay a scheduled command");
+    fresh();
+
+    sample(.5625f, 1.0625f);
+    const auto before = io.in.target_current;
+    Console console(drive);
+    check(console.command("AT+SPID=13,0") == "OK\r\n" && !drive.getParams().schedule_speed_pi,
+          "explicit AT retune replaces the running schedule with constant gains");
+    drive.updateSpeedPi();
+    check(io.in.target_current == before, "live Kp rebase holds output using the last scheduled pair");
+    sample(1.25f, 1.75f); // Same shaped error, in a different speed band.
+    check(io.in.target_current == before, "new speed sample does not overwrite a manual gain override");
+    drive.stop();
+    drive.start();
+    sample(0, .5f);
+    float kp, ki;
+    drive.getSpeedPiGains(kp, ki);
+    check(kp == 13.f && ki == 0.f, "restarting at standstill retains the explicit AT gain pair");
+}
+#endif
 
 static void testCommands() {
     Pwm pwm;
@@ -947,7 +1002,6 @@ static void testVelocityDirectionRearm() {
     Adc adc;
     auto params = makeParams();
     params.acceleration_rate = 4;
-    params.traction_acceleration_rps2 = 3;
     params.measured_speed_lpf_alpha = .5f;
     params.speed_pi.kp = 11;
     params.speed_pi.ki = 3;
@@ -1336,11 +1390,14 @@ static void testFrozenRotorClock() {
 }
 
 int main() {
+#ifdef MOTOR_1
+    testScheduledSpeedPi();
+#endif
     testSpeedClock();
     testIntermediatePi();
     testLiveSpeedPiGains();
     testSlewClock();
-    testTractionAcceleration();
+    testSpeedPiOutputRails();
     testVelocityDirectionRearm();
     for (bool filtered : {false, true}) testVelocityStandstillRelease(filtered);
     for (int direction : {1, -1}) testVelocityBrakingRelease(direction);

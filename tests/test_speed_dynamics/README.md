@@ -10,9 +10,10 @@ DYNAMICS_PORT=STM32G431 NUMERIC_PROFILE=fixed tests/test_speed_dynamics/run.sh /
 
 `DYNAMICS_PORT` selects the STM32 port's `ecu_config.hpp`; `NUMERIC_PROFILE` selects `float` or
 `fixed`. Both ports default to a 20 kHz current loop, 1 kHz speed PI and 100 Hz service. Set
-`SPEED_PI_HZ=100` for the slower PI comparison. The script prints metrics to stdout; an optional
-path keeps the 2 ms trace. With no gain override, a failed response budget exits nonzero. Trailing
-`Kp Ki` arguments after the trace path request exploratory metrics instead.
+`SPEED_PI_HZ=100` for the slower PI comparison. The default run exercises the production
+MOTOR_1 gain schedule and exits nonzero on a failed response budget. An optional path keeps
+the 2 ms trace, including `effective_kp` and `effective_ki` for the latest speed measurement.
+Trailing `Kp Ki` arguments select constant gains for an exploratory run that reports metrics.
 
 ## What is simulated
 
@@ -55,3 +56,12 @@ continuous 3 s window within ±2%. Tail metrics cover the last 3 s.
 
 The pulse summaries also report recovery time from brake release to the first 3 s in-band
 window. A missing crossing is left empty in the CSV.
+The runner prints every scenario summary and reports each missed budget on stderr
+before returning a nonzero status.
+
+With the scheduled gains, the simulated free wheel fails the 0.5 RPS plateau. On the
+F410 fixture, the final 3 s span **77.34 RPM** peak-to-peak in float and **32.78 RPM**
+in fixed point; maximum errors are **45.29** and **17.46 RPM**, respectively.
+With the earlier acceleration ceiling, the same float fixture spanned 0.37 RPM
+at constant 11/3 and 64.71 RPM with the schedule. All other plateaus and
+scenarios meet the budgets above. The 0.5 RPS check remains enabled.

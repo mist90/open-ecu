@@ -85,7 +85,7 @@ struct Drive final : PwmInterface, HallInterface, AdcInterface {
 };
 
 // Use the public MOTOR_1 control calibration on the common virtual bridge.
-MotorControlParams params(float kp, float ki) {
+MotorControlParams params() {
     MotorControlParams p{};
     p.num_poles = BLDC_NUM_POLES;
     p.max_speed_rps = BLDC_MAX_SPEED;
@@ -97,12 +97,11 @@ MotorControlParams params(float kp, float ki) {
     p.max_voltage = ihm08::MAX_BUS_VOLTAGE;
     p.algorithm = DriveAlgorithm::FOC;
     p.acceleration_rate = motor_config::soft_start_rps2;
-    p.traction_acceleration_rps2 = motor_config::traction_acceleration_rps2;
     p.shape_velocity_error = motor_config::velocity_error_band_rps > 0;
     p.measured_speed_lpf_alpha = .5f;
-    p.speed_pi = {
-        kp, ki, p.max_current, p.min_current, std::min(p.max_current, motor_config::speed_integral_max_a),
-        -4, 2};
+    p.schedule_speed_pi = motor_config::schedule_speed_pi;
+    p.speed_pi = {BLDC_SPEED_CURRENT_KP, BLDC_SPEED_CURRENT_KI, p.max_current, p.min_current,
+                  std::min(p.max_current, motor_config::speed_integral_max_a), -4, 2};
     p.foc_current_regulator = motor_config::foc_current_pi;
     p.foc.max_duty_cycle = p.max_duty_cycle;
     p.foc.max_modulation = std::min(max_duty, ihm08::MAX_MODULATION);
@@ -151,12 +150,12 @@ enum Scene {
 };
 const char* labels[] = {"quiet", "pulse", "3to4", "5to4", "hold-pulse", "sweep"};
 
-void run(double kg, float kp, float ki, Scene scene, double initial, FILE* trace) {
+void run(double kg, const MotorControlParams& tuning, Scene scene, double initial, FILE* trace) {
     tick = 0;
     Drive io;
     Wheel wheel(kg, initial);
     need(io.AdcInterface::initialize(sensor, bus_divider, ntc), "ADC init");
-    BldcController motor(io, io, params(kp, ki), &io);
+    BldcController motor(io, io, tuning, &io);
     need(motor.setPllGains(BLDC_PLL_KP, BLDC_PLL_KI) && motor.initialize(), "controller init");
     motor.start();
     motor.setDriveMode(DriveMode::FORWARD);
@@ -186,10 +185,13 @@ void run(double kg, float kp, float ki, Scene scene, double initial, FILE* trace
                 motor.updateSpeedPi();
             const float request = numberCast<float>(state.in.target_current);
             need(request >= BLDC_MIN_CURRENT && request <= drive_limit_a, "current-command rail");
-            if (trace && tick >= pre && tick % (Hz / 500) == 0)
+            if (trace && tick >= pre && tick % (Hz / 500) == 0) {
+                float kp{}, ki{};
+                motor.getSpeedPiGains(kp, ki);
                 std::fprintf(trace, "%g,%.3g,%.3g,%s,%u,%.2f,%.6f,%.7f,%.7f,%.7f,%.7f,%.7f,%.7f,%.7f,%.7f,"
-                             "%d,%.7f,%.7f,%.7f\n",
-                             kg, double(kp), double(ki), labels[scene], (tick - pre) / (Hz / 500) * 2, target,
+                             "%d,%.7f,%.7f,%.7f,%.7f,%.7f\n",
+                             kg, double(tuning.speed_pi.kp), double(tuning.speed_pi.ki), labels[scene],
+                             (tick - pre) / (Hz / 500) * 2, target,
                              load, wheel.n, numberCast<float>(state.in.velocity_feedback_rps),
                              numberCast<float>(state.in.current_speed_rps),
                              numberCast<float>(state.out.pll.speed_steps_s) / sectors,
@@ -197,7 +199,8 @@ void run(double kg, float kp, float ki, Scene scene, double initial, FILE* trace
                              numberCast<float>(state.out.electrical.i_q), wheel.iq, io.peak_phase_a,
                              int(state.out.electrical.current_pi_saturation),
                              numberCast<float>(state.out.electrical.i_d), numberCast<float>(state.out.electrical.v_d),
-                             numberCast<float>(state.out.electrical.v_q));
+                             numberCast<float>(state.out.electrical.v_q), double(kp), double(ki));
+            }
         }
         const int prev = wheel.sector();
         // The next frame samples the currents produced by the previously applied duties.
@@ -227,22 +230,27 @@ extern "C" void enable_interrupts() {}
 int main(int argc, char** argv) {
     if (argc != 2 && argc != 4)
         return 2;
-    const auto gain = [](const char* s) {
-        char* end = nullptr;
-        const float g = std::strtof(s, &end);
-        need(end != s && *end == '\0' && std::isfinite(g) && g > 0, "invalid PI gain");
-        return g;
-    };
-    const float kp = argc == 4 ? gain(argv[2]) : BLDC_SPEED_CURRENT_KP;
-    const float ki = argc == 4 ? gain(argv[3]) : BLDC_SPEED_CURRENT_KI;
+    auto tuning = params();
+    if (argc == 4) {
+        const auto gain = [](const char* s) {
+            char* end = nullptr;
+            const float g = std::strtof(s, &end);
+            need(end != s && *end == '\0' && std::isfinite(g) && g > 0, "invalid PI gain");
+            return g;
+        };
+        tuning.speed_pi.kp = gain(argv[2]);
+        tuning.speed_pi.ki = gain(argv[3]);
+        tuning.schedule_speed_pi = false;
+    }
     FILE* trace = std::fopen(argv[1], "w");
     if (!trace)
         return 1;
     std::fputs("kg,kp,ki,scene,ms,target_rps,brake_nm,wheel_rps,feedback_rps,monitor_rps,pll_rps,request_A,"
-               "measured_iq_A,torque_iq_A,peak_phase_A,voltage_saturation,measured_id_A,vd_V,vq_V\n", trace);
+               "measured_iq_A,torque_iq_A,peak_phase_A,voltage_saturation,measured_id_A,vd_V,vq_V,"
+               "effective_kp,effective_ki\n", trace);
     for (double kg : {0., 80.})
         for (auto scene : {Quiet, Pulse, From3, From5, HoldPulse, Sweep})
             if (scene != Sweep || kg == 0.)
-                run(kg, kp, ki, scene, .13, trace);
+                run(kg, tuning, scene, .13, trace);
     need(std::fclose(trace) == 0, "trace write");
 }

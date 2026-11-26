@@ -171,15 +171,15 @@ void antiwindup() {
     check(obs.configure(p),"anti-windup fixture");
     for (unsigned k=0;k<400;++k) {
         auto preview=capped;
-        const auto ordinary=preview.updateNativeCapped(number<N>(4),number<N>(3),0,number<I>(45),number<I>(45));
+        const auto ordinary=preview.updateNative(number<N>(4),number<N>(3));
         const auto o=obs.update(k,sample(k,3,0.5f),ordinary.toFloat(),45);
         const auto high=numberCast<I>(o.positive_ceiling_a);
-        const auto actual=capped.updateNativeCapped(number<N>(4),number<N>(3),0,number<I>(45),high);
-        const auto raw=unaware.updateNativeCapped(number<N>(4),number<N>(3),0,number<I>(45),number<I>(45));
+        const auto actual=capped.updateNativeBounded(number<N>(1),0,number<I>(45),number<I>(-6),high);
+        const auto raw=unaware.updateNative(number<N>(4),number<N>(3));
         check(actual==std::min(raw,high),"identical bounded outputs while load ceiling is binding");
     }
-    const float first=capped.updateNativeCapped(number<N>(3),number<N>(3),0,number<I>(45),number<I>(45)).toFloat();
-    const float hidden=unaware.updateNativeCapped(number<N>(3),number<N>(3),0,number<I>(45),number<I>(45)).toFloat();
+    const float first=capped.updateNative(number<N>(3),number<N>(3)).toFloat();
+    const float hidden=unaware.updateNative(number<N>(3),number<N>(3)).toFloat();
     std::printf("Release at zero speed error: actual bounded PI %.3f A; external clip negative control %.3f A\n",
                 first,hidden);
     check(first<8.0f && hidden>35.0f,"back-calculation saw the applied MTTE cap, not the unconstrained output");

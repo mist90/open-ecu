@@ -175,6 +175,46 @@ constexpr int64_t roundedDivide(int64_t numerator, int64_t denominator) noexcept
     if (result > uint64_t(INT64_MAX)) return negative ? INT64_MIN : INT64_MAX;
     return negative ? -int64_t(result) : int64_t(result);
 }
+// Configuration/command conversion is not part of the carrier. On size-constrained
+// images share one decoder per storage width instead of one per binary-point position.
+template<class Storage>
+#if defined(LIBECU_COMPACT_FLOAT_INPUT) && LIBECU_COMPACT_FLOAT_INPUT
+[[gnu::noipa, gnu::optimize("Os")]]
+#endif
+inline Storage decodeFloat(float value, unsigned fraction_bits, bool* clipped) noexcept {
+    static_assert(sizeof(float) == sizeof(uint32_t) && std::numeric_limits<float>::is_iec559);
+    uint32_t bits;
+    std::memcpy(&bits, &value, sizeof(bits));
+    const bool negative = bits >> 31;
+    const unsigned exponent = (bits >> 23) & 255;
+    const uint32_t fraction = bits & 0x7fffff;
+    const Storage rail = negative ? std::numeric_limits<Storage>::min() : std::numeric_limits<Storage>::max();
+    const uint64_t limit = uint64_t(std::numeric_limits<Storage>::max()) + negative;
+    if (clipped) *clipped = false;
+    if (exponent == 255) {
+        if (clipped) *clipped = true;
+        return fraction ? 0 : rail;
+    }
+    const uint64_t significand = exponent ? (fraction | 0x800000u) : fraction;
+    const int shift = int(exponent ? exponent : 1) - 150 + int(fraction_bits);
+    uint64_t raw;
+    if (shift >= 0) {
+        if (shift >= 64 || significand > (limit >> shift)) {
+            if (clipped) *clipped = true;
+            return rail;
+        }
+        raw = significand << shift;
+    } else {
+        const unsigned discard = unsigned(-shift);
+        if (discard > 24) return 0;
+        raw = (significand + (uint64_t(1) << (discard - 1))) >> discard;
+    }
+    if (raw >= limit) {
+        if (clipped) *clipped = raw > limit;
+        return rail;
+    }
+    return negative ? -Storage(raw) : Storage(raw);
+}
 } // namespace fixed_detail
 
 /**
@@ -291,34 +331,7 @@ public:
      * out-of-range float-to-integer casts, including at the int64 boundaries.
      */
     static FixedPointType fromFloat(float value, bool* clipped = nullptr) noexcept {
-        static_assert(sizeof(float) == sizeof(uint32_t) && std::numeric_limits<float>::is_iec559,
-                      "The float interface requires IEEE-754 binary32");
-        if (clipped) *clipped = false;
-        uint32_t bits = 0;
-        std::memcpy(&bits, &value, sizeof(bits));
-        const bool negative = (bits >> 31) != 0;
-        const unsigned exponent = (bits >> 23) & 0xffu;
-        const uint32_t fraction = bits & 0x7fffffu;
-        if (exponent == 0xffu) {
-            if (clipped) *clipped = true;
-            return fraction ? FixedPointType{} : fromRaw(signedMagnitude(UINT64_MAX, negative));
-        }
-        const uint64_t significand = exponent ? (fraction | 0x800000u) : fraction;
-        const int shift = (exponent ? int(exponent) - 127 : -126) - 23 + int(FractionBits);
-        uint64_t raw = 0;
-        if (shift >= 0) {
-            if (shift >= 64 || significand > (limit(negative) >> shift)) {
-                if (clipped) *clipped = true;
-                return fromRaw(signedMagnitude(UINT64_MAX, negative));
-            }
-            raw = significand << shift;
-        } else {
-            const unsigned discard = static_cast<unsigned>(-shift);
-            if (discard > 24) return FixedPointType{};
-            raw = (significand + (uint64_t(1) << (discard - 1))) >> discard;
-        }
-        if (raw > limit(negative) && clipped) *clipped = true;
-        return fromRaw(signedMagnitude(raw, negative));
+        return fromRaw(fixed_detail::decodeFloat<Storage>(value, FractionBits, clipped));
     }
 
     /**

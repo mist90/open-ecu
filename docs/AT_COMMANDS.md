@@ -232,15 +232,16 @@ the second stage of the target-speed filter (LPF → slew rate limiter, see
 OPEN_LOOP, `SPD` sets the rotating field's speed directly; in TORQUE, the
 speed loop does not run.
 
-`0` disables the limiter, which makes `AT+SPD` a step command — the drive will
-demand the current the speed PI asks for, up to the configured limits.
+`0` disables the setpoint ramp, so `AT+SPD` can step the reference. The speed PI
+can then request current up to the drive or braking rail on the first sample.
+Measured wheel acceleration has no separate setting.
 
 Changing the rate does not move the ramp that is already in progress; the new
 rate applies from the next control tick.
 
 > **The ramp is not visible on `+TM:tgt_speed`.** That field reports the raw
 > setpoint, which steps the moment `AT+SPD` lands; the limiter output is
-> internal. Watch `cur_speed` instead. Measured on MOTOR_1 stepping to 5 RPS:
+> internal. Watch `cur_speed` for wheel response. In an earlier MOTOR_1 bench test stepping to 5 RPS:
 > `ACC=1` gives 0.99 RPS/s, `ACC=4` gives 4.7 RPS/s, `ACC=0` gives 25.6 RPS/s.
 
 Note that `AT+SPD` is ignored entirely while `DMODE=2` (NEUTRAL), so a ramp
@@ -377,6 +378,9 @@ Set or read the motor rotation direction.
 
 Set or read the speed (outer-loop) PI gains. Its output is current in amperes
 for either electrical algorithm.
+On `MOTOR_1`, the query returns the gains selected from the latest measured
+speed. An accepted write, even of that same pair, selects constant gains for
+the rest of the session. See [MOTOR_1 defaults](software.md#motor_1-defaults).
 Repeating a setting or changing only `ki` retains the integral and the previous
 error. With velocity control active, a `kp` change compensates the integral to
 preserve the last command at the same error. Normal integration and response to

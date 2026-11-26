@@ -170,6 +170,10 @@ struct FocParams {
 class FocAlgorithm final : public MotorAlgorithm {
 public:
     using Core = FocControlCore<ActiveNumericProfile, ActiveTiming::CURRENT_HZ, motor_config::current_loop>;
+    auto measuredFilteredCurrents() const noexcept { return core_.measuredFilteredCurrents(); }
+    void observePhaseCurrents(const MotorElectricalOutput& e) noexcept {
+        core_.observePhaseCurrents(e.i_u, e.i_v, e.i_w, e.angle_e_rad);
+    }
     /** @brief Next discarded phase, including a one-frame override or reset to U. */
     unsigned reconstructedPhase() const noexcept { return core_.reconstructedPhase(); }
     /** @brief Select one frame's discarded phase; caller qualifies both retained phases and owns the ISR. */

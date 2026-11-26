@@ -217,6 +217,8 @@ static void noiseFloor() {
                   out.v_q==typename C::Voltage{}, "sub-threshold noise cannot grow duty or integral");
         }
         for (int n=0; n<100; ++n) out=sample(0,0.125f);
+        check(core.measuredFilteredCurrents().q > I{} && core.filteredCurrents().q == I{},
+              "protection observes nonzero filtered current even while PI feedback is suppressed");
         check(out.v_q==typename C::Voltage{}, "hysteresis retains idle between 0.10 and 0.15 A");
         for (int n=0; n<100; ++n) out=sample(0,0.20f);
         check(numberCast<float>(out.v_q)<-0.01f, "real current above release threshold resumes regulation");

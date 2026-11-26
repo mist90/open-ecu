@@ -117,19 +117,22 @@ static void rollingLoadTrace(float max_iq) {
     const auto ceiling = [max_iq](P::Speed speed) {
         return rollingIntegralCeiling<P, motor_config::rolling_integral>(speed, numberCast<P::Current>(max_iq));
     };
+    // Leave room below even the 20 A output rail for 14 A of integral plus P.
+    constexpr auto error = number_v<P::Speed, 1, 8>;
+    constexpr float proportional = BLDC_SPEED_CURRENT_KP / 8.f;
     auto step = [&](int eighths, int sat) {
         const auto v = number<P::Speed>(eighths, 8);
-        return pi.updateNativeCapped(v + number_v<P::Speed, 1>, v, sat, ceiling(v));
+        return pi.updateNativeCapped(v + error, v, sat, ceiling(v));
     };
-    for (int i = 0; i < 300; ++i) step(0, 0);
+    for (int i = 0; i < 1000; ++i) step(0, 0);
     check(pi.getIntegral() == 12.f, "a stationary speed error cannot earn rolling headroom");
     for (int i = 0; i < 200; ++i) step(2, 0);
     check(pi.getIntegral() == 14.f, "partial rolling authority");
-    for (int i = 0; i < 1000; ++i) step(40, 0);
-    check(pi.getIntegral() >= max_iq - BLDC_SPEED_CURRENT_KP && pi.getOutput() == max_iq,
+    for (int i = 0; i < 3000; ++i) step(40, 0);
+    check(pi.getIntegral() >= max_iq - proportional && pi.getOutput() == max_iq,
           "sustained rolling demand reaches the actual board/motor command limit");
     step(-1, 1);
-    check(pi.getIntegral() == 12.f && pi.getOutput() == 12.f + BLDC_SPEED_CURRENT_KP,
+    check(pi.getIntegral() == 12.f && pi.getOutput() == 12.f + proportional,
           "loss of motion drops stored excess even under saturation");
     step(8, 1);
     check(pi.getIntegral() == 12.f, "no stale integral on recovery");
@@ -155,18 +158,22 @@ static void dynamicRailTrace() {
     for (int k = 0; k < 2000; ++k) {
         const int mode = (k / 7) % 3; // capped -> ordinary and immediate cap removal
         const auto icap = number<O>((k / 11) % 19 - 8, 8); // spans above AND below the configured rails
-        const auto ocap = number<O>((k / 13) % 17 - 8, 8);
+        const auto low = number<O>(-((k / 19) % 9), 8);
+        const auto high = number<O>((k / 13) % 9, 8);
         const auto target = number<I>((k / 17) % 17 - 8, 4);
         const auto fb = number<I>((k % 19) - 9, 16);
         const int ext = (k / 9) % 3 - 1;
         auto p = base;
         if (mode) p.integral_max = std::clamp(icap, p.integral_min, p.integral_max);
-        if (mode == 2) p.max_output = std::clamp(ocap, p.min_output, p.max_output);
+        if (mode == 2) {
+            p.min_output = std::max(low, p.min_output);
+            p.max_output = std::min(high, p.max_output);
+        }
         reference.setParameters(p);
         const auto expected = reference.update(target, fb, ext);
         const auto got = !mode ? actual.update(target, fb, ext) :
                          mode == 1 ? actual.updateCapped(target, fb, ext, icap) :
-                                     actual.updateCapped(target, fb, ext, icap, ocap);
+                                      actual.updateBounded(target - fb, ext, icap, low, high);
         const auto config = actual.getParameters();
         same &= expected == got && reference.getIntegral() == actual.getIntegral() &&
                 reference.saturationSign() == actual.saturationSign() && config.max_output == base.max_output &&
@@ -177,7 +184,60 @@ static void dynamicRailTrace() {
         saw_free |= actual.saturationSign() == 0;
     }
     check(same && saw_high && saw_low && saw_free,
-          "changing both ceilings matches configured-limit oracle: saturated, free and externally held ticks");
+          "changing integral and both output rails matches configured-limit oracle on every tick");
+}
+
+// Without back-calculation, a tightened drive or braking rail must hold the integral while
+// the error pushes farther into saturation, even as protection begins to release that rail.
+template<class P>
+static void protectionWithoutBackCalculation() {
+    using Pi = PiFloatInterface<typename P::SpeedPiTypes, 100>;
+    using I = typename Pi::Input;
+    using O = typename Pi::Output;
+    Pi pi;
+    check(pi.setParameters({6, 24, 45, -6, 12, -4, 0}), "configure speed PI without back-calculation");
+    for (int sign : {-1, 1}) {
+        pi.reset();
+        const auto error = number<I>(2 * sign);
+        const auto step = [&](O rail) {
+            return pi.updateNativeBounded(error, 0, number<O>(12), -rail, rail);
+        };
+        check(step(number<O>(1)) == number<O>(sign) && pi.saturationSign() == sign,
+              "first sample reaches the selected protection rail");
+        const float held = pi.getIntegral();
+        for (int tick = 0; tick < 100; ++tick) step(number<O>(1));
+        check(std::abs(held) < 0.25f && pi.getIntegral() == held, "sustained current limiting holds the integral");
+        for (int tick = 1; tick <= 50; ++tick) step(number<O>(25 + tick, 25));
+        check(pi.getIntegral() == held && pi.getOutput() == 3.f * sign,
+              "the applied command follows the recovering rail without winding up");
+    }
+    const auto brake = pi.updateNativeBounded(number<I>(-2), 0, number<O>(12), number<O>(-6), O{});
+    check(brake == number<O>(-6) && pi.saturationSign() == -1, "a zero positive rail still permits braking");
+}
+
+template<class P>
+static void oneSidedCapCompatibility() {
+    using Pi = PiFloatInterface<typename P::SpeedPiTypes, 100>;
+    using I = typename Pi::Input;
+    using O = typename Pi::Output;
+    const auto floor = number<O>(-6), ceiling = number<O>(45), integral = number<O>(12);
+    for (float kb : {0.f, 2.f}) {
+        Pi one_sided, bounded;
+        const PiParameters tuning{6, 24, 45, -6, 12, -4, kb};
+        check(one_sided.setParameters(tuning) && bounded.setParameters(tuning), "configure equivalent PI paths");
+        for (int cap : {1, 3, -8, 0, 50}) {
+            const auto limit = number<O>(cap);
+            const auto effective = std::clamp(limit, floor, ceiling);
+            for (int tick = 0; tick < 20; ++tick) {
+                const auto target = number<I>(tick < 10 ? 5 : 1), measured = number<I>(3);
+                const auto actual = one_sided.updateNativeCapped(target, measured, 0, integral, limit);
+                const auto expected = bounded.updateNativeBounded(target - measured, 0, integral, floor, effective);
+                check(actual == expected && one_sided.getIntegral() == bounded.getIntegral() &&
+                      one_sided.saturationSign() == bounded.saturationSign(),
+                      "a per-sample upper rail preserves the configured floor and both anti-windup modes");
+            }
+        }
+    }
 }
 
 template<class Types>
@@ -190,7 +250,7 @@ static void exactRailReadback() {
     p.integral_max = O::fromRaw(1);
     p.integral_min = O::fromRaw(-1);
     K k(p);
-    k.updateCapped({}, {}, 0, O::fromRaw(INT32_MAX), O::fromRaw(INT32_MIN));
+    k.updateBounded({}, 0, O::fromRaw(INT32_MAX), O::fromRaw(-1), O::fromRaw(1));
     const auto saved = k.getParameters();
     check(saved.min_output == p.min_output && saved.max_output == p.max_output &&
           saved.integral_min == p.integral_min && saved.integral_max == p.integral_max,
@@ -231,6 +291,10 @@ int main() {
     dynamicRailTrace<FixedProfile::SpeedPiTypes, 100>();
     dynamicRailTrace<FixedProfile::SpeedPiTypes, 500>();
     dynamicRailTrace<FixedProfile::CurrentPiTypes, 16000>();
+    protectionWithoutBackCalculation<FloatProfile>();
+    protectionWithoutBackCalculation<FixedProfile>();
+    oneSidedCapCompatibility<FloatProfile>();
+    oneSidedCapCompatibility<FixedProfile>();
     exactRailReadback<FixedProfile::SpeedPiTypes>();
     exactRailReadback<FixedProfile::CurrentPiTypes>();
     std::printf("PI interface: %d checks, %d failures\n", checks, failures);
